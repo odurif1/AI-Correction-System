@@ -293,14 +293,14 @@ def split_pdf_by_ranges(pdf_path: str, output_dir: str, ranges: List[Tuple[int, 
     with fitz.open(pdf_path) as doc:
         for i, (start, end) in enumerate(ranges):
             new_doc = fitz.open()
+            try:
+                for page_num in range(start, min(end + 1, len(doc))):
+                    new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
 
-            for page_num in range(start, min(end + 1, len(doc))):
-                new_doc.insert_pdf(doc, from_page=page_num, to_page=page_num)
-
-            output_path = output_dir / f"split_{i}.pdf"
-            new_doc.save(str(output_path))
-            new_doc.close()
-
-            output_paths.append(str(output_path))
+                output_path = output_dir / f"split_{i}.pdf"
+                new_doc.save(str(output_path))
+                output_paths.append(str(output_path))
+            finally:
+                new_doc.close()
 
     return output_paths

@@ -25,6 +25,11 @@ CONFIDENCE_THRESHOLD_AUTO: Final[float] = 0.85
 CONFIDENCE_THRESHOLD_FLAG: Final[float] = 0.60
 CONFIDENCE_THRESHOLD_ASK: Final[float] = 0.60
 
+# Grading Thresholds
+GRADE_DIFFERENCE_THRESHOLD: Final[float] = 0.5  # Difference to trigger cross-verification
+JACCARD_SIMILARITY_THRESHOLD: Final[float] = 0.3  # For reading compatibility
+READING_LENGTH_RATIO_THRESHOLD: Final[float] = 1.5  # For choosing longer reading
+
 # Clustering
 EMBEDDING_MODEL: Final[str] = "text-embedding-3-small"
 EMBEDDING_DIM: Final[int] = 1536

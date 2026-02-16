@@ -408,6 +408,189 @@ class GradingSessionOrchestrator:
         self._grading_complete = True
         return self.session.graded_copies
 
+    async def grade_all_hybrid(
+        self,
+        progress_callback: callable = None
+    ) -> List[GradedCopy]:
+        """
+        Phase 3 (Hybrid): Grade all copies using single-pass + targeted verification.
+
+        More efficient than grade_all() when using 2 LLMs:
+        - Single API call per LLM for all questions
+        - Cross-verification only for flagged questions
+
+        Must be called after confirm_scale().
+        Only works when _comparison_mode is True.
+
+        Args:
+            progress_callback: Optional callback for progress updates
+
+        Returns:
+            List of GradedCopy objects
+        """
+        if not self._analysis_complete:
+            raise RuntimeError("Must call analyze_only() before grade_all_hybrid()")
+
+        if not self.question_scales:
+            raise RuntimeError("Must call confirm_scale() before grade_all_hybrid()")
+
+        if not self._comparison_mode:
+            raise RuntimeError("grade_all_hybrid() requires comparison mode (2 LLMs)")
+
+        if not hasattr(self.ai, 'grade_copy_hybrid'):
+            raise RuntimeError("AI provider does not support hybrid grading")
+
+        self.session.status = SessionStatus.GRADING
+
+        # Set progress callback
+        if hasattr(self.ai, 'set_progress_callback') and progress_callback:
+            self.ai.set_progress_callback(progress_callback)
+
+        total_copies = len(self.session.copies)
+        provider_names = [name for name, _ in self.ai.providers] if hasattr(self.ai, 'providers') else []
+
+        # Build questions list for hybrid grading
+        questions = []
+        for q_id, q_text in self.detected_questions.items():
+            questions.append({
+                "id": q_id,
+                "text": q_text,
+                "criteria": "",
+                "max_points": self.question_scales.get(q_id, 1.0)
+            })
+
+        # Grade each copy using hybrid approach
+        for i, copy in enumerate(self.session.copies):
+            # Notify copy start
+            if progress_callback:
+                await self._call_callback(progress_callback, 'copy_start', {
+                    'copy_index': i + 1,
+                    'total_copies': total_copies,
+                    'copy_id': copy.id,
+                    'student_name': copy.student_name,
+                    'questions': list(self.question_scales.keys())
+                })
+
+            # Get image paths for this copy
+            image_paths = [str(p) for p in copy.page_images] if copy.page_images else []
+
+            if not image_paths:
+                continue
+
+            # Notify single-pass start
+            if progress_callback:
+                await self._call_callback(progress_callback, 'hybrid_single_pass_start', {
+                    'num_questions': len(questions),
+                    'providers': provider_names
+                })
+
+            # Call hybrid grading
+            result = await self.ai.grade_copy_hybrid(
+                questions=questions,
+                image_paths=image_paths,
+                language="fr",
+                disagreement_callback=self._disagreement_callback,
+                reading_disagreement_callback=self._reading_disagreement_callback
+            )
+
+            # Extract audit info for workflow display
+            audit = result.get("audit", {})
+            single_pass = audit.get("single_pass", {})
+            disagreement_report = audit.get("disagreement_report", {})
+            verification = audit.get("verification", {})
+
+            # Notify single-pass complete with results
+            if progress_callback:
+                await self._call_callback(progress_callback, 'hybrid_single_pass_complete', {
+                    'providers': provider_names,
+                    'single_pass': single_pass
+                })
+
+            # Notify analysis complete
+            if progress_callback:
+                await self._call_callback(progress_callback, 'hybrid_analysis_complete', {
+                    'agreed': disagreement_report.get('agreed', 0),
+                    'flagged': disagreement_report.get('flagged', 0),
+                    'total': disagreement_report.get('total_questions', 0),
+                    'flagged_questions': disagreement_report.get('flagged_questions', [])
+                })
+
+            # Notify verification for each flagged question
+            for flagged in disagreement_report.get('flagged_questions', []):
+                qid = flagged.get('question_id')
+                if progress_callback:
+                    await self._call_callback(progress_callback, 'hybrid_verification_start', {
+                        'question_id': qid,
+                        'reason': flagged.get('reason'),
+                        'llm1_grade': flagged.get('llm1', {}).get('grade'),
+                        'llm2_grade': flagged.get('llm2', {}).get('grade')
+                    })
+
+            # Notify final results per question
+            for q_id, q_result in result.get("questions", {}).items():
+                q_audit = verification.get(q_id, {})
+                method = q_audit.get('method', 'unknown')
+                agreement = q_audit.get('agreement', True)
+
+                if progress_callback:
+                    await self._call_callback(progress_callback, 'hybrid_question_done', {
+                        'question_id': q_id,
+                        'grade': q_result.get("grade", 0),
+                        'max_points': self.question_scales.get(q_id, 1.0),
+                        'method': method,
+                        'agreement': agreement
+                    })
+
+            # Convert to GradedCopy
+            graded = GradedCopy(
+                copy_id=copy.id,
+                policy_version=self.session.policy.version
+            )
+
+            # Extract grades from hybrid result
+            for q_id, q_result in result.get("questions", {}).items():
+                grade = q_result.get("grade", 0)
+                confidence = q_result.get("confidence", 0.5)
+                feedback = q_result.get("student_feedback", "")
+                reading = q_result.get("student_answer_read", "")
+
+                graded.grades[q_id] = grade
+                graded.confidence_by_question[q_id] = confidence
+                graded.student_feedback[q_id] = feedback
+                graded.readings[q_id] = reading
+
+            # Calculate totals
+            graded.total_score = sum(graded.grades.values())
+            graded.max_score = sum(self.question_scales.values())
+            graded.confidence = sum(graded.confidence_by_question.values()) / len(graded.confidence_by_question) if graded.confidence_by_question else 0.5
+
+            # Store audit data
+            graded.llm_comparison = result.get("audit", {})
+
+            self.session.graded_copies.append(graded)
+            self._save_sync()
+
+            # Notify copy done
+            if progress_callback:
+                token_usage = None
+                if hasattr(self.ai, 'get_token_usage'):
+                    token_usage = self.ai.get_token_usage()
+
+                await self._call_callback(progress_callback, 'copy_done', {
+                    'copy_index': i + 1,
+                    'total_copies': total_copies,
+                    'copy_id': copy.id,
+                    'student_name': copy.student_name,
+                    'total_score': graded.total_score,
+                    'max_score': graded.max_score,
+                    'confidence': graded.confidence,
+                    'token_usage': token_usage,
+                    'hybrid_summary': result.get("summary", {})
+                })
+
+        self._grading_complete = True
+        return self.session.graded_copies
+
     async def _call_callback(self, callback: callable, event_type: str, data: dict):
         """Safely call a callback, handling both sync and async."""
         if callback is None:
@@ -417,8 +600,10 @@ class GradingSessionOrchestrator:
             if asyncio.iscoroutine(result):
                 await result
         except Exception as e:
-            # Don't let callback errors break grading
-            pass
+            # Don't let callback errors break grading, but log them
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Callback error for {event_type}: {e}")
 
     def get_doubts(self, threshold: float = 0.7) -> List[Tuple[CopyDocument, GradedCopy, str, float]]:
         """

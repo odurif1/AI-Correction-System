@@ -21,6 +21,8 @@ Fichiers par copie:
 - audit.json: Complet pour debugging (échanges LLM, comparaisons, etc.)
 """
 
+import csv
+import fcntl
 import json
 import os
 import shutil
@@ -346,9 +348,10 @@ class SessionStore:
 
         csv_file = reports_dir / GRADES_CSV
 
-        with open(csv_file, 'w', encoding='utf-8') as f:
+        with open(csv_file, 'w', encoding='utf-8', newline='') as f:
+            writer = csv.writer(f)
             for row in rows:
-                f.write(','.join(str(cell) for cell in row) + '\n')
+                writer.writerow(row)
 
         return csv_file
 
@@ -426,25 +429,45 @@ class SessionStore:
     # ==================== INDEX ====================
 
     def _update_index(self) -> None:
-        """Met à jour l'index global des sessions."""
+        """Met à jour l'index global des sessions avec verrouillage fichier."""
         index_file = self.base_dir / SESSIONS_INDEX
 
-        # Charger l'index existant
-        if index_file.exists():
-            with open(index_file, 'r', encoding='utf-8') as f:
-                index = json.load(f)
-        else:
-            index = {}
+        # Ensure base directory exists
+        self.base_dir.mkdir(parents=True, exist_ok=True)
 
-        # Mettre à jour l'entrée
-        index[self.session_id] = {
-            'created_at': datetime.now().isoformat(),
-            'path': str(self.session_dir)
-        }
+        # Use file locking to prevent race conditions
+        lock_path = index_file.with_suffix('.lock')
 
-        # Sauvegarder
-        with open(index_file, 'w', encoding='utf-8') as f:
-            json.dump(index, f, indent=2, ensure_ascii=False)
+        with open(lock_path, 'w') as lock_file:
+            try:
+                # Acquire exclusive lock
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+                # Charger l'index existant
+                if index_file.exists():
+                    with open(index_file, 'r', encoding='utf-8') as f:
+                        index = json.load(f)
+                else:
+                    index = {}
+
+                # Mettre à jour l'entrée
+                index[self.session_id] = {
+                    'created_at': datetime.now().isoformat(),
+                    'path': str(self.session_dir)
+                }
+
+                # Sauvegarder
+                with open(index_file, 'w', encoding='utf-8') as f:
+                    json.dump(index, f, indent=2, ensure_ascii=False)
+            finally:
+                # Release lock
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+        # Clean up lock file (optional, but keeps things tidy)
+        try:
+            lock_path.unlink()
+        except Exception:
+            pass
 
     # ==================== CLEANUP ====================
 
