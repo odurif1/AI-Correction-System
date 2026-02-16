@@ -1,0 +1,885 @@
+"""
+Main CLI entry point for the AI correction system.
+
+Usage:
+    python src/main.py correct copies/*.pdf
+    python src/main.py correct copies/*.pdf --scale Q1=5,Q2=3,Q3=4
+    python src/main.py correct copies/*.pdf --auto
+    python src/main.py api --port 8000
+    python src/main.py status <session_id>
+    python src/main.py export <session_id>
+    python src/main.py list
+
+Options:
+    --auto      Mode automatique sans interaction utilisateur.
+                - Utilise le barème détecté automatiquement
+                - En cas de désaccord entre les 2 IA: prend la moyenne
+                Sans --auto: demande confirmation du barème et choix utilisateur pour les désaccords
+"""
+
+import asyncio
+import sys
+import argparse
+from pathlib import Path
+from typing import List, Dict
+
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.table import Table
+from rich.panel import Panel
+from rich.prompt import Confirm
+
+from core.session import GradingSessionOrchestrator
+from config.settings import get_settings
+from ai import create_ai_provider
+from interaction.cli import CLI
+
+
+def check_api_key() -> bool:
+    """Check if an AI API key is configured."""
+    settings = get_settings()
+    if not settings.gemini_api_key and not settings.openai_api_key:
+        console = Console()
+        console.print("[red]Error: No AI API key configured![/red]")
+        console.print("Set AI_CORRECTION_GEMINI_API_KEY or AI_CORRECTION_OPENAI_API_KEY environment variable.")
+        return False
+    return True
+
+
+async def command_correct(args):
+    """Run correction on PDF files with interactive workflow."""
+    if not check_api_key():
+        return 1
+
+    cli = CLI()
+    cli.show_header()
+
+    # Get PDF paths
+    pdf_paths = []
+    for pattern in args.pdfs:
+        path = Path(pattern)
+        if path.exists():
+            if path.is_dir():
+                pdf_paths.extend(str(p) for p in path.glob("*.pdf"))
+            else:
+                pdf_paths.append(str(path))
+        else:
+            cli.show_warning(f"Path not found: {pattern}")
+
+    if not pdf_paths:
+        cli.show_error("No PDF files found to process.")
+        return 1
+
+    cli.show_info(f"Found {len(pdf_paths)} PDF file(s) to process")
+
+    # Container for language and auto mode (will be updated after analysis)
+    lang_container = {'language': 'fr', 'auto_mode': args.auto}
+
+    # Jurisprudence: store user decisions to inform future grading
+    # Format: {question_id: {'decision': grade, 'reasoning': str, 'llm1_grade': x, 'llm2_grade': y}}
+    jurisprudence = {}
+
+    # Create disagreement callback for comparison mode
+    async def disagreement_callback(
+        question_id: str,
+        question_text: str,
+        llm1_name: str,
+        llm1_result: dict,
+        llm2_name: str,
+        llm2_result: dict,
+        max_points: float
+    ) -> float:
+        """Callback for when LLMs disagree - ask user for decision."""
+        nonlocal jurisprudence
+
+        # Calculate average as fallback
+        grade1 = llm1_result.get('grade', 0) or 0
+        grade2 = llm2_result.get('grade', 0) or 0
+        average_grade = (grade1 + grade2) / 2
+
+        # Check if we have jurisprudence for this question
+        if question_id in jurisprudence:
+            past = jurisprudence[question_id]
+            # Use past decision as reference
+            cli.console.print(f"    [dim]📜 Jurisprudence: décision passée = {past['decision']:.1f}/{max_points}[/dim]")
+
+        # In auto mode, return average without prompting
+        if lang_container.get('auto_mode', False):
+            cli.console.print(f"    [yellow]⚠ {llm1_name}: {grade1} vs {llm2_name}: {grade2} → moyenne: {average_grade:.2f}[/yellow]")
+            # Store in jurisprudence (only for this specific question)
+            jurisprudence[question_id] = {
+                'question_text': question_text,  # Store for comparison
+                'decision': average_grade,
+                'llm1_grade': grade1,
+                'llm2_grade': grade2,
+                'max_points': max_points,
+                'auto': True,
+                'reasoning_llm1': llm1_result.get('internal_reasoning', '')[:200],
+                'reasoning_llm2': llm2_result.get('internal_reasoning', '')[:200]
+            }
+            # Update AI provider's jurisprudence
+            if hasattr(orchestrator.ai, 'set_jurisprudence'):
+                orchestrator.ai.set_jurisprudence(jurisprudence)
+            return average_grade, "merge"  # Return tuple for consistency
+
+        # Add max_points to results for display
+        llm1_result['max_points'] = max_points
+        llm2_result['max_points'] = max_points
+
+        try:
+            chosen_grade, feedback_source = cli.show_disagreement(
+                question_id=question_id or "Question",
+                question_text=question_text,
+                llm1_name=llm1_name,
+                llm1_result=llm1_result,
+                llm2_name=llm2_name,
+                llm2_result=llm2_result,
+                language=lang_container['language']
+            )
+            # Store in jurisprudence for future reference (only for this specific question)
+            jurisprudence[question_id] = {
+                'question_text': question_text,  # Store for comparison
+                'decision': chosen_grade,
+                'llm1_grade': grade1,
+                'llm2_grade': grade2,
+                'max_points': max_points,
+                'auto': False,
+                'feedback_source': feedback_source,  # Track which feedback was chosen
+                'reasoning_llm1': llm1_result.get('internal_reasoning', '')[:200],
+                'reasoning_llm2': llm2_result.get('internal_reasoning', '')[:200]
+            }
+            # Update AI provider's jurisprudence
+            if hasattr(orchestrator.ai, 'set_jurisprudence'):
+                orchestrator.ai.set_jurisprudence(jurisprudence)
+            return chosen_grade, feedback_source
+        except (EOFError, KeyboardInterrupt):
+            # No interactive input available - use average
+            cli.console.print(f"    [dim]Utilisation de la moyenne: {average_grade:.2f}[/dim]")
+            jurisprudence[question_id] = {
+                'question_text': question_text,  # Store for comparison
+                'decision': average_grade,
+                'llm1_grade': grade1,
+                'llm2_grade': grade2,
+                'max_points': max_points,
+                'auto': True,
+                'reasoning_llm1': llm1_result.get('internal_reasoning', '')[:200],
+                'reasoning_llm2': llm2_result.get('internal_reasoning', '')[:200]
+            }
+            # Update AI provider's jurisprudence
+            if hasattr(orchestrator.ai, 'set_jurisprudence'):
+                orchestrator.ai.set_jurisprudence(jurisprudence)
+            return average_grade, "merge"
+
+    # Name disagreement callback
+    async def name_disagreement_callback(llm1_result: Dict, llm2_result: Dict) -> str:
+        """Handle name disagreements by asking user."""
+        # In auto mode, use the name with higher confidence
+        if lang_container.get('auto_mode', False):
+            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+                return llm1_result.get('name') or "Inconnu"
+            else:
+                return llm2_result.get('name') or "Inconnu"
+
+        # Interactive mode - ask user
+        try:
+            chosen_name = cli.show_name_disagreement(
+                llm1_result=llm1_result,
+                llm2_result=llm2_result,
+                language=lang_container['language']
+            )
+            return chosen_name
+        except (EOFError, KeyboardInterrupt):
+            # No interactive input - use higher confidence
+            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+                return llm1_result.get('name') or "Inconnu"
+            else:
+                return llm2_result.get('name') or "Inconnu"
+
+    # Reading disagreement callback (for Consensus de Lecture)
+    async def reading_disagreement_callback(
+        llm1_result: Dict,
+        llm2_result: Dict,
+        question_text: str,
+        image_path
+    ) -> str:
+        """Handle reading disagreements by asking user."""
+        # In auto mode, use the reading with higher confidence
+        if lang_container.get('auto_mode', False):
+            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+                return llm1_result.get('reading', '')
+            else:
+                return llm2_result.get('reading', '')
+
+        # Interactive mode - ask user
+        try:
+            chosen_reading = cli.show_reading_disagreement(
+                llm1_result=llm1_result,
+                llm2_result=llm2_result,
+                question_text=question_text,
+                image_path=image_path,
+                language=lang_container['language']
+            )
+            return chosen_reading
+        except (EOFError, KeyboardInterrupt):
+            # No interactive input - use higher confidence
+            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+                return llm1_result.get('reading', '')
+            else:
+                return llm2_result.get('reading', '')
+
+    # Create orchestrator with callbacks
+    orchestrator = GradingSessionOrchestrator(
+        pdf_paths,
+        disagreement_callback=disagreement_callback,
+        name_disagreement_callback=name_disagreement_callback,
+        reading_disagreement_callback=reading_disagreement_callback,
+        skip_reading_consensus=args.skip_reading,
+        force_single_llm=args.single
+    )
+
+    # Show which LLMs are being used (for verification)
+    if hasattr(orchestrator.ai, 'providers'):
+        cli.console.print(f"\n[bold cyan]🤖 Modèles utilisés (mode comparaison):[/bold cyan]")
+        for i, (name, provider) in enumerate(orchestrator.ai.providers):
+            cli.console.print(f"  LLM{i+1}: [yellow]{name}[/yellow]")
+        cli.console.print("")
+    else:
+        # Single LLM mode
+        model_name = getattr(orchestrator.ai, 'model', None) or get_settings().gemini_model
+        cli.console.print(f"\n[bold cyan]🤖 Modèle utilisé (mode simple):[/bold cyan]")
+        cli.console.print(f"  [yellow]{model_name}[/yellow]")
+        cli.console.print("")
+
+    # Parse explicit scale if provided
+    explicit_scale = None
+    if args.scale:
+        explicit_scale = {}
+        for part in args.scale.split(','):
+            if '=' in part:
+                q_id, pts = part.split('=')
+                explicit_scale[q_id.strip()] = float(pts.strip())
+
+    # ============================================================
+    # Phase 1: Analyze
+    # ============================================================
+    cli.show_info("Analyzing copies...")
+    cli.show_info("This may take a few minutes depending on API response time...")
+
+    try:
+        analysis = await orchestrator.analyze_only()
+    except Exception as e:
+        cli.show_error(f"Analysis failed: {e}")
+        return 1
+
+    # Get detected language and update callback container
+    language = analysis.get('language', 'fr')
+    lang_container['language'] = language
+
+    # Show analysis result in detected language
+    if language == 'fr':
+        cli.show_success(f"{analysis['copies_count']} copie(s) analysée(s)")
+    else:
+        cli.show_success(f"Analyzed {analysis['copies_count']} copies")
+
+    # ============================================================
+    # Phase 1b: Re-analyze low confidence elements (if not auto)
+    # ============================================================
+    low_confidence = analysis.get('scale_low_confidence', [])
+    if low_confidence and not args.auto:
+        cli.show_warning(f"Low confidence scale for: {', '.join(low_confidence)}")
+
+        if language == 'fr':
+            reanalyze = Confirm.ask(
+                f"Re-analyser {len(low_confidence)} element(s) avec faible confiance ?",
+                default=True
+            )
+        else:
+            reanalyze = Confirm.ask(
+                f"Re-analyze {len(low_confidence)} low-confidence element(s)?",
+                default=True
+            )
+
+        if reanalyze:
+            cli.show_info("Re-analyzing with focused attention...")
+            updated = await orchestrator.re_analyze_low_confidence()
+
+            if updated:
+                cli.show_success(f"Updated {len(updated)} element(s)")
+                # Update analysis with new values
+                analysis['scale'].update({k: v['points'] for k, v in updated.items()})
+                # Remove from low confidence if now confident
+                low_confidence = [q for q in low_confidence if q not in updated]
+
+    # ============================================================
+    # Phase 2: Confirm/Define Scale
+    # ============================================================
+
+    # Check if we have any questions detected
+    if not analysis['questions'] and not explicit_scale:
+        cli.show_error("Aucune question détectée. L'analyse a peut-être échoué.")
+        return 1
+
+    if explicit_scale:
+        # Use explicit scale from command line
+        scale = explicit_scale
+        cli.show_info(f"Using provided scale: {scale}")
+
+    elif analysis.get('scale_high_confidence'):
+        # Scale detected with high confidence - use directly, no confirmation needed
+        scale = analysis['scale']
+        cli.show_success(f"Barème détecté avec haute confiance: {scale}")
+
+    elif analysis['scale_detected'] and not args.auto:
+        # Scale detected but not all high confidence - ask user to confirm
+        scale = cli.confirm_scale(
+            analysis['scale'],
+            analysis['questions'],
+            language=language
+        )
+
+    else:
+        # Scale not fully detected - MUST ask user
+        scale = analysis['scale'].copy()
+
+        # Collect all questions that need scale
+        unknown_questions = set(analysis.get('scale_unknown', []))
+        unknown_questions.update(low_confidence)
+
+        # Also add any detected questions without scale
+        for q_id in analysis['questions'].keys():
+            if q_id not in scale:
+                unknown_questions.add(q_id)
+
+        if unknown_questions:
+            if args.auto:
+                cli.show_error(f"Scale unknown for: {', '.join(sorted(unknown_questions))}")
+                cli.show_error("Cannot proceed in auto mode without scale.")
+                cli.show_info("Use --scale to provide values (e.g., --scale Q1=5,Q2=3)")
+                return 1
+
+            # Ask user for each unknown scale
+            if language == 'fr':
+                cli.show_warning(f"Barème inconnu pour: {', '.join(sorted(unknown_questions))}")
+            else:
+                cli.show_warning(f"Scale unknown for: {', '.join(sorted(unknown_questions))}")
+
+            for q_id in sorted(unknown_questions):
+                pts = cli.ask_for_single_scale(q_id, language=language)
+                scale[q_id] = pts
+
+    # Verify we have a valid scale for all questions
+    missing_scale = [q for q in analysis['questions'].keys() if q not in scale]
+    if missing_scale:
+        cli.show_error(f"Missing scale for: {', '.join(missing_scale)}")
+        return 1
+
+    orchestrator.confirm_scale(scale)
+
+    # ============================================================
+    # Phase 3: Grade All Copies (with live display)
+    # ============================================================
+    console = cli.console
+    is_comparison_mode = orchestrator._comparison_mode
+
+    # Track LLM completion status for ordered display
+    llm_status = {'results': {}, 'total': 2}
+    provider_names = [name for name, _ in orchestrator.ai.providers] if is_comparison_mode else []
+
+    # Progress callback for real-time display
+    async def progress_callback(event_type: str, data: dict):
+        if event_type == 'copy_start':
+            copy_idx = data['copy_index']
+            total = data['total_copies']
+            name = data.get('student_name') or '???'
+            llm_status['results'] = {}
+            console.print(f"\n[bold cyan]━━━ Copie {copy_idx}/{total} ━━━[/bold cyan] [yellow]{name}[/yellow]")
+
+        elif event_type == 'question_start':
+            q_id = data['question_id']
+            q_idx = data['question_index']
+            total_q = data['total_questions']
+            llm_status['results'] = {}  # Reset for new question
+            console.print(f"  [dim]{q_id} ({q_idx}/{total_q})[/dim]", end="")
+
+        elif event_type == 'llm_parallel_start':
+            # Skip - too repetitive
+            pass
+
+        elif event_type == 'llm_complete':
+            provider_index = data.get('provider_index', 0)
+            provider = data.get('provider', '???')
+            grade = data.get('grade')
+            all_done = data.get('all_completed', False)
+
+            # Store result by index for ordered display
+            llm_status['results'][provider_index] = {'provider': provider, 'grade': grade}
+
+            # Only display when ALL results are in (to maintain order)
+            if all_done and len(llm_status['results']) == llm_status['total']:
+                # Display in order (index 0, then index 1)
+                first = True
+                for idx in sorted(llm_status['results'].keys()):
+                    r = llm_status['results'][idx]
+                    if first:
+                        prefix = " ▪ "
+                        first = False
+                    else:
+                        prefix = " ┃ "
+                    if r['grade'] is not None:
+                        console.print(f"{prefix}[cyan]{r['provider']}:[/cyan] [bold]{r['grade']:.1f}[/bold]", end="")
+                    else:
+                        console.print(f"{prefix}[red]{r['provider']}: erreur[/red]", end="")
+                console.print("")  # New line after both complete
+
+        elif event_type == 'llm_error':
+            provider = data.get('provider', '???')
+            error = data.get('error', 'Unknown error')
+            console.print(f"    [red]✗ {provider}: {error}[/red]")
+
+        elif event_type == 'question_done':
+            q_id = data['question_id']
+            grade = data['grade']
+            max_pts = data['max_points']
+            agreement = data.get('agreement', True)
+
+            if agreement:
+                icon = "[green]✓[/green]"
+            else:
+                icon = "[yellow]⚠[/yellow]"
+
+            console.print(f"  {icon} {q_id}: [bold]{grade:.1f}/{max_pts}[/bold]")
+
+        elif event_type == 'copy_done':
+            score = data['total_score']
+            max_s = data['max_score']
+            pct = (score / max_s * 100) if max_s > 0 else 0
+            conf = data['confidence']
+
+            if pct >= 50:
+                color = "green"
+            else:
+                color = "red"
+
+            console.print(f"  [bold {color}]Total: {score:.1f}/{max_s} ({pct:.0f}%)[/bold {color}] [dim]conf: {conf:.0%}[/dim]")
+
+        elif event_type == 'feedback_start':
+            console.print(f"  [dim]Génération de l'appréciation...[/dim]", end="")
+
+        elif event_type == 'feedback_done':
+            feedback = data.get('feedback', '')
+            if feedback:
+                console.print(f" [green]✓[/green]")
+                console.print(f"  [italic]{feedback}[/italic]")
+            else:
+                console.print(" [green]✓[/green]")
+
+    # Run grading with progress updates
+    if is_comparison_mode:
+        # Show models being used
+        providers_info = []
+        for name, _ in orchestrator.ai.providers:
+            providers_info.append(f"[cyan]{name}[/cyan]")
+        console.print(f"\n[bold magenta]🔄 Mode comparaison: 2 LLM[/bold magenta] ({' vs '.join(providers_info)})")
+
+    console.print("\n[bold]Correction en cours...[/bold]")
+    graded = await orchestrator.grade_all(progress_callback=progress_callback)
+
+    # Show final summary table
+    console.print(f"\n[bold green]✓ {len(graded)} copie(s) corrigée(s)[/bold green]")
+
+    # Build summary data with feedback
+    copies_data = []
+    for i, graded_copy in enumerate(graded, 1):
+        copy = next(
+            (c for c in orchestrator.session.copies if c.id == graded_copy.copy_id),
+            None
+        )
+        if copy:
+            copies_data.append({
+                'copy_number': i,
+                'student_name': copy.student_name,
+                'total': graded_copy.total_score,
+                'max': graded_copy.max_score,
+                'confidence': graded_copy.confidence,
+                'feedback': graded_copy.feedback
+            })
+
+    cli.show_all_copies_summary(copies_data, language=language)
+
+    # ============================================================
+    # Phase 4: Review Doubts (if not auto mode)
+    # ============================================================
+    if not args.auto:
+        doubts = orchestrator.get_doubts(threshold=0.7)
+        if doubts:
+            decisions = cli.review_doubts(doubts, language=language)
+            if decisions:
+                await orchestrator.apply_decisions(decisions)
+                cli.show_success(f"Applied {len(decisions)} decision(s)")
+
+    # ============================================================
+    # Phase 5: Calibration (internal consistency check)
+    # ============================================================
+    # Run calibration phase silently
+    await orchestrator._calibration_phase()
+
+    # ============================================================
+    # Phase 6: Export
+    # ============================================================
+    cli.show_info("Exporting results...")
+
+    exports = await orchestrator.export()
+
+    # Mark complete
+    from core.models import SessionStatus
+    orchestrator.session.status = SessionStatus.COMPLETE
+    orchestrator._save_sync()
+
+    # ============================================================
+    # Show Summary
+    # ============================================================
+    scores = [g.total_score for g in graded]
+
+    # Compact summary of all copies
+    copies_data = []
+    for i, g in enumerate(graded, 1):
+        # Find the copy to get student name
+        copy = next(
+            (c for c in orchestrator.session.copies if c.id == g.copy_id),
+            None
+        )
+        student_name = copy.student_name if copy else None
+
+        copies_data.append({
+            'copy_number': i,
+            'student_name': student_name,
+            'total': g.total_score,
+            'max': g.max_score,
+            'confidence': g.confidence
+        })
+
+    cli.show_all_copies_summary(copies_data, language=language)
+
+    # Final summary
+    cli.show_summary(
+        session_id=orchestrator.session_id,
+        copies_count=len(orchestrator.session.copies),
+        graded_count=len(graded),
+        scores=scores,
+        language=language
+    )
+
+    # Annotate PDFs if requested
+    if args.annotate:
+        cli.show_info("Annotating PDFs...")
+        # Would call PDFAnnotator here
+
+    if language == 'fr':
+        cli.show_success(f"Session sauvegardée: {orchestrator.session_id}")
+    else:
+        cli.show_success(f"Session saved: {orchestrator.session_id}")
+
+    return 0
+
+
+def command_status(args):
+    """Show status of a session."""
+    from storage.session_store import SessionStore
+
+    console = Console()
+    store = SessionStore(args.session)
+    session = store.load_session()
+
+    if not session:
+        console.print(f"[red]Session not found: {args.session}[/red]")
+        return 1
+
+    # Display session info
+    table = Table(title=f"Session: {session.session_id}")
+    table.add_column("Property", style="cyan")
+    table.add_column("Value", style="green")
+
+    table.add_row("Status", session.status)
+    table.add_row("Created", str(session.created_at))
+    table.add_row("Total Copies", str(len(session.copies)))
+    table.add_row("Graded Copies", str(len(session.graded_copies)))
+
+    if session.graded_copies:
+        scores = [g.total_score for g in session.graded_copies]
+        table.add_row("Average", f"{sum(scores)/len(scores):.1f}")
+        table.add_row("Min", f"{min(scores):.1f}")
+        table.add_row("Max", f"{max(scores):.1f}")
+
+    console.print(table)
+
+    return 0
+
+
+def command_analytics(args):
+    """Show analytics for a session."""
+    from storage.session_store import SessionStore
+
+    console = Console()
+
+    store = SessionStore(args.session)
+    session = store.load_session()
+
+    if not session:
+        console.print(f"[red]Session not found: {args.session}[/red]")
+        return 1
+
+    orchestrator = GradingSessionOrchestrator(session_id=args.session)
+    analytics = orchestrator.get_analytics()
+
+    # Display analytics
+    console.print(Panel(f"Session: {args.session}", title="Analytics"))
+
+    table = Table(title="Score Statistics")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="green")
+
+    table.add_row("Mean", f"{analytics['mean_score']:.2f}")
+    table.add_row("Median", f"{analytics['median_score']:.2f}")
+    table.add_row("Std Dev", f"{analytics['std_dev']:.2f}")
+    table.add_row("Min", f"{analytics['min_score']:.2f}")
+    table.add_row("Max", f"{analytics['max_score']:.2f}")
+
+    console.print(table)
+
+    if analytics.get('score_distribution'):
+        console.print("\n[bold]Score Distribution:[/bold]")
+        for bucket, count in analytics['score_distribution'].items():
+            bar = "█" * count
+            console.print(f"  {bucket}: {bar} ({count})")
+
+    return 0
+
+
+def command_export(args):
+    """Export session data."""
+    from storage.session_store import SessionStore
+
+    console = Console()
+
+    store = SessionStore(args.session)
+    session = store.load_session()
+
+    if not session:
+        console.print(f"[red]Session not found: {args.session}[/red]")
+        return 1
+
+    orchestrator = GradingSessionOrchestrator(session_id=args.session)
+    exported = orchestrator.export_data(args.format)
+
+    console.print(f"[green]Exported session {args.session}:[/green]")
+    for fmt, path in exported.items():
+        console.print(f"  {fmt.upper()}: {path}")
+
+    return 0
+
+
+def command_list(args):
+    """List all sessions."""
+    from storage.file_store import SessionIndex
+    from storage.session_store import SessionStore
+
+    console = Console()
+
+    index = SessionIndex()
+    sessions = index.list_sessions()
+
+    if not sessions:
+        console.print("[yellow]No sessions found.[/yellow]")
+        return 0
+
+    table = Table(title="Sessions")
+    table.add_column("Session ID", style="cyan")
+    table.add_column("Created", style="green")
+    table.add_column("Status", style="yellow")
+
+    for session_id in sessions:
+        session_store = SessionStore(session_id)
+        session = session_store.load_session()
+
+        if session:
+            table.add_row(
+                session_id,
+                str(session.created_at)[:19],
+                session.status
+            )
+
+    console.print(table)
+    return 0
+
+
+def command_api(args):
+    """Start the API server."""
+    import uvicorn
+
+    from api.app import create_app
+
+    console = Console()
+
+    app = create_app()
+
+    console.print(f"[bold green]Starting API server[/bold green]")
+    console.print(f"Host: {args.host}")
+    console.print(f"Port: {args.port}")
+    console.print(f"Docs: http://{args.host}:{args.port}/docs")
+
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        workers=args.workers
+    )
+
+    return 0
+
+
+def main():
+    """Main entry point."""
+    parser = argparse.ArgumentParser(
+        description="AI Correction System - Intelligent grading of student work",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  %(prog)s correct copies/*.pdf
+  %(prog)s correct copies/*.pdf --scale Q1=5,Q2=3,Q3=4
+  %(prog)s correct copies/*.pdf --auto
+  %(prog)s correct copies/*.pdf --output ./my_grades
+  %(prog)s status abc123
+  %(prog)s analytics abc123
+  %(prog)s export abc123 --format json,csv
+  %(prog)s list
+  %(prog)s api --port 8000
+
+Note on --auto:
+  En mode automatique (--auto), aucune interaction utilisateur n'est requise.
+  - Le barème détecté est utilisé directement
+  - En cas de désaccord entre les 2 IA: la moyenne est automatiquement appliquée
+  Sans --auto: le programme demande confirmation du barème et sollicite l'utilisateur
+  pour arbitrer les désaccords entre IA.
+
+Note on --single:
+  Par défaut, si COMPARISON_MODE=true dans .env, le système utilise 2 LLM en parallèle.
+  Utilisez --single pour forcer l'utilisation d'un seul LLM:
+  - Plus rapide (une seule API call par question)
+  - Moins coûteux (50% d'API calls en moins)
+  - Pas de vérification croisée en cas d'erreur
+        """
+    )
+
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # Correct command
+    correct_parser = subparsers.add_parser("correct", help="Grade student copies")
+    correct_parser.add_argument(
+        "pdfs",
+        nargs="+",
+        help="PDF files or directories to process"
+    )
+    correct_parser.add_argument(
+        "--scale",
+        help="Explicit grading scale (e.g., Q1=5,Q2=3,Q3=4)"
+    )
+    correct_parser.add_argument(
+        "--auto",
+        action="store_true",
+        help="Mode automatique sans interaction: utilise le barème détecté et moyenne les notes en cas de désaccord entre IA"
+    )
+    correct_parser.add_argument(
+        "--export",
+        default="json,csv",
+        help="Export formats (json,csv,analytics)"
+    )
+    correct_parser.add_argument(
+        "--annotate",
+        action="store_true",
+        help="Generate annotated PDFs"
+    )
+    correct_parser.add_argument(
+        "--output",
+        default="outputs",
+        help="Output directory"
+    )
+    correct_parser.add_argument(
+        "--subject",
+        help="Subject/domain for grading"
+    )
+    correct_parser.add_argument(
+        "--single",
+        action="store_true",
+        help="Utiliser un seul LLM au lieu du mode comparaison (plus rapide, moins coûteux)"
+    )
+    correct_parser.add_argument(
+        "--skip-reading",
+        action="store_true",
+        help="Ignorer le consensus de lecture (les LLM notent directement sans valider ce qu'ils lisent)"
+    )
+
+    # Status command
+    status_parser = subparsers.add_parser("status", help="Show session status")
+    status_parser.add_argument("session", help="Session ID")
+
+    # Analytics command
+    analytics_parser = subparsers.add_parser("analytics", help="Show session analytics")
+    analytics_parser.add_argument("session", help="Session ID")
+
+    # Export command
+    export_parser = subparsers.add_parser("export", help="Export session data")
+    export_parser.add_argument("session", help="Session ID")
+    export_parser.add_argument(
+        "--format",
+        default="json,csv",
+        help="Export formats (json,csv,analytics)"
+    )
+
+    # List command
+    list_parser = subparsers.add_parser("list", help="List all sessions")
+
+    # API command
+    api_parser = subparsers.add_parser("api", help="Start API server")
+    api_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to bind to"
+    )
+    api_parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to bind to"
+    )
+    api_parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of workers"
+    )
+
+    args = parser.parse_args()
+
+    if not args.command:
+        parser.print_help()
+        return 0
+
+    # Execute command
+    if args.command == "correct":
+        return asyncio.run(command_correct(args))
+    elif args.command == "status":
+        return command_status(args)
+    elif args.command == "analytics":
+        return command_analytics(args)
+    elif args.command == "export":
+        return command_export(args)
+    elif args.command == "list":
+        return command_list(args)
+    elif args.command == "api":
+        return command_api(args)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
