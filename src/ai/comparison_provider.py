@@ -1331,7 +1331,7 @@ Consider this detection. If you agree, confirm. Otherwise, explain why.
             }
 
         # Step 3: Try cross-verification for readings
-        verified_readings = await self._cross_verify_reading(
+        verified_readings, _ = await self._cross_verify_reading(
             results, image_path, question_text, language
         )
 
