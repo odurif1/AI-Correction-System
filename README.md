@@ -18,6 +18,45 @@
 
 ---
 
+## Philosophie d'architecture
+
+### Ce que fait le LLM
+
+Le LLM **lit et note en même temps**. C'est naturel pour lui: il regarde l'image, comprend la réponse, et l'évalue en un seul appel.
+
+### Ce que fait le programme
+
+Le programme **orchestre la confrontation** entre deux LLM:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  LLM1: lit + note                                           │
+│  LLM2: lit + note                                           │
+│                     ↓                                       │
+│  Le programme détecte les désaccords et les résout          │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Pourquoi ne pas séparer lecture et notation?
+
+Séparer ces étapes serait:
+- **Artificiel**: Ce n'est pas ainsi que fonctionne un LLM
+- **Coûteux**: Double les appels API
+- **Pas plus fiable**: Un LLM séparé pour la lecture ferait les mêmes erreurs
+
+### Ce qu'apporte le programme
+
+| Fonction | Description |
+|----------|-------------|
+| **Confrontation** | Deux LLM notent indépendamment |
+| **Détection** | Identifier les désaccords (lecture OU note) |
+| **Re-vérification** | Si lectures différentes: relire + réévaluer ensemble |
+| **Cross-verification** | Si notes différentes: confronter les raisonnements |
+| **Ultimatum** | Dernière chance d'accord avant intervention utilisateur |
+| **Audit** | Tracer chaque décision pour diagnostic |
+
+---
+
 ## Démarrage rapide
 
 ```bash
@@ -81,26 +120,175 @@ python -m src.main correct copies/*.pdf --auto
 ## Workflow de correction
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  PDF → Extraction pages → Détection nom                     │
-│                                                              │
-│  Pour chaque question:                                       │
-│  ┌─────────────────────────────────────────────────────────┐│
-│  │ Phase 1: LECTURE (par défaut)                           ││
-│  │   LLM1 décrit → LLM2 décrit → Validation si désaccord   ││
-│  ├─────────────────────────────────────────────────────────┤│
-│  │ Phase 2: NOTATION                                        ││
-│  │   LLM1 note ║ LLM2 note (parallèle)                      ││
-│  ├─────────────────────────────────────────────────────────┤│
-│  │ Si désaccord:                                            ││
-│  │   → Vérification croisée (chaque LLM voit l'autre)       ││
-│  │   → Ultimatum si fausse convergence                      ││
-│  │   → Demande utilisateur si persistant                    ││
-│  └─────────────────────────────────────────────────────────┘│
-│                                                              │
-│  → Génération appréciation → Export                         │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         ARCHITECTURE COMPLÈTE                            │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  PDF → Extraction pages → Détection nom élève                           │
+│                                                                          │
+│  ┌────────────────────────────────────────────────────────────────────┐ │
+│  │                    POUR CHAQUE QUESTION                            │ │
+│  ├────────────────────────────────────────────────────────────────────┤ │
+│  │                                                                     │ │
+│  │  PHASE 1: NOTATION INITIALE (parallèle)                            │ │
+│  │  ┌─────────────────────┐    ┌─────────────────────┐                │ │
+│  │  │ LLM1:               │    │ LLM2:               │                │ │
+│  │  │ - Lit la réponse    │    │ - Lit la réponse    │                │ │
+│  │  │ - Note + reasoning  │    │ - Note + reasoning  │                │ │
+│  │  │ - student_answer_read   │    student_answer_read │                │ │
+│  │  └─────────────────────┘    └─────────────────────┘                │ │
+│  │            │                          │                             │ │
+│  │            └──────────┬───────────────┘                             │ │
+│  │                       ▼                                              │ │
+│  │  ┌─────────────────────────────────────────────────────────────────┐│ │
+│  │  │ ANALYSE: lecture1 vs lecture2 identiques?                       ││ │
+│  │  │   → identique / accent / partielle / substantielle              ││ │
+│  │  └─────────────────────────────────────────────────────────────────┘│ │
+│  │                       │                                              │ │
+│  │          ┌────────────┴────────────┐                                │ │
+│  │          ▼                         ▼                                │ │
+│  │   [Lectures OK]            [Lectures DIFFÉRENTES]                  │ │
+│  │          │                         │                                │ │
+│  │          │                         ▼                                │ │
+│  │          │              ┌──────────────────────────────────────┐   │ │
+│  │          │              │ PHASE 1.5: RE-VÉRIFICATION LECTURE   │   │ │
+│  │          │              │ avec réévaluation de la note         │   │ │
+│  │          │              │                                      │   │ │
+│  │          │              │ LLM1 voit lecture LLM2 → ajuste?     │   │ │
+│  │          │              │ LLM2 voit lecture LLM1 → ajuste?     │   │ │
+│  │          │              └──────────────────────────────────────┘   │ │
+│  │          │                         │                                │ │
+│  │          └────────────┬────────────┘                                │ │
+│  │                       ▼                                              │ │
+│  │  ┌─────────────────────────────────────────────────────────────────┐│ │
+│  │  │ COMPARAISON: grade1 == grade2 ?                                 ││ │
+│  │  └─────────────────────────────────────────────────────────────────┘│ │
+│  │                       │                                              │ │
+│  │          ┌────────────┴────────────┐                                │ │
+│  │          ▼                         ▼                                │ │
+│  │   [ACCORD] ✓              [DÉSACCORD] ⚠                            │ │
+│  │   Note finale            │                                          │ │
+│  │   = grade1               ▼                                          │ │
+│  │              ┌──────────────────────────────────────────────┐      │ │
+│  │              │ PHASE 2: VÉRIFICATION CROISÉE               │      │ │
+│  │              │                                              │      │ │
+│  │              │ Chaque LLM voit le reasoning de l'autre     │      │ │
+│  │              │ "Un autre correcteur a noté X parce que..." │      │ │
+│  │              │ → Réexamen indépendant                      │      │ │
+│  │              └──────────────────────────────────────────────┘      │ │
+│  │                       │                                          │ │
+│  │          ┌────────────┴────────────┐                            │ │
+│  │          ▼                         ▼                            │ │
+│  │   [Accord après] ✓        [Toujours désaccord]                 │ │
+│  │                          │                                      │ │
+│  │                          ▼                                      │ │
+│  │              ┌──────────────────────────────────────────────┐   │ │
+│  │              │ PHASE 3: ULTIMATUM                          │   │ │
+│  │              │                                              │   │ │
+│  │              │ "Désaccord persistant - décision finale"    │   │ │
+│  │              │ → Évolution des notes affichée              │   │ │
+│  │              │ → Avertissement si LLM a changé             │   │ │
+│  │              └──────────────────────────────────────────────┘   │ │
+│  │                       │                                          │ │
+│  │          ┌────────────┴────────────┐                            │ │
+│  │          ▼                         ▼                            │ │
+│  │   [Accord final] ✓        [Désaccord persistant]              │ │
+│  │                          │                                      │ │
+│  │                          ▼                                      │ │
+│  │              ┌──────────────────────────────────────────────┐   │ │
+│  │              │ INTERVENTION UTILISATEUR                    │   │ │
+│  │              │ ou moyenne automatique                       │   │ │
+│  │              └──────────────────────────────────────────────┘   │ │
+│  │                                                                     │ │
+│  └────────────────────────────────────────────────────────────────────┘ │
+│                                                                          │
+│  → Génération appréciation → Export (JSON, CSV, PDF annoté)             │
+│                                                                          │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
+
+---
+
+## Structure de l'audit
+
+Chaque question dispose d'un audit complet permettant de retracer toutes les étapes:
+
+```json
+{
+  "Q1": {
+    "initial": {
+      "llm1": {
+        "provider": "gemini-2.5-flash",
+        "grade": 1.0,
+        "confidence": 0.9,
+        "internal_reasoning": "...",
+        "student_answer_read": "m = V x Cm"
+      },
+      "llm2": { ... },
+      "difference": 0.0
+    },
+
+    "reading_analysis": {
+      "llm1_read": "m = V x Cm",
+      "llm2_read": "m = V X Cm",
+      "identical": false,
+      "difference_type": "accent"
+    },
+
+    "reading_reverification": {
+      "llm1": {
+        "initial_reading": "Mm. = V X Cm",
+        "final_reading": "m = V X Cm",
+        "reading_changed": true,
+        "initial_grade": 1.0,
+        "final_grade": 2.0,
+        "grade_changed": true,
+        "justification": "...",
+        "prompt_sent": "...",
+        "raw_response": "..."
+      },
+      "llm2": { ... }
+    },
+
+    "after_cross_verification": {
+      "llm1": {
+        "grade": 2.0,
+        "prompt_sent": "─── CONTESTATION ───\n..."
+      },
+      "llm2": { ... }
+    },
+
+    "after_ultimatum": { ... },
+
+    "decision_path": {
+      "initial_agreement": false,
+      "reading_reverification_triggered": true,
+      "verification_triggered": true,
+      "ultimatum_triggered": false,
+      "final_method": "verification_consensus"
+    },
+
+    "final": {
+      "grade": 2.0,
+      "agreement": true,
+      "method": "verification_consensus"
+    }
+  }
+}
+```
+
+### Champs clés de l'audit
+
+| Champ | Description |
+|-------|-------------|
+| `initial` | Résultats du premier passage (lecture + notation) |
+| `reading_analysis` | Comparaison des lectures des deux LLM |
+| `reading_reverification` | Re-vérification avec réévaluation (si lectures différentes) |
+| `after_cross_verification` | Résultats après confrontation des raisonnements |
+| `after_ultimatum` | Résultats après l'ultimatum (si désaccord persiste) |
+| `decision_path` | Chemin de décision emprunté |
+| `final` | Résultat final (note, accord, méthode) |
+| `timing` | Durée de chaque phase en ms |
 
 ---
 
@@ -109,7 +297,12 @@ python -m src.main correct copies/*.pdf --auto
 ### Double LLM avec confrontation
 - Deux IA notent indépendamment chaque réponse
 - En cas de désaccord, elles doivent se justifier face à l'autre
-- Détection des "fausses convergences" (prétendent être d'accord mais notes différentes)
+- **Ultimatum**: phase finale avec évolution des notes et avertissements
+
+### Re-vérification de lecture avec réévaluation
+- Si les lectures diffèrent substantiellement → re-vérification automatique
+- Chaque LLM voit la lecture de l'autre et peut **ajuster sa note**
+- Résout le problème: "bonne lecture mais mauvaise note"
 
 ### Consensus de lecture
 - Les IA décrivent ce qu'elles voient **avant** de noter
@@ -121,10 +314,12 @@ python -m src.main correct copies/*.pdf --auto
 - Adapté à la difficulté (question facile = retour minimal)
 - Max 25 mots
 
-### Audit complet
-- Chaque décision est tracée
-- Prompts exacts envoyés aux IA conservés
+### Audit complet et traçable
+- Chaque décision est tracée séquentiellement
+- **Prompts exacts** envoyés aux IA conservés
+- **Réponses brutes** des LLM conservées
 - Évolution de la confiance documentée
+- Timing de chaque phase
 
 ---
 

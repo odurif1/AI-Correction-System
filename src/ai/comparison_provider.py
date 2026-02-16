@@ -372,6 +372,7 @@ This information is provided as a reference to help you. You remain free in your
 
         # Step 2: Compare grades
         grades = [r.get("grade", 0) for r in results if r.get("grade") is not None]
+        initial_grades = list(grades)  # Store initial grades for audit (before any re-verification)
 
         # Build reading comparison analysis
         reading1 = results[0].get("student_answer_read", "")
@@ -402,6 +403,72 @@ This information is provided as a reference to help you. You remain free in your
         # Track total timing
         total_start_time = time.time()
 
+        # NEW: If readings differ substantially, re-verify readings with grade re-evaluation
+        # This ensures grades are based on correct readings
+        reading_reverification = None
+        if reading_analysis.get("difference_type") == "substantial":
+            reading_reverification_start = time.time()
+
+            # Prepare results for reading verification
+            reading_results = [
+                {"reading": reading1, "grade": results[0].get("grade"), "confidence": results[0].get("confidence")},
+                {"reading": reading2, "grade": results[1].get("grade"), "confidence": results[1].get("confidence")}
+            ]
+
+            verified_readings, reading_prompts = await self._cross_verify_reading(
+                reading_results,
+                image_path=image_path,
+                question_text=question_text,
+                language=language,
+                max_points=max_points,
+                grading_context=criteria
+            )
+
+            reading_reverification_duration = (time.time() - reading_reverification_start) * 1000
+
+            # Check if readings changed and update results
+            new_reading1 = verified_readings[0].get("reading", reading1)
+            new_reading2 = verified_readings[1].get("reading", reading2)
+            new_grade1 = verified_readings[0].get("grade")
+            new_grade2 = verified_readings[1].get("grade")
+
+            reading_reverification = {
+                "llm1": {
+                    "initial_reading": reading1,
+                    "final_reading": new_reading1,
+                    "reading_changed": new_reading1.strip().lower() != reading1.strip().lower(),
+                    "initial_grade": results[0].get("grade"),
+                    "final_grade": new_grade1,
+                    "grade_changed": new_grade1 is not None and abs(new_grade1 - results[0].get("grade", 0)) > 0.01,
+                    "justification": verified_readings[0].get("justification", ""),
+                    "prompt_sent": reading_prompts.get("llm1"),
+                    "raw_response": verified_readings[0].get("raw_response", "")
+                },
+                "llm2": {
+                    "initial_reading": reading2,
+                    "final_reading": new_reading2,
+                    "reading_changed": new_reading2.strip().lower() != reading2.strip().lower(),
+                    "initial_grade": results[1].get("grade"),
+                    "final_grade": new_grade2,
+                    "grade_changed": new_grade2 is not None and abs(new_grade2 - results[1].get("grade", 0)) > 0.01,
+                    "justification": verified_readings[1].get("justification", ""),
+                    "prompt_sent": reading_prompts.get("llm2"),
+                    "raw_response": verified_readings[1].get("raw_response", "")
+                },
+                "duration_ms": round(reading_reverification_duration, 1)
+            }
+
+            # Update results with new readings and grades if they changed
+            if new_grade1 is not None:
+                results[0]["grade"] = new_grade1
+                results[0]["student_answer_read"] = new_reading1
+            if new_grade2 is not None:
+                results[1]["grade"] = new_grade2
+                results[1]["student_answer_read"] = new_reading2
+
+            # Recalculate grades after potential update
+            grades = [r.get("grade", 0) for r in results if r.get("grade") is not None]
+
         # NEW STRUCTURE: Comprehensive audit with all phases
         comparison_info = {
             # Phase 1: Initial grading (before any verification)
@@ -414,23 +481,27 @@ This information is provided as a reference to help you. You remain free in your
                     results[1], self.providers[1][0],
                     duration_ms=initial_durations[1] if len(initial_durations) > 1 else None
                 ),
-                "difference": abs(grades[0] - grades[1]) if len(grades) == 2 else None
+                "difference": abs(initial_grades[0] - initial_grades[1]) if len(initial_grades) == 2 else None
             },
             # Reading analysis
             "reading_analysis": reading_analysis,
             "reading_consensus": reading_comparison,
+            # Reading re-verification with grade adjustment (when readings differ substantially)
+            "reading_reverification": reading_reverification,
             # Confidence tracking
             "confidence_evolution": confidence_evolution,
             # Timing information
             "timing": {
                 "initial": phase_timings["initial"],
+                "reading_reverification": reading_reverification.get("duration_ms") if reading_reverification else None,
                 "verification": None,
                 "ultimatum": None,
                 "total_ms": None
             },
             # Decision path
             "decision_path": {
-                "initial_agreement": len(grades) == 2 and grades[0] == grades[1],
+                "initial_agreement": len(initial_grades) == 2 and initial_grades[0] == initial_grades[1],
+                "reading_reverification_triggered": reading_reverification is not None,
                 "verification_triggered": False,
                 "ultimatum_triggered": False,
                 "final_method": None
@@ -1565,63 +1636,156 @@ CONFIDENCE: 0.3
         results: List[Dict],
         image_path,
         question_text: str,
-        language: str
-    ) -> List[Dict]:
+        language: str,
+        max_points: float = 5.0,
+        grading_context: str = ""
+    ) -> Tuple[List[Dict], Dict[str, str]]:
         """
         Cross-verify readings by showing each LLM the other's reading.
+        Also re-evaluates the grade if the reading changes.
 
         Args:
-            results: Initial reading results
+            results: Initial reading results (from grading phase)
             image_path: Image path(s)
             question_text: The question
             language: Language
+            max_points: Maximum points for re-grading
+            grading_context: Original grading criteria
 
         Returns:
-            List of verified reading results
+            Tuple of (verified_results, prompts_sent)
         """
         verified = []
+        prompts_sent = {"llm1": None, "llm2": None}
 
         for i, (name, provider) in enumerate(self.providers):
             other_result = results[1 - i]
             other_reading = other_result.get("reading", "")
             my_reading = results[i].get("reading", "")
+            my_grade = results[i].get("grade", 0)
+            other_grade = other_result.get("grade", 0)
 
             if language == "fr":
-                verify_prompt = f"""Tu as lu: "{my_reading}"
+                verify_prompt = f"""─── VÉRIFICATION DE LECTURE ───
+Tu as lu: "{my_reading}"
+Tu as noté: {my_grade}/{max_points}
 
 Un autre correcteur a lu: "{other_reading}"
+Il a noté: {other_grade}/{max_points}
 
 Question: {question_text}
 
-Compare les deux lectures. Si l'autre lecture semble plus précise, adopte-la.
-Sinon, confirme ta lecture. Réponds uniquement avec ta lecture finale.
+─── TA TÂCHE ───
+1. Compare les deux lectures
+2. Si l'autre lecture est plus précise, adopte-la
+3. RÉÉVALUE ta note si ta lecture change significativement
+4. Si tu maintiens ta lecture, confirme ta note
 
-LECTURE FINALE: [ta lecture]
-CONFIDENCE: [0.0 à 1.0]"""
+─── RÈGLES ───
+- Une lecture plus précise peut justifier une note différente
+- Ne change ta note QUE si tu identifies une différence factuelle
+- Explique ta décision
+
+FORMAT DE RÉPONSE:
+LECTURE FINALE: [ta lecture finale]
+CONFIDENCE: [0.0 à 1.0]
+NOTE RÉÉVALUÉE: [ta note sur {max_points}]
+JUSTIFICATION: [pourquoi tu maintiens ou changes]"""
             else:
-                verify_prompt = f"""You read: "{my_reading}"
+                verify_prompt = f"""─── READING VERIFICATION ───
+You read: "{my_reading}"
+You graded: {my_grade}/{max_points}
 
 Another grader read: "{other_reading}"
+They graded: {other_grade}/{max_points}
 
 Question: {question_text}
 
-Compare the two readings. If the other reading seems more accurate, adopt it.
-Otherwise, confirm your reading. Respond only with your final reading.
+─── YOUR TASK ───
+1. Compare the two readings
+2. If the other reading is more accurate, adopt it
+3. RE-EVALUATE your grade if your reading changes significantly
+4. If you maintain your reading, confirm your grade
 
-FINAL READING: [your reading]
-CONFIDENCE: [0.0 to 1.0]"""
+─── RULES ───
+- A more accurate reading may justify a different grade
+- Only change your grade if you identify a factual difference
+- Explain your decision
+
+RESPONSE FORMAT:
+FINAL READING: [your final reading]
+CONFIDENCE: [0.0 to 1.0]
+RE-EVALUATED GRADE: [your grade out of {max_points}]
+JUSTIFICATION: [why you maintain or change]"""
+
+            # Store the prompt
+            prompts_sent[f"llm{i+1}"] = verify_prompt.strip()
 
             try:
                 response = provider.call_vision(verify_prompt, image_path=image_path)
-                parsed = self._parse_reading_response(response)
+                parsed = self._parse_reading_with_grade(response, max_points)
+
+                # Store the raw response
+                parsed["raw_response"] = response
 
                 # If parsing didn't extract reading, use the whole response
                 if not parsed.get("reading"):
                     parsed["reading"] = response
                     parsed["confidence"] = 0.5
+                    parsed["grade"] = my_grade  # Keep original grade
 
                 verified.append(parsed)
-            except Exception:
-                verified.append(results[i])
+            except Exception as e:
+                verified.append({
+                    **results[i],
+                    "error": str(e)
+                })
 
-        return verified
+        return verified, prompts_sent
+
+    def _parse_reading_with_grade(self, response: str, max_points: float = 5.0) -> Dict[str, Any]:
+        """Parse reading response that includes a re-evaluated grade."""
+        result = {
+            "reading": "",
+            "confidence": 0.5,
+            "grade": None,
+            "justification": ""
+        }
+
+        if not response:
+            return result
+
+        lines = response.strip().split('\n')
+        content_parts = []
+
+        for line in lines:
+            line = line.strip()
+
+            if line.upper().startswith("LECTURE FINALE:") or line.upper().startswith("FINAL READING:"):
+                content = line.split(':', 1)[1].strip()
+                content_parts.append(content)
+
+            elif line.upper().startswith("CONFIDENCE:"):
+                try:
+                    result["confidence"] = float(line.split(':', 1)[1].strip())
+                except ValueError:
+                    pass
+
+            elif line.upper().startswith("NOTE RÉÉVALUÉE:") or line.upper().startswith("RE-EVALUATED GRADE:"):
+                try:
+                    grade_str = line.split(':', 1)[1].strip()
+                    # Extract number from string like "2.0/5" or just "2.0"
+                    grade_str = grade_str.split('/')[0].strip()
+                    result["grade"] = float(grade_str)
+                except ValueError:
+                    pass
+
+            elif line.upper().startswith("JUSTIFICATION:"):
+                result["justification"] = line.split(':', 1)[1].strip()
+
+            elif content_parts and line:
+                # Continuation of reading
+                content_parts.append(line)
+
+        result["reading"] = " ".join(content_parts) if content_parts else response
+        return result
