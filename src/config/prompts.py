@@ -490,10 +490,7 @@ def _format_questions_for_feedback(graded_copy: Any, language: str) -> str:
     lines = []
     for q_id, grade in graded_copy.grades.items():
         feedback = graded_copy.student_feedback.get(q_id, "")
-        if language == 'fr':
-            lines.append(f"- {q_id}: {grade} points ({feedback})")
-        else:
-            lines.append(f"- {q_id}: {grade} points ({feedback})")
+        lines.append(f"- {q_id}: {grade} points ({feedback})")
     return "\n".join(lines)
 
 
