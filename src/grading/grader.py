@@ -132,8 +132,8 @@ class IntelligentGrader:
                     f"Le programme doit demander à l'utilisateur avant de noter."
                 )
 
-            graded.grades[question_id] = result["grade"]
-            graded.confidence_by_question[question_id] = result["confidence"]
+            graded.grades[question_id] = result.get("grade") or 0
+            graded.confidence_by_question[question_id] = result.get("confidence") or 0
             graded.internal_reasoning[question_id] = result.get("internal_reasoning", "")
             graded.student_feedback[question_id] = result.get("student_feedback", "")
 
@@ -144,18 +144,22 @@ class IntelligentGrader:
                     graded.llm_comparison = {}
                 graded.llm_comparison[question_id] = comp_data
 
-            total_score += result["grade"]
+            # Handle None grade (error case)
+            grade = result.get("grade") or 0
+            confidence = result.get("confidence") or 0
+
+            total_score += grade
             max_score += max_points
-            confidences.append(result["confidence"])
+            confidences.append(confidence)
 
             # Notify question done
             await self._notify_progress('question_done', {
                 'question_id': question_id,
                 'question_index': q_idx + 1,
                 'total_questions': total_questions,
-                'grade': result["grade"],
+                'grade': grade,
                 'max_points': max_points,
-                'confidence': result["confidence"],
+                'confidence': confidence,
                 'agreement': comp_data.get('final_agreement', True) if comp_data else True,
                 'final_method': comp_data.get('decision_path', {}).get('final_method', 'consensus') if comp_data else 'single_llm',
                 'copy_id': copy.id

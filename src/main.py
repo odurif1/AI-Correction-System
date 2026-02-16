@@ -385,8 +385,13 @@ async def command_correct(args):
     llm_status = {'results': {}, 'total': 2}
     provider_names = [name for name, _ in orchestrator.ai.providers] if is_comparison_mode else []
 
+    # Track token usage per copy
+    prev_tokens = {'total': 0}
+
     # Progress callback for real-time display
     async def progress_callback(event_type: str, data: dict):
+        nonlocal prev_tokens
+
         if event_type == 'copy_start':
             copy_idx = data['copy_index']
             total = data['total_copies']
@@ -469,12 +474,22 @@ async def command_correct(args):
             pct = (score / max_s * 100) if max_s > 0 else 0
             conf = data['confidence']
 
+            # Calculate tokens used for this copy
+            token_usage = data.get('token_usage')
+            tokens_str = ""
+            if token_usage:
+                current_total = token_usage.get('total_tokens', 0)
+                tokens_this_copy = current_total - prev_tokens['total']
+                prev_tokens['total'] = current_total
+                if tokens_this_copy > 0:
+                    tokens_str = f" [dim]│ {tokens_this_copy:,} tokens[/dim]"
+
             if pct >= 50:
                 color = "green"
             else:
                 color = "red"
 
-            console.print(f"  [bold {color}]Total: {score:.1f}/{max_s} ({pct:.0f}%)[/bold {color}] [dim]conf: {conf:.0%}[/dim]")
+            console.print(f"  [bold {color}]Total: {score:.1f}/{max_s} ({pct:.0f}%)[/bold {color}] [dim]confiance: {conf:.0%}[/dim]{tokens_str}")
 
         elif event_type == 'feedback_start':
             console.print(f"  [dim]Génération de l'appréciation...[/dim]", end="")

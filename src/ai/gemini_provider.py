@@ -12,6 +12,7 @@ from pathlib import Path
 
 from PIL import Image
 import google.genai as genai
+from tenacity import retry, stop_after_attempt, retry_if_exception_type, wait_exponential
 
 from core.models import AICallResult
 from config.settings import get_settings
@@ -158,6 +159,11 @@ class GeminiProvider:
             }
         return None
 
+    @retry(
+        stop=stop_after_attempt(MAX_RETRIES),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(Exception)
+    )
     def call_vision(
         self,
         prompt: str,
@@ -233,6 +239,11 @@ class GeminiProvider:
 
         return result
 
+    @retry(
+        stop=stop_after_attempt(MAX_RETRIES),
+        wait=wait_exponential(multiplier=1, min=2, max=10),
+        retry=retry_if_exception_type(Exception)
+    )
     def call_text(
         self,
         prompt: str,

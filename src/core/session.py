@@ -389,6 +389,11 @@ class GradingSessionOrchestrator:
 
             # Notify copy done
             if progress_callback:
+                # Get token usage for this copy
+                token_usage = None
+                if hasattr(self.ai, 'get_token_usage'):
+                    token_usage = self.ai.get_token_usage()
+
                 await self._call_callback(progress_callback, 'copy_done', {
                     'copy_index': i + 1,
                     'total_copies': total_copies,
@@ -396,7 +401,8 @@ class GradingSessionOrchestrator:
                     'student_name': copy.student_name,
                     'total_score': graded.total_score,
                     'max_score': graded.max_score,
-                    'confidence': graded.confidence
+                    'confidence': graded.confidence,
+                    'token_usage': token_usage
                 })
 
         self._grading_complete = True
