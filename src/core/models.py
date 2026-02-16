@@ -174,7 +174,7 @@ class GradedCopy(BaseModel):
     #   "llm1": {"provider": "gemini", "grade": 4.0, "reasoning": "..."},
     #   "llm2": {"provider": "gemini-pro", "grade": 3.5, "reasoning": "..."},
     #   "initial_difference": 0.5,
-    #   "after_verification": {"llm1": 4.0, "llm2": 4.0},
+    #   "after_cross_verification": {"llm1": 4.0, "llm2": 4.0},
     #   "final_agreement": true
     # }
 

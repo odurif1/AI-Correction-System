@@ -23,8 +23,8 @@ audit.json
 │
 ├── confidence_evolution       # Évolution de la confiance
 │   ├── initial                # Confiance initiale
-│   ├── after_verification     # Après vérification croisée
-│   └── after_round2           # Après ultimatum (si applicable)
+│   ├── after_cross_verification     # Après vérification croisée
+│   └── after_ultimatum           # Après ultimatum (si applicable)
 │
 ├── timing                     # Informations temporelles
 │   ├── initial                # Durée phase initiale
@@ -42,12 +42,12 @@ audit.json
 │   ├── count                  # Nombre d'images
 │   └── paths                  # Chemins des images
 │
-├── after_verification         # Phase 2: Après vérification croisée
+├── after_cross_verification         # Phase 2: Après vérification croisée
 │   ├── llm1                   # Résultat LLM1 + prompt envoyé
 │   ├── llm2                   # Résultat LLM2 + prompt envoyé
 │   └── difference             # Nouvel écart
 │
-├── after_round2               # Phase 3: Après ultimatum (optionnel)
+├── after_ultimatum               # Phase 3: Après ultimatum (optionnel)
 │   ├── llm1                   # Résultat LLM1 + prompt envoyé
 │   ├── llm2                   # Résultat LLM2 + prompt envoyé
 │   └── difference             # Nouvel écart
@@ -129,8 +129,8 @@ Compare ce que chaque LLM a lu de la réponse de l'élève.
 ```json
 "confidence_evolution": {
   "initial": {"llm1": 1.0, "llm2": 1.0},
-  "after_verification": {"llm1": 0.8, "llm2": 1.0},
-  "after_round2": {"llm1": 0.9, "llm2": 0.9}
+  "after_cross_verification": {"llm1": 0.8, "llm2": 1.0},
+  "after_ultimatum": {"llm1": 0.9, "llm2": 0.9}
 }
 ```
 
@@ -183,12 +183,12 @@ Toutes les durées sont en millisecondes.
 
 ---
 
-### 6. `after_verification` - Après vérification croisée
+### 6. `after_cross_verification` - Après vérification croisée
 
 Contient les résultats **après** que chaque LLM a vu le raisonnement de l'autre.
 
 ```json
-"after_verification": {
+"after_cross_verification": {
   "llm1": {
     "provider": "gemini-2.5-flash",
     "grade": 0.75,
@@ -265,7 +265,7 @@ Ou si accord:
 
     "confidence_evolution": {
       "initial": {"llm1": 1.0, "llm2": 1.0},
-      "after_verification": {"llm1": 0.8, "llm2": 1.0}
+      "after_cross_verification": {"llm1": 0.8, "llm2": 1.0}
     },
 
     "timing": {
@@ -287,7 +287,7 @@ Ou si accord:
       "paths": ["data/session/copies/1/page_0.png"]
     },
 
-    "after_verification": {
+    "after_cross_verification": {
       "llm1": {
         "provider": "gemini-2.5-flash",
         "grade": 0.75,
@@ -305,7 +305,7 @@ Ou si accord:
       "difference": 0.75
     },
 
-    "after_round2": null,
+    "after_ultimatum": null,
 
     "final": {
       "grade": 0.38,
@@ -322,9 +322,9 @@ Ou si accord:
 
 ### Pourquoi LLM1 a changé sa note?
 
-1. Regarder `initial.llm1.grade` → `after_verification.llm1.grade`
-2. Lire `after_verification.llm1.prompt_sent` pour voir ce qui a influencé
-3. Lire `after_verification.llm1.internal_reasoning` pour comprendre le changement
+1. Regarder `initial.llm1.grade` → `after_cross_verification.llm1.grade`
+2. Lire `after_cross_verification.llm1.prompt_sent` pour voir ce qui a influencé
+3. Lire `after_cross_verification.llm1.internal_reasoning` pour comprendre le changement
 
 ### Pourquoi y a-t-il un désaccord?
 

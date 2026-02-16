@@ -214,6 +214,17 @@ class OpenAIProvider:
 
         return result
 
+    def get_token_usage(self) -> Dict[str, int]:
+        """Get total token usage from all calls."""
+        prompt_tokens = sum(c.prompt_tokens or 0 for c in self.call_history)
+        completion_tokens = sum(c.completion_tokens or 0 for c in self.call_history)
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "calls": len(self.call_history)
+        }
+
     @retry(
         stop=stop_after_attempt(MAX_RETRIES),
         retry=retry_if_exception_type(OpenAIError)

@@ -28,7 +28,7 @@ class DisagreementRecord:
     llm2_name: str
     llm2_result: Dict[str, Any]
     initial_difference: float
-    after_verification: Optional[Dict[str, float]] = None
+    after_cross_verification: Optional[Dict[str, float]] = None
     resolved: bool = False
 
 
@@ -146,6 +146,27 @@ class ComparisonProvider:
 
     def get_jurisprudence(self) -> Dict[str, Any]:
         """Get current jurisprudence data."""
+        return self.jurisprudence
+
+    def get_token_usage(self) -> Dict[str, Any]:
+        """Get total token usage from all providers."""
+        total_prompt = 0
+        total_completion = 0
+        provider_usage = {}
+
+        for name, provider in self.providers:
+            if hasattr(provider, 'get_token_usage'):
+                usage = provider.get_token_usage()
+                provider_usage[name] = usage
+                total_prompt += usage.get('prompt_tokens', 0)
+                total_completion += usage.get('completion_tokens', 0)
+
+        return {
+            "prompt_tokens": total_prompt,
+            "completion_tokens": total_completion,
+            "total_tokens": total_prompt + total_completion,
+            "by_provider": provider_usage
+        }
         return self.jurisprudence
 
     @property
@@ -420,8 +441,8 @@ This information is provided as a reference to help you. You remain free in your
                 "paths": image_path if isinstance(image_path, list) else [image_path] if image_path else []
             },
             # Will be filled during verification phases
-            "after_verification": None,
-            "after_round2": None,
+            "after_cross_verification": None,
+            "after_ultimatum": None,
             # Final result
             "final": None
         }
@@ -458,13 +479,13 @@ This information is provided as a reference to help you. You remain free in your
             verified_grades = [r.get("grade", 0) for r in verified_results if r.get("grade") is not None]
 
             # Update confidence evolution
-            confidence_evolution["after_verification"] = {
+            confidence_evolution["after_cross_verification"] = {
                 "llm1": verified_results[0].get("confidence"),
                 "llm2": verified_results[1].get("confidence")
             }
 
             # Store FULL verification results with prompts
-            comparison_info["after_verification"] = {
+            comparison_info["after_cross_verification"] = {
                 "llm1": build_llm_audit_info(
                     verified_results[0], self.providers[0][0],
                     prompt_sent=verification_prompts.get("llm1")
@@ -500,12 +521,12 @@ This information is provided as a reference to help you. You remain free in your
                     final_grades = [r.get("grade", 0) for r in final_results if r.get("grade") is not None]
 
                     # Update confidence evolution
-                    confidence_evolution["after_round2"] = {
+                    confidence_evolution["after_ultimatum"] = {
                         "llm1": final_results[0].get("confidence"),
                         "llm2": final_results[1].get("confidence")
                     }
 
-                    comparison_info["after_round2"] = {
+                    comparison_info["after_ultimatum"] = {
                         "llm1": build_llm_audit_info(
                             final_results[0], self.providers[0][0],
                             prompt_sent=round2_prompts.get("llm1")
@@ -542,7 +563,7 @@ This information is provided as a reference to help you. You remain free in your
                     llm2_name=self.providers[1][0],
                     llm2_result=verified_results[1],
                     initial_difference=comparison_info["initial"]["difference"],
-                    after_verification={
+                    after_cross_verification={
                         "llm1": verified_grades[0],
                         "llm2": verified_grades[1]
                     },
@@ -591,8 +612,21 @@ This information is provided as a reference to help you. You remain free in your
 
             return self._merge_results(verified_results, comparison_info)
 
-        # Fallback: return first result (no difference or single grade)
+        # Fallback: return first result (no difference, single grade, or error case)
         comparison_info["timing"]["total_ms"] = round((time.time() - total_start_time) * 1000, 1)
+
+        # Handle case where one LLM had an error or grades list is incomplete
+        if comparison_info.get("final") is None:
+            # Use the first valid result
+            valid_result = next((r for r in results if r.get("grade") is not None), results[0])
+            comparison_info["final"] = {
+                "grade": valid_result.get("grade", 0),
+                "agreement": True,
+                "method": "single_valid" if len(grades) < 2 else "consensus"
+            }
+            if len(grades) < 2:
+                comparison_info["decision_path"]["final_method"] = "single_valid"
+
         return self._merge_results(results, comparison_info)
 
     async def _cross_verify_with_prompts(
@@ -625,47 +659,47 @@ This information is provided as a reference to help you. You remain free in your
 
             language = kwargs.get("language", "fr")
 
-            # Build verification prompt
+            # Build verification prompt - force independent verification
             if language == "fr":
-                lecture_section = ""
-                if my_answer_read or other_answer_read:
-                    lecture_section = f"""
-─── COMPARAISON DES LECTURES ───
-Ta lecture: {my_answer_read or "(non spécifiée)"}
-Autre lecture: {other_answer_read or "(non spécifiée)"}
-→ Les lectures sont-elles identiques? Si non, laquelle est correcte?
-"""
-                verify_prompt = f"""
-─── AUTRE CORRECTEUR ───
-Note: {other_grade}/{kwargs.get('max_points', 5)}
-Raisonnement: {other_reasoning}
-{lecture_section}─── INSTRUCTIONS ───
-Ta note: {my_grade} | Autre note: {other_grade}
+                verify_prompt = f"""─── CONTESTATION ───
+Un autre correcteur a noté {other_grade}/{kwargs.get('max_points', 5)} (tu as mis {my_grade}/{kwargs.get('max_points', 5)}).
 
-1. LIS le raisonnement et compare les lectures ci-dessus.
-2. Tu ne peux PAS prétendre converger si les interprétations diffèrent.
-3. Si tu maintiens ta note, explique pourquoi tu rejettes l'autre analyse.
-"""
+Son raisonnement: {other_reasoning[:500]}
+
+─── TA TÂCHE OBLIGATOIRE ───
+1. REGARDE L'IMAGE À NOUVEAU - ne te fie PAS à son avis
+2. Analyse OBJECTIVEMENT ce que tu vois (forme, caractéristiques)
+3. Décide TOI-MÊME de ta note finale
+
+RÈGLES:
+- Ne change ta note QUE si tu vois toi-même l'erreur sur l'image
+- Si tu maintiens ta note: justifie par des observations visuelles
+- Si tu changes: explique ce que tu vois maintenant que tu n'avais pas vu
+- SI INCERTAIN: abaisse ta CONFIANCE (< 0.5) pour signaler le doute
+
+INTERDICTION: Ne change pas ta note juste parce que l'autre dit autre chose.
+
+Question originale: {kwargs.get('question_text', '')}"""
             else:
-                lecture_section = ""
-                if my_answer_read or other_answer_read:
-                    lecture_section = f"""
-─── READING COMPARISON ───
-Your reading: {my_answer_read or "(not specified)"}
-Other reading: {other_answer_read or "(not specified)"}
-→ Are the readings identical? If not, which is correct?
-"""
-                verify_prompt = f"""
-─── OTHER GRADER ───
-Grade: {other_grade}/{kwargs.get('max_points', 5)}
-Reasoning: {other_reasoning}
-{lecture_section}─── INSTRUCTIONS ───
-Your grade: {my_grade} | Other grade: {other_grade}
+                verify_prompt = f"""─── DISAGREEMENT ───
+Another grader gave {other_grade}/{kwargs.get('max_points', 5)} (you gave {my_grade}/{kwargs.get('max_points', 5)}).
 
-1. READ the reasoning and compare the readings above.
-2. You CANNOT claim convergence if interpretations differ.
-3. If you maintain your grade, explain why you reject the other analysis.
-"""
+Their reasoning: {other_reasoning[:500]}
+
+─── YOUR MANDATORY TASK ───
+1. LOOK AT THE IMAGE AGAIN - do NOT trust their opinion
+2. Analyze OBJECTIVELY what you see (shape, characteristics)
+3. Decide YOURSELF on your final grade
+
+RULES:
+- Only change your grade if YOU see the error on the image
+- If you maintain: justify with visual observations
+- If you change: explain what you now see that you missed
+- IF UNCERTAIN: lower your CONFIDENCE (< 0.5) to signal doubt
+
+FORBIDDEN: Do not change your grade just because the other says so.
+
+Original question: {kwargs.get('question_text', '')}"""
 
             # Store the prompt
             prompts_sent[f"llm{i+1}"] = verify_prompt.strip()
@@ -821,33 +855,45 @@ INCORRECT: "Convergence" when readings are contradictory.
 
             if language == "fr":
                 verify_context = f"""
-─── ULTIMATUM - DERNIÈRE CHANCE ───
-Tu as indiqué converger, mais l'autre correcteur a MAINTENU sa note de {other_grade}/{kwargs.get('max_points', 5)}.
-Ta note originale: {my_original_grade}/{kwargs.get('max_points', 5)}
-Ta note actuelle: {my_round1_grade}/{kwargs.get('max_points', 5)}
+─── ULTIMATUM - DÉCISION FINALE ───
+DÉSACCORD PERSISTANT:
+- Ta note: {my_round1_grade}/{kwargs.get('max_points', 5)}
+- Autre note: {other_grade}/{kwargs.get('max_points', 5)}
 
-Son raisonnement maintenu: {other_reasoning}
+Son raisonnement: {other_reasoning[:400]}
 
-─── TU DOIS CHOISIR ───
-Option A: Tu acceptes SA note ({other_grade}) → Reconnais que son analyse est meilleure
-Option B: Tu maintiens TA note ({my_round1_grade}) → Justification RENFORCÉE obligatoire
+─── REGARDE L'IMAGE ───
+1. OBSERVE objectivement l'image (ne te fie à aucun avis)
+2. Décris ce que tu VOIS (forme, caractéristiques visuelles)
+3. Prends TA décision basée sur l'image
 
-"Converger" n'est PLUS une option. Les notes sont différentes, tu DOIS trancher.
+Tu dois choisir:
+- Option A: Accepter sa note → justifie pourquoi son analyse est correcte
+- Option B: Maintenir ta note → observations visuelles qui supportent TA position
+- SI INCERTAIN: abaisse ta CONFIANCE (< 0.5) pour signaler que tu ne sais pas
+
+INTERDICTION: Ne choisis pas au hasard. Ta décision doit être basée sur ce que tu VOIS.
 """
             else:
                 verify_context = f"""
-─── ULTIMATUM - LAST CHANCE ───
-You indicated convergence, but the other grader MAINTAINED their grade of {other_grade}/{kwargs.get('max_points', 5)}.
-Your original grade: {my_original_grade}/{kwargs.get('max_points', 5)}
-Your current grade: {my_round1_grade}/{kwargs.get('max_points', 5)}
+─── ULTIMATUM - FINAL DECISION ───
+PERSISTENT DISAGREEMENT:
+- Your grade: {my_round1_grade}/{kwargs.get('max_points', 5)}
+- Other grade: {other_grade}/{kwargs.get('max_points', 5)}
 
-Their maintained reasoning: {other_reasoning}
+Their reasoning: {other_reasoning[:400]}
 
-─── YOU MUST CHOOSE ───
-Option A: Accept THEIR grade ({other_grade}) → Acknowledge their analysis is better
-Option B: Maintain YOUR grade ({my_round1_grade}) → REINFORCED justification required
+─── LOOK AT THE IMAGE ───
+1. OBSERVE the image objectively (don't rely on any opinion)
+2. Describe what you SEE (shape, visual characteristics)
+3. Make YOUR decision based on the image
 
-"Converge" is NO LONGER an option. Grades differ, you MUST decide.
+You must choose:
+- Option A: Accept their grade → justify why their analysis is correct
+- Option B: Maintain your grade → visual observations supporting YOUR position
+- IF UNCERTAIN: lower your CONFIDENCE (< 0.5) to signal you don't know
+
+FORBIDDEN: Don't choose randomly. Your decision must be based on what you SEE.
 """
 
             # Call provider with ultimatum context
@@ -901,33 +947,45 @@ Option B: Maintain YOUR grade ({my_round1_grade}) → REINFORCED justification r
 
             if language == "fr":
                 ultimatum_prompt = f"""
-─── ULTIMATUM - DERNIÈRE CHANCE ───
-Tu as indiqué converger, mais l'autre correcteur a MAINTENU sa note de {other_grade}/{kwargs.get('max_points', 5)}.
-Ta note originale: {my_original_grade}/{kwargs.get('max_points', 5)}
-Ta note actuelle: {my_round1_grade}/{kwargs.get('max_points', 5)}
+─── ULTIMATUM - DÉCISION FINALE ───
+DÉSACCORD PERSISTANT:
+- Ta note: {my_round1_grade}/{kwargs.get('max_points', 5)}
+- Autre note: {other_grade}/{kwargs.get('max_points', 5)}
 
-Son raisonnement maintenu: {other_reasoning}
+Son raisonnement: {other_reasoning[:400]}
 
-─── TU DOIS CHOISIR ───
-Option A: Tu acceptes SA note ({other_grade}) → Reconnais que son analyse est meilleure
-Option B: Tu maintiens TA note ({my_round1_grade}) → Justification RENFORCÉE obligatoire
+─── REGARDE L'IMAGE ───
+1. OBSERVE objectivement l'image (ne te fie à aucun avis)
+2. Décris ce que tu VOIS (forme, caractéristiques visuelles)
+3. Prends TA décision basée sur l'image
 
-"Converger" n'est PLUS une option. Les notes sont différentes, tu DOIS trancher.
+Tu dois choisir:
+- Option A: Accepter sa note → justifie pourquoi son analyse est correcte
+- Option B: Maintenir ta note → observations visuelles qui supportent TA position
+- SI INCERTAIN: abaisse ta CONFIANCE (< 0.5) pour signaler que tu ne sais pas
+
+INTERDICTION: Ne choisis pas au hasard. Ta décision doit être basée sur ce que tu VOIS.
 """
             else:
                 ultimatum_prompt = f"""
-─── ULTIMATUM - LAST CHANCE ───
-You indicated convergence, but the other grader MAINTAINED their grade of {other_grade}/{kwargs.get('max_points', 5)}.
-Your original grade: {my_original_grade}/{kwargs.get('max_points', 5)}
-Your current grade: {my_round1_grade}/{kwargs.get('max_points', 5)}
+─── ULTIMATUM - FINAL DECISION ───
+PERSISTENT DISAGREEMENT:
+- Your grade: {my_round1_grade}/{kwargs.get('max_points', 5)}
+- Other grade: {other_grade}/{kwargs.get('max_points', 5)}
 
-Their maintained reasoning: {other_reasoning}
+Their reasoning: {other_reasoning[:400]}
 
-─── YOU MUST CHOOSE ───
-Option A: Accept THEIR grade ({other_grade}) → Acknowledge their analysis is better
-Option B: Maintain YOUR grade ({my_round1_grade}) → REINFORCED justification required
+─── LOOK AT THE IMAGE ───
+1. OBSERVE the image objectively (don't rely on any opinion)
+2. Describe what you SEE (shape, visual characteristics)
+3. Make YOUR decision based on the image
 
-"Converge" is NO LONGER an option. Grades differ, you MUST decide.
+You must choose:
+- Option A: Accept their grade → justify why their analysis is correct
+- Option B: Maintain your grade → visual observations supporting YOUR position
+- IF UNCERTAIN: lower your CONFIDENCE (< 0.5) to signal you don't know
+
+FORBIDDEN: Don't choose randomly. Your decision must be based on what you SEE.
 """
 
             # Store the prompt
@@ -993,7 +1051,7 @@ Option B: Maintain YOUR grade ({my_round1_grade}) → REINFORCED justification r
 
         Args:
             results: List of results from providers
-            comparison_info: Comparison metadata (NEW STRUCTURE with initial/after_verification/final)
+            comparison_info: Comparison metadata (NEW STRUCTURE with initial/after_cross_verification/final)
 
         Returns:
             Merged result
@@ -1014,7 +1072,8 @@ Option B: Maintain YOUR grade ({my_round1_grade}) → REINFORCED justification r
             merged["comparison"] = comparison_info
 
         # Check if final decision indicates disagreement (new structure)
-        final_info = comparison_info.get("final", {}) if comparison_info else {}
+        # Handle case where comparison_info["final"] might be None
+        final_info = (comparison_info.get("final") or {}) if comparison_info else {}
         is_agreement = final_info.get("agreement", True)
 
         # If disagreement, average the grades
@@ -1209,7 +1268,7 @@ Option B: Maintain YOUR grade ({my_round1_grade}) → REINFORCED justification r
         vnorm1 = normalize_name(vname1)
         vnorm2 = normalize_name(vname2)
 
-        comparison_info["after_verification"] = {
+        comparison_info["after_cross_verification"] = {
             "llm1": vname1,
             "llm2": vname2
         }
@@ -1418,7 +1477,7 @@ Consider this detection. If you agree, confirm. Otherwise, explain why.
         vreading1 = verified_readings[0].get("reading", "")
         vreading2 = verified_readings[1].get("reading", "")
 
-        comparison_info["after_verification"] = {
+        comparison_info["after_cross_verification"] = {
             "llm1": vreading1,
             "llm2": vreading2
         }

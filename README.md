@@ -1,55 +1,143 @@
 # AI Correction System
 
-Système de correction intelligent utilisant l'IA Vision-Language pour corriger des copies d'élèves avec analyse croisée, vérification de cohérence et calibration rétroactive.
+**Correction automatique de copies utilisant deux IA en parallèle pour garantir fiabilité et équité.**
 
-## Fonctionnalités
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-### Double LLM avec Comparaison
-- **Correction parallèle**: Deux LLM notent chaque question en parallèle
-- **Vérification croisée**: En cas de désaccord, chaque LLM voit le raisonnement de l'autre
-- **Détection de fausse convergence**: Identifie quand les LLM prétendent être d'accord mais ont des notes différentes
-- **Round 2 "Ultimatum"**: Force une décision réelle si la vérification croisée échoue
+---
 
-### Consensus de Lecture (activé par défaut)
-- **Phase 1 - Lecture**: Les LLM décrivent ce qu'ils voient avant de noter
-- **Détection de contradictions**: Erlenmeyer vs fiole jaugée, couleurs, formes...
-- **Validation utilisateur**: Si les lectures divergent, l'enseignant tranche
-- **Désactivation**: Utiliser `--skip-reading` pour noter directement sans validation de lecture
+## Pourquoi ce système ?
 
-### Autres fonctionnalités
-- **IA Vision-Language**: "Voit" et comprend directement l'écriture manuscrite
-- **Analyse croisée**: Regroupe les réponses similaires pour garantir l'équité
-- **Jurisprudence**: Les décisions passées de l'enseignant influencent les corrections futures
-- **Stockage local**: Toutes les données en fichiers JSON - pas de base de données externe
+| Problème | Solution |
+|----------|----------|
+| Une IA peut se tromper | **Deux IA notent en parallèle** et se confrontent |
+| Les IA peuvent "inventer" | **Consensus de lecture** : les IA décrivent ce qu'elles voient avant de noter |
+| Manque de traçabilité | **Audit complet** : chaque décision est documentée |
+| Feedback trop "gentil" | **Retours professionnels** : sobres, adaptés à la difficulté |
 
-## Installation
+---
+
+## Démarrage rapide
 
 ```bash
-# Cloner le repository
-git clone https://github.com/votre-repo/ai-correction.git
-cd ai-correction
-
-# Installer les dépendances
+# 1. Installer
 pip install -r requirements.txt
 
-# Configurer les variables d'environnement
+# 2. Configurer les clés API
 cp .env.example .env
-# Éditer .env avec vos clés API
+# Éditer .env avec vos clés Gemini et/ou OpenAI
+
+# 3. Lancer une correction
+python -m src.main correct copies/*.pdf --auto
 ```
+
+---
+
+## Exemple de sortie
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 Session: sess_20240115_143052
+🤖 Modèles: gemini-2.5-flash + gpt-4o
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+━━━ Copie 1/3 ━━━ Martin Jean ━━━
+  Q1 (1/6) ▪ gemini: 1.0 ┃ gpt-4o: 1.0
+  ✓ Q1: 1.0/1.0                          ← Accord immédiat (vert)
+  Q2 (2/6) ▪ gemini: 0.5 ┃ gpt-4o: 1.0
+  ✓ Q2: 0.75/2.0                         ← Accord après vérification (jaune)
+  Q3 (3/6) ▪ gemini: 2.0 ┃ gpt-4o: 0.0
+  ⚠ Q3: 1.0/3.0                          ← Moyenne (rouge)
+
+  Total: 2.75/6.0 (46%) conf: 85%
+
+━━━ Résumé ━━━
+  Copie 1: Martin Jean     2.75/6.0  (46%)
+  Copie 2: Dupont Marie    4.50/6.0  (75%)
+  Copie 3: Bernard Luc     3.00/6.0  (50%)
+
+📊 Token Usage:
+  Total: 45,230 tokens
+  gemini-2.5-flash: 23,500 tokens (15 calls)
+  gpt-4o: 21,730 tokens (15 calls)
+```
+
+---
+
+## Options CLI
+
+| Option | Description |
+|--------|-------------|
+| `--auto` | Mode automatique (pas d'interaction) |
+| `--single` | Un seul LLM (plus rapide, moins coûteux) |
+| `--skip-reading` | Ignorer le consensus de lecture |
+| `--scale Q1=5,Q2=3` | Définir le barème |
+| `--annotate` | Générer les PDFs annotés |
+| `--export json,csv` | Formats d'export |
+
+---
+
+## Workflow de correction
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  PDF → Extraction pages → Détection nom                     │
+│                                                              │
+│  Pour chaque question:                                       │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │ Phase 1: LECTURE (par défaut)                           ││
+│  │   LLM1 décrit → LLM2 décrit → Validation si désaccord   ││
+│  ├─────────────────────────────────────────────────────────┤│
+│  │ Phase 2: NOTATION                                        ││
+│  │   LLM1 note ║ LLM2 note (parallèle)                      ││
+│  ├─────────────────────────────────────────────────────────┤│
+│  │ Si désaccord:                                            ││
+│  │   → Vérification croisée (chaque LLM voit l'autre)       ││
+│  │   → Ultimatum si fausse convergence                      ││
+│  │   → Demande utilisateur si persistant                    ││
+│  └─────────────────────────────────────────────────────────┘│
+│                                                              │
+│  → Génération appréciation → Export                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Fonctionnalités clés
+
+### Double LLM avec confrontation
+- Deux IA notent indépendamment chaque réponse
+- En cas de désaccord, elles doivent se justifier face à l'autre
+- Détection des "fausses convergences" (prétendent être d'accord mais notes différentes)
+
+### Consensus de lecture
+- Les IA décrivent ce qu'elles voient **avant** de noter
+- Détecte les erreurs d'interprétation (ex: erlenmeyer vs fiole jaugée)
+- Désactivable avec `--skip-reading` pour gagner du temps
+
+### Feedback professionnel
+- Ton sobre, pas de "bravo" ou "continue comme ça"
+- Adapté à la difficulté (question facile = retour minimal)
+- Max 25 mots
+
+### Audit complet
+- Chaque décision est tracée
+- Prompts exacts envoyés aux IA conservés
+- Évolution de la confiance documentée
+
+---
 
 ## Configuration
 
-### Variables d'environnement
+### Variables d'environnement (.env)
 
 ```bash
-# Provider principal
-AI_CORRECTION_LLM_PROVIDER=gemini  # ou openai
+# Clés API (au moins une requise)
+AI_CORRECTION_GEMINI_API_KEY=your_key
+AI_CORRECTION_OPENAI_API_KEY=your_key
 
-# Clés API
-AI_CORRECTION_GEMINI_API_KEY=votre_cle_gemini
-AI_CORRECTION_OPENAI_API_KEY=votre_cle_openai
-
-# Mode comparaison (double LLM)
+# Mode comparaison (défaut: true avec les deux clés)
 AI_CORRECTION_COMPARISON_MODE=true
 AI_CORRECTION_LLM1_PROVIDER=gemini
 AI_CORRECTION_LLM1_MODEL=gemini-2.5-flash
@@ -57,217 +145,55 @@ AI_CORRECTION_LLM2_PROVIDER=openai
 AI_CORRECTION_LLM2_MODEL=gpt-4o
 ```
 
-## Utilisation
-
-### CLI
-
-Corriger des copies:
-
-```bash
-python src/main.py correct copies/*.pdf
-```
-
-Avec options:
-
-```bash
-# Mode automatique (pas d'interaction)
-python src/main.py correct copies/*.pdf --auto
-
-# Utiliser un seul LLM (plus rapide, moins coûteux)
-python src/main.py correct copies/*.pdf --single
-
-# Ignorer le consensus de lecture (les LLM notent directement)
-python src/main.py correct copies/*.pdf --skip-reading
-
-# Spécifier le barème
-python src/main.py correct copies/*.pdf --scale Q1=5,Q2=3,Q3=4
-```
-
-Voir le statut d'une session:
-
-```bash
-python src/main.py status <session_id>
-```
-
-Voir les analytiques:
-
-```bash
-python src/main.py analytics <session_id>
-```
-
-### API
-
-Démarrer le serveur:
-
-```bash
-uvicorn src.api.app:app --reload
-```
-
-Endpoints:
-
-- `POST /api/sessions` - Créer une session
-- `POST /api/sessions/{id}/upload` - Upload des PDFs
-- `POST /api/sessions/{id}/grade` - Démarrer la correction
-- `POST /api/sessions/{id}/decisions` - Soumettre une décision enseignant
-- `GET /api/sessions/{id}` - Statut de la session
-
-## Architecture
-
-```
-src/
-├── core/
-│   ├── models.py           # Modèles Pydantic (GradingSession, GradedCopy, etc.)
-│   └── session.py          # Orchestration des sessions
-├── ai/
-│   ├── gemini_provider.py  # Provider Google Gemini
-│   ├── openai_provider.py  # Provider OpenAI
-│   ├── comparison_provider.py  # Double LLM avec comparaison
-│   └── response_parser.py  # Parsing des réponses structurées
-├── vision/
-│   └── pdf_reader.py       # Lecture des PDFs
-├── analysis/
-│   ├── cross_copy.py       # Analyse croisée des copies
-│   └── clustering.py       # Clustering des réponses
-├── grading/
-│   ├── grader.py           # Moteur de notation
-│   ├── uncertainty.py      # Gestion des incertitudes
-│   └── feedback.py         # Génération de feedback
-├── storage/
-│   └── file_store.py       # Stockage JSON local
-├── api/
-│   └── app.py              # API FastAPI
-└── main.py                 # Point d'entrée CLI
-```
+---
 
 ## Structure des données
 
 ```
 data/
-├── {session_id}/
-│   ├── session.json        # État de la session
-│   ├── policy.json         # Barème de correction
-│   ├── copies/
-│   │   └── {n}/
-│   │       ├── original.pdf      # PDF original
-│   │       ├── annotation.json   # Infos essentielles pour annotation
-│   │       └── audit.json        # TOUT: échanges LLM, debug
-│   ├── annotated/          # PDFs annotés (export)
-│   └── reports/            # Rapports (export)
-└── _index.json             # Index des sessions
+└── {session_id}/
+    ├── session.json           # État de la session
+    ├── policy.json            # Barème
+    ├── copies/
+    │   └── {n}/
+    │       ├── original.pdf   # PDF original
+    │       ├── annotation.json # Notes, feedbacks (léger)
+    │       └── audit.json     # Tout: échanges LLM (complet)
+    ├── annotated/             # PDFs annotés (export)
+    └── reports/               # CSV, JSON (export)
 ```
 
-### Fichiers par copie
+---
 
-| Fichier | Contenu | Usage |
-|---------|---------|-------|
-| `annotation.json` | Nom élève, notes, feedbacks | Annotation du PDF |
-| `audit.json` | Échanges LLM, comparaisons, raisonnements | Debugging, audit |
-
-### Structure de l'audit
-
-L'audit contient une traçabilité complète du processus de correction:
+## Architecture
 
 ```
-audit.json
-├── initial              # Résultats avant discussion
-├── reading_analysis     # Comparaison des lectures
-├── confidence_evolution # Évolution de la confiance
-├── timing               # Durées de chaque phase
-├── decision_path        # Chemin de décision emprunté
-├── after_verification   # Résultats après vérification croisée
-│   └── prompt_sent      # Prompt exact envoyé à chaque LLM
-├── after_round2         # Résultats après ultimatum (si applicable)
-└── final                # Note finale et méthode
+src/
+├── ai/                    # Providers LLM
+│   ├── gemini_provider.py
+│   ├── openai_provider.py
+│   └── comparison_provider.py  # Double LLM
+├── core/                  # Modèles et orchestration
+├── grading/               # Moteur de notation
+├── vision/                # Lecture PDF
+├── storage/               # Stockage JSON
+└── main.py                # CLI
 ```
 
-Voir [docs/AUDIT_STRUCTURE.md](docs/AUDIT_STRUCTURE.md) pour la documentation complète.
-
-## Workflow de correction
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                    WORKFLOW DE CORRECTION                       │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  1. IMPORT PDF ──→ Extraction des pages                         │
-│         │                                                        │
-│         ▼                                                        │
-│  2. DÉTECTION NOM ──→ Consensus entre LLMs                      │
-│         │                                                        │
-│         ▼                                                        │
-│  3. POUR CHAQUE QUESTION:                                       │
-│         │                                                        │
-│         ├─→ Phase 1: LECTURE (par défaut)                       │
-│         │       ├─→ LLM1 décrit ce qu'il voit                   │
-│         │       ├─→ LLM2 décrit ce qu'il voit                   │
-│         │       └─→ Si désaccord → validation enseignant        │
-│         │                                                        │
-│         ├─→ Phase 2: NOTATION (double LLM)                      │
-│         │       ├─→ LLM1 note en parallèle                      │
-│         │       └─→ LLM2 note en parallèle                      │
-│         │                                                        │
-│         ├─→ COMPARAISON                                         │
-│         │       └─→ Notes identiques? → OK                      │
-│         │                                                        │
-│         ├─→ VÉRIFICATION CROISÉE (si désaccord)                 │
-│         │       └─→ Chaque LLM voit le raisonnement de l'autre  │
-│         │                                                        │
-│         ├─→ ROUND 2 ULTIMATUM (si fausse convergence)           │
-│         │       └─→ Force une décision réelle                   │
-│         │                                                        │
-│         └─→ DÉCISION FINALE                                     │
-│                 └─→ Accord → note finale                        │
-│                 └─→ Désaccord → demande utilisateur             │
-│                                                                  │
-│  4. GÉNÉRATION APPRÉCIATION                                     │
-│  5. EXPORT (PDF annoté, CSV, JSON)                              │
-│                                                                  │
-│  Options CLI:                                                    │
-│    --skip-reading  : Ignorer Phase 1 (notation directe)         │
-│    --single        : Utiliser un seul LLM                       │
-│    --auto          : Mode automatique sans interaction          │
-│                                                                  │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-## Principes
-
-| Principe | Description |
-|----------|-------------|
-| **Justesse** | L'IA demande de l'aide quand incertaine |
-| **Équité** | Cohérence entre tous les élèves |
-| **Souplexité** | L'IA généralise à partir du contexte |
-| **Transparence** | Toutes les décisions sont tracées |
+---
 
 ## Développement
 
-### Tests
-
 ```bash
+# Tests
 pytest tests/
+
+# Formatage
+black src/ && isort src/
 ```
 
-### Format du code
-
-```bash
-black src/
-isort src/
-```
-
-## Contribution
-
-Les contributions sont les bienvenues! Veuillez:
-
-1. Fork le projet
-2. Créer une branche (`git checkout -b feature/nouvelle-fonctionnalite`)
-3. Commit (`git commit -m 'Ajout nouvelle fonctionnalité'`)
-4. Push (`git push origin feature/nouvelle-fonctionnalite`)
-5. Ouvrir une Pull Request
+---
 
 ## Licence
 
 MIT License - voir [LICENSE](LICENSE)
-
-## Auteurs
-
-Développé pour simplifier et améliorer la correction des copies d'élèves.

@@ -111,6 +111,17 @@ class GeminiProvider:
             completion_tokens=completion_tokens
         ))
 
+    def get_token_usage(self) -> Dict[str, int]:
+        """Get total token usage from all calls."""
+        prompt_tokens = sum(c.prompt_tokens or 0 for c in self.call_history)
+        completion_tokens = sum(c.completion_tokens or 0 for c in self.call_history)
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+            "calls": len(self.call_history)
+        }
+
     def _prepare_image(
         self,
         image_path: str = None,
@@ -201,6 +212,13 @@ class GeminiProvider:
 
         result = response.text or ""
 
+        # Extract token usage
+        prompt_tokens = None
+        completion_tokens = None
+        if hasattr(response, 'usage_metadata') and response.usage_metadata:
+            prompt_tokens = getattr(response.usage_metadata, 'prompt_token_count', None)
+            completion_tokens = getattr(response.usage_metadata, 'candidates_token_count', None)
+
         # Log call
         duration = (time.time() - start_time) * 1000
         num_images = len(image_path) if isinstance(image_path, list) else (1 if image_path else 0)
@@ -209,8 +227,8 @@ class GeminiProvider:
             input_summary=f"Vision prompt ({num_images} images): {prompt[:100]}...",
             response_summary=result[:200],
             duration_ms=duration,
-            prompt_tokens=None,
-            completion_tokens=None
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens
         )
 
         return result
@@ -253,6 +271,13 @@ class GeminiProvider:
 
         result = response.text or ""
 
+        # Extract token usage
+        prompt_tokens = None
+        completion_tokens = None
+        if hasattr(response, 'usage_metadata') and response.usage_metadata:
+            prompt_tokens = getattr(response.usage_metadata, 'prompt_token_count', None)
+            completion_tokens = getattr(response.usage_metadata, 'candidates_token_count', None)
+
         # Log call
         duration = (time.time() - start_time) * 1000
         self._log_call(
@@ -260,8 +285,8 @@ class GeminiProvider:
             input_summary=f"Text prompt: {prompt[:100]}...",
             response_summary=result[:200],
             duration_ms=duration,
-            prompt_tokens=None,
-            completion_tokens=None
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens
         )
 
         return result

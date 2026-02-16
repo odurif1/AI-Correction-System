@@ -4,6 +4,9 @@
 # User data
 data/
 
+# Personal documents (PDFs)
+*.pdf
+
 # Python
 __pycache__/
 *.py[cod]
@@ -55,3 +58,4 @@ Thumbs.db
 *.tmp
 *.temp
 *.log
+TODO

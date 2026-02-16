@@ -157,6 +157,7 @@ class IntelligentGrader:
                 'max_points': max_points,
                 'confidence': result["confidence"],
                 'agreement': comp_data.get('final_agreement', True) if comp_data else True,
+                'final_method': comp_data.get('decision_path', {}).get('final_method', 'consensus') if comp_data else 'single_llm',
                 'copy_id': copy.id
             })
 

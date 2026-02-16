@@ -441,13 +441,27 @@ async def command_correct(args):
             grade = data['grade']
             max_pts = data['max_points']
             agreement = data.get('agreement', True)
+            final_method = data.get('final_method', 'consensus')
 
-            if agreement:
-                icon = "[green]✓[/green]"
-            else:
-                icon = "[yellow]⚠[/yellow]"
+            # Color coding based on decision method
+            # Green: consensus initial (accord immédiat)
+            # Yellow: decision prise au cross verification
+            # Orange: decision prise à l'ultimatum
+            # Red: désaccord persistant (average ou user_choice)
+            if final_method == 'consensus' or final_method == 'single_llm':
+                color = "green"
+                icon = "✓"
+            elif final_method == 'verification_consensus':
+                color = "yellow"
+                icon = "✓"
+            elif final_method == 'ultimatum_consensus':
+                color = "dark_orange"
+                icon = "✓"
+            else:  # average, user_choice, merge
+                color = "red"
+                icon = "⚠"
 
-            console.print(f"  {icon} {q_id}: [bold]{grade:.1f}/{max_pts}[/bold]")
+            console.print(f"  [{color}]{icon}[/{color}] {q_id}: [bold]{grade:.1f}/{max_pts}[/bold]")
 
         elif event_type == 'copy_done':
             score = data['total_score']
@@ -568,6 +582,23 @@ async def command_correct(args):
         scores=scores,
         language=language
     )
+
+    # Show token usage
+    if hasattr(orchestrator.ai, 'get_token_usage'):
+        token_usage = orchestrator.ai.get_token_usage()
+        if token_usage.get('total_tokens', 0) > 0:
+            total = token_usage['total_tokens']
+            prompt = token_usage.get('prompt_tokens', 0)
+            completion = token_usage.get('completion_tokens', 0)
+
+            cli.console.print(f"\n[bold cyan]📊 Token Usage:[/bold cyan]")
+            cli.console.print(f"  Total: [bold]{total:,}[/bold] tokens")
+            cli.console.print(f"  Prompt: {prompt:,} | Completion: {completion:,}")
+
+            # Show by provider if available
+            if 'by_provider' in token_usage:
+                for provider_name, usage in token_usage['by_provider'].items():
+                    cli.console.print(f"  [{provider_name}] {usage.get('total_tokens', 0):,} tokens ({usage.get('calls', 0)} calls)")
 
     # Annotate PDFs if requested
     if args.annotate:
