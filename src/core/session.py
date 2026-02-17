@@ -408,16 +408,17 @@ class GradingSessionOrchestrator:
         self._grading_complete = True
         return self.session.graded_copies
 
-    async def grade_all_hybrid(
+    async def grade_all(
         self,
         progress_callback: callable = None
     ) -> List[GradedCopy]:
         """
-        Phase 3 (Hybrid): Grade all copies using single-pass + targeted verification.
+        Grade all copies using stateless architecture.
 
-        More efficient than grade_all() when using 2 LLMs:
-        - Single API call per LLM for all questions
-        - Cross-verification only for flagged questions
+        Each call is independent with explicit context and images re-sent:
+        - Single-pass grading for all questions (images sent)
+        - Targeted verification only for disagreements (images RE-SENT)
+        - Ultimatum round if needed (images RE-SENT again)
 
         Must be called after confirm_scale().
         Only works when _comparison_mode is True.
@@ -429,16 +430,16 @@ class GradingSessionOrchestrator:
             List of GradedCopy objects
         """
         if not self._analysis_complete:
-            raise RuntimeError("Must call analyze_only() before grade_all_hybrid()")
+            raise RuntimeError("Must call analyze_only() before grade_all()")
 
         if not self.question_scales:
-            raise RuntimeError("Must call confirm_scale() before grade_all_hybrid()")
+            raise RuntimeError("Must call confirm_scale() before grade_all()")
 
         if not self._comparison_mode:
-            raise RuntimeError("grade_all_hybrid() requires comparison mode (2 LLMs)")
+            raise RuntimeError("grade_all() requires comparison mode (2 LLMs)")
 
-        if not hasattr(self.ai, 'grade_copy_hybrid'):
-            raise RuntimeError("AI provider does not support hybrid grading")
+        if not hasattr(self.ai, 'grade_copy'):
+            raise RuntimeError("AI provider does not support stateless grading")
 
         self.session.status = SessionStatus.GRADING
 
@@ -449,7 +450,7 @@ class GradingSessionOrchestrator:
         total_copies = len(self.session.copies)
         provider_names = [name for name, _ in self.ai.providers] if hasattr(self.ai, 'providers') else []
 
-        # Build questions list for hybrid grading
+        # Build questions list for stateless grading
         questions = []
         for q_id, q_text in self.detected_questions.items():
             questions.append({
@@ -459,7 +460,7 @@ class GradingSessionOrchestrator:
                 "max_points": self.question_scales.get(q_id, 1.0)
             })
 
-        # Grade each copy using hybrid approach
+        # Grade each copy using stateless approach
         for i, copy in enumerate(self.session.copies):
             # Notify copy start
             if progress_callback:
@@ -479,13 +480,13 @@ class GradingSessionOrchestrator:
 
             # Notify single-pass start
             if progress_callback:
-                await self._call_callback(progress_callback, 'hybrid_single_pass_start', {
+                await self._call_callback(progress_callback, 'single_pass_start', {
                     'num_questions': len(questions),
                     'providers': provider_names
                 })
 
-            # Call hybrid grading
-            result = await self.ai.grade_copy_hybrid(
+            # Call stateless grading
+            result = await self.ai.grade_copy(
                 questions=questions,
                 image_paths=image_paths,
                 language="fr",
@@ -501,14 +502,14 @@ class GradingSessionOrchestrator:
 
             # Notify single-pass complete with results
             if progress_callback:
-                await self._call_callback(progress_callback, 'hybrid_single_pass_complete', {
+                await self._call_callback(progress_callback, 'single_pass_complete', {
                     'providers': provider_names,
                     'single_pass': single_pass
                 })
 
             # Notify analysis complete
             if progress_callback:
-                await self._call_callback(progress_callback, 'hybrid_analysis_complete', {
+                await self._call_callback(progress_callback, 'analysis_complete', {
                     'agreed': disagreement_report.get('agreed', 0),
                     'flagged': disagreement_report.get('flagged', 0),
                     'total': disagreement_report.get('total_questions', 0),
@@ -519,7 +520,7 @@ class GradingSessionOrchestrator:
             for flagged in disagreement_report.get('flagged_questions', []):
                 qid = flagged.get('question_id')
                 if progress_callback:
-                    await self._call_callback(progress_callback, 'hybrid_verification_start', {
+                    await self._call_callback(progress_callback, 'verification_start', {
                         'question_id': qid,
                         'reason': flagged.get('reason'),
                         'llm1_grade': flagged.get('llm1', {}).get('grade'),
@@ -533,7 +534,7 @@ class GradingSessionOrchestrator:
                 agreement = q_audit.get('agreement', True)
 
                 if progress_callback:
-                    await self._call_callback(progress_callback, 'hybrid_question_done', {
+                    await self._call_callback(progress_callback, 'question_done', {
                         'question_id': q_id,
                         'grade': q_result.get("grade", 0),
                         'max_points': self.question_scales.get(q_id, 1.0),
@@ -547,7 +548,7 @@ class GradingSessionOrchestrator:
                 policy_version=self.session.policy.version
             )
 
-            # Extract grades from hybrid result
+            # Extract grades from conversation result
             for q_id, q_result in result.get("questions", {}).items():
                 grade = q_result.get("grade", 0)
                 confidence = q_result.get("confidence", 0.5)
@@ -560,9 +561,9 @@ class GradingSessionOrchestrator:
                 graded.readings[q_id] = reading
 
             # Calculate totals
-            graded.total_score = sum(graded.grades.values())
+            graded.total_score = sum(g or 0 for g in graded.grades.values())
             graded.max_score = sum(self.question_scales.values())
-            graded.confidence = sum(graded.confidence_by_question.values()) / len(graded.confidence_by_question) if graded.confidence_by_question else 0.5
+            graded.confidence = sum(c or 0.5 for c in graded.confidence_by_question.values()) / len(graded.confidence_by_question) if graded.confidence_by_question else 0.5
 
             # Store audit data
             graded.llm_comparison = result.get("audit", {})
@@ -585,7 +586,7 @@ class GradingSessionOrchestrator:
                     'max_score': graded.max_score,
                     'confidence': graded.confidence,
                     'token_usage': token_usage,
-                    'hybrid_summary': result.get("summary", {})
+                    'grading_summary': result.get("summary", {})
                 })
 
         self._grading_complete = True
@@ -646,10 +647,22 @@ class GradingSessionOrchestrator:
             if graded and decision.question_id in graded.grades:
                 # Update the grade
                 old_grade = graded.grades[decision.question_id]
-                graded.grades[decision.question_id] = decision.new_grade
+                new_grade = decision.new_grade
+
+                # Warn if grades are None - this indicates a pipeline problem
+                if old_grade is None:
+                    import logging
+                    logging.warning(f"Grade is None for {decision.question_id} in copy {copy_id} - pipeline issue?")
+                    old_grade = 0
+                if new_grade is None:
+                    import logging
+                    logging.warning(f"New grade is None for {decision.question_id} - decision issue?")
+                    new_grade = 0
+
+                graded.grades[decision.question_id] = new_grade
 
                 # Update total score
-                graded.total_score = graded.total_score - old_grade + decision.new_grade
+                graded.total_score = (graded.total_score or 0) - old_grade + new_grade
 
                 # Propagate if requested
                 if decision.propagate and decision.similar_copy_ids:
@@ -675,8 +688,20 @@ class GradingSessionOrchestrator:
             )
             if graded and decision.question_id in graded.grades:
                 old_grade = graded.grades[decision.question_id]
-                graded.grades[decision.question_id] = decision.new_grade
-                graded.total_score = graded.total_score - old_grade + decision.new_grade
+                new_grade = decision.new_grade
+
+                # Warn if grades are None - this indicates a pipeline problem
+                if old_grade is None:
+                    import logging
+                    logging.warning(f"Grade is None for {decision.question_id} in copy {copy_id} during propagation")
+                    old_grade = 0
+                if new_grade is None:
+                    import logging
+                    logging.warning(f"New grade is None for {decision.question_id} during propagation")
+                    new_grade = 0
+
+                graded.grades[decision.question_id] = new_grade
+                graded.total_score = (graded.total_score or 0) - old_grade + new_grade
                 count += 1
 
         return count

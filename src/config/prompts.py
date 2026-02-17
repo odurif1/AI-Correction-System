@@ -350,7 +350,7 @@ GRADE: <note>/{max_points}
 CONFIDENCE: <0.0-1.0>
 UNCERTAINTY_TYPE: <none|unreadable|ambiguous|unexpected|incomplete|other>
 IF_UNCERTAIN: <pourquoi tu doutes>
-STUDENT_ANSWER_READ: <ce que tu as lu/compris de la réponse écrite de l'élève - retranscris fidèlement>
+STUDENT_ANSWER_READ: <texte exact écrit par l'élève, sans phrase introductive>
 INTERNAL_REASONING: Note: <X/{max_points}>. <analyse technique: justification de la note, critères utilisés, éléments corrects/incorrects>
 STUDENT_FEEDBACK: <retour sobre et professionnel. Questions faciles: 1-5 mots. Questions difficiles: diagnostic + correction. Pas de félicitations. Max 25 mots.>"""
     else:
@@ -382,7 +382,7 @@ GRADE: <score>/{max_points}
 CONFIDENCE: <0.0-1.0>
 UNCERTAINTY_TYPE: <none|unreadable|ambiguous|unexpected|incomplete|other>
 IF_UNCERTAIN: <why you are uncertain>
-STUDENT_ANSWER_READ: <what you read/understood from the student's written response - transcribe faithfully>
+STUDENT_ANSWER_READ: <exact text written by the student, no introductory phrase>
 INTERNAL_REASONING: Score: <X/{max_points}>. <technical analysis: justification of grade, criteria used, correct/incorrect elements>
 STUDENT_FEEDBACK: <sober professional feedback. Easy questions: 1-5 words. Difficult questions: diagnosis + correction. No congratulations. Max 25 words.>"""
 
@@ -492,6 +492,129 @@ def _format_questions_for_feedback(graded_copy: Any, language: str) -> str:
         feedback = graded_copy.student_feedback.get(q_id, "")
         lines.append(f"- {q_id}: {grade} points ({feedback})")
     return "\n".join(lines)
+
+
+def build_multi_question_grading_prompt(
+    questions: List[Dict[str, Any]],
+    language: str = "fr"
+) -> str:
+    """
+    Build prompt for grading multiple questions in a single API call.
+
+    Args:
+        questions: List of question dicts with:
+            - id: Question identifier (e.g., "Q1")
+            - text: The question text
+            - criteria: Grading criteria
+            - max_points: Maximum points
+        language: Language for prompt
+
+    Returns:
+        Formatted prompt for multi-question grading
+    """
+    # Build questions section
+    questions_section = ""
+    for i, q in enumerate(questions, 1):
+        questions_section += f"""
+━━━ QUESTION {q['id']} ━━━
+TEXTE: {q['text']}
+CRITÈRES: {q['criteria']}
+NOTE MAX: {q['max_points']} points
+
+"""
+
+    if language == "fr":
+        return f"""Tu es un correcteur expérimenté. Analyse cette copie et corrige TOUTES les questions.
+
+━━━ QUESTIONS À CORRIGER ━━━
+{questions_section}
+
+━━━ INSTRUCTIONS ━━━
+1. Parcours TOUTES les pages de la copie
+2. Pour CHAQUE question:
+   - Localise la réponse de l'élève (précise la page/zone)
+   - Lis EXACTEMENT ce qu'il a écrit
+   - Note selon les critères
+   - Évalue ta CERTITUDE (0-1)
+3. Génère un feedback sobre pour chaque question
+
+━━━ DÉFINITION DE LA CERTITUDE ━━━
+- 1.0: Réponse claire, note évidente
+- 0.8-0.9: Réponse lisible, interprétation fiable
+- 0.6-0.7: Légère incertitude
+- < 0.6: Forte incertitude, révision possible
+
+━━━ RÈGLES DE FEEDBACK ━━━
+- Ton sobre et professionnel
+- Questions faciles: 1-5 mots
+- Questions difficiles: diagnostic + correction
+- Pas de félicitations
+
+━━━ FORMAT DE RÉPONSE (JSON) ━━━
+Réponds UNIQUEMENT avec un JSON valide, sans texte avant/après:
+
+{{
+  "student_name": "<nom détecté ou null>",
+  "questions": {{
+    "Q1": {{
+      "location": "<page X, zone Y>",
+      "student_answer_read": "<texte exact écrit par l'élève>",
+      "grade": <note>,
+      "confidence": <0.0-1.0>,
+      "reasoning": "<analyse technique justifiant la note>",
+      "feedback": "<retour sobre>"
+    }},
+    "Q2": {{ ... }},
+    ...
+  }},
+  "overall_comments": "<commentaire global optionnel>"
+}}"""
+    else:
+        return f"""You are an experienced grader. Analyze this copy and grade ALL questions.
+
+━━━ QUESTIONS TO GRADE ━━━
+{questions_section}
+
+━━━ INSTRUCTIONS ━━━
+1. Go through ALL pages of the copy
+2. For EACH question:
+   - Locate the student's answer (specify page/zone)
+   - Read EXACTLY what they wrote
+   - Grade according to criteria
+   - Evaluate your CERTAINTY (0-1)
+3. Generate sober feedback for each question
+
+━━━ CERTAINTY DEFINITION ━━━
+- 1.0: Clear answer, obvious grade
+- 0.8-0.9: Readable, reliable interpretation
+- 0.6-0.7: Slight uncertainty
+- < 0.6: High uncertainty, may need review
+
+━━━ FEEDBACK RULES ━━━
+- Sober professional tone
+- Easy questions: 1-5 words
+- Difficult questions: diagnosis + correction
+- No congratulations
+
+━━━ RESPONSE FORMAT (JSON) ━━━
+Respond ONLY with valid JSON, no text before/after:
+
+{{
+  "student_name": "<detected name or null>",
+  "questions": {{
+    "Q1": {{
+      "location": "<page X, zone Y>",
+      "student_answer_read": "<exact text written by student>",
+      "grade": <score>,
+      "confidence": <0.0-1.0>,
+      "reasoning": "<technical analysis justifying the grade>",
+      "feedback": "<sober feedback>"
+    }},
+    "Q2": {{ ... }},
+    ...
+  }},
+  "overall_comments": "<optional overall comment>"
+}}"""
 
 
 def build_cross_copy_analysis_prompt(

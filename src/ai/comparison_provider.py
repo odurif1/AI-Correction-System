@@ -10,6 +10,12 @@ Audit structure provides complete traceability:
 - Timing and token usage
 - Confidence evolution
 - Decision path taken
+
+Stateless Architecture:
+- Each call is independent (no state between calls)
+- Context is explicit in prompts
+- Images are re-sent for verification (fresh look)
+- Previous reasoning is passed explicitly (no memorization)
 """
 
 import asyncio
@@ -849,6 +855,266 @@ Original question: {kwargs.get('question_text', '')}"""
 
         return verified, prompts_sent
 
+    async def _run_verification_with_fresh_call(
+        self,
+        results: List[Dict],
+        image_paths: List[str],
+        **kwargs
+    ) -> Tuple[List[Dict], Dict[str, str]]:
+        """
+        Verification with FRESH call + explicit context + images re-sent.
+
+        Each LLM gets a completely fresh call with images re-sent and
+        explicit context about the other LLM's reasoning. This eliminates
+        anchoring bias and ensures a fresh look at the images.
+
+        Args:
+            results: Initial grading results from both LLMs
+            image_paths: List of image paths to RE-SEND
+            **kwargs: Original grading arguments
+
+        Returns:
+            Tuple of (verified_results, prompts_sent)
+        """
+        verified = []
+        prompts_sent = {"llm1": None, "llm2": None}
+
+        for i, (name, provider) in enumerate(self.providers):
+            my_initial = results[i]
+            other_initial = results[1 - i]
+            other_grade = other_initial.get("grade", 0)
+            my_grade = my_initial.get("grade", 0)
+
+            language = kwargs.get("language", "fr")
+            max_points = kwargs.get("max_points", 5)
+
+            # Build explicit context prompt
+            # NOTE: We do NOT include previous readings OR reasoning to avoid anchoring on OCR errors
+            # The LLM must re-read the student's answer entirely fresh from the images
+            if language == "fr":
+                verify_prompt = f"""─── QUESTION À VÉRIFIER ───
+{kwargs.get('question_text', '')}
+
+Critères: {kwargs.get('criteria', 'Non spécifiés')}
+Note maximale: {max_points} points
+
+─── SITUATION ───
+Tu as initialement noté: {my_grade}/{max_points}
+Un autre correcteur a noté: {other_grade}/{max_points}
+
+Il y a un désaccord. Tu dois ré-examiner cette question.
+
+─── INSTRUCTION ───
+1. RELIS TOI-MÊME la réponse de l'élève sur les images (ne présume de rien)
+2. Analyse OBJECTIVEMENT ce qui est correct et ce qui ne l'est pas
+3. Décide de TA note finale
+
+RÈGLES:
+- Lis attentivement l'écriture manuscrite lettre par lettre
+- Ne te fie à aucune lecture précédente - fais ta propre lecture
+- Note selon les critères, pas selon ton jugement initial
+- Si incertain: abaisse ta confiance (< 0.5)
+
+─── FORMAT DE RÉPONSE ───
+STUDENT_ANSWER_READ: [ce que tu lis toi-même sur la copie]
+GRADE: [note]/{max_points}
+CONFIDENCE: [0.0-1.0]
+INTERNAL_REASONING: [analyse]
+STUDENT_FEEDBACK: [feedback]"""
+            else:
+                verify_prompt = f"""─── QUESTION TO VERIFY ───
+{kwargs.get('question_text', '')}
+
+Criteria: {kwargs.get('criteria', 'Not specified')}
+Max points: {max_points}
+
+─── SITUATION ───
+You initially graded: {my_grade}/{max_points}
+Another grader graded: {other_grade}/{max_points}
+
+There is a disagreement. You must re-examine this question.
+
+─── INSTRUCTION ───
+1. RE-READ the student's answer yourself from the images (presume nothing)
+2. Analyze OBJECTIVELY what is correct and what is not
+3. Decide on YOUR final grade
+
+RULES:
+- Read the handwriting carefully letter by letter
+- Do not rely on any previous reading - make your own reading
+- Grade according to criteria, not according to your initial judgment
+- If uncertain: lower your confidence (< 0.5)
+
+─── RESPONSE FORMAT ───
+STUDENT_ANSWER_READ: [what you read yourself from the copy]
+GRADE: [grade]/{max_points}
+CONFIDENCE: [0.0-1.0]
+INTERNAL_REASONING: [analysis]
+STUDENT_FEEDBACK: [feedback]"""
+
+            prompts_sent[f"llm{i+1}"] = verify_prompt.strip()
+
+            try:
+                # FRESH call with images RE-SENT
+                new_result = provider.grade_with_vision(
+                    question_text=kwargs.get("question_text", ""),
+                    criteria=verify_prompt,
+                    image_path=image_paths,
+                    max_points=max_points,
+                    class_context=kwargs.get("class_context", ""),
+                    language=language
+                )
+                if asyncio.iscoroutine(new_result):
+                    new_result = await new_result
+
+                # Warn if grade couldn't be parsed
+                if new_result.get("grade") is None:
+                    import logging
+                    logging.warning(f"Failed to parse grade from {name} verification response. Using original grade.")
+                    new_result["grade"] = my_grade
+                    new_result["_parse_failed"] = True
+
+                verified.append(new_result)
+            except Exception as e:
+                import logging
+                logging.error(f"Verification failed for {name}: {e}")
+                verified.append(results[i])
+
+        return verified, prompts_sent
+
+    async def _run_exchange_verification(
+        self,
+        isolated_results: List[Dict],
+        image_paths: List[str],
+        **kwargs
+    ) -> Tuple[List[Dict], Dict[str, str]]:
+        """
+        Exchange verification: each LLM sees the other's isolated reading and can adjust.
+
+        This phase comes AFTER isolated verification to allow cross-checking
+        without anchoring bias. Each LLM made its own fresh reading, now they
+        can compare and discuss.
+
+        Args:
+            isolated_results: Results from isolated verification phase
+            image_paths: List of image paths to RE-SEND
+            **kwargs: Original grading arguments
+
+        Returns:
+            Tuple of (exchange_results, prompts_sent)
+        """
+        verified = []
+        prompts_sent = {"llm1": None, "llm2": None}
+
+        for i, (name, provider) in enumerate(self.providers):
+            my_isolated = isolated_results[i]
+            other_isolated = isolated_results[1 - i]
+
+            my_grade = my_isolated.get("grade", 0)
+            my_reading = my_isolated.get("student_answer_read", "")
+            my_reasoning = my_isolated.get("internal_reasoning", "")
+
+            other_grade = other_isolated.get("grade", 0)
+            other_reading = other_isolated.get("student_answer_read", "")
+            other_reasoning = other_isolated.get("internal_reasoning", "")
+
+            language = kwargs.get("language", "fr")
+            max_points = kwargs.get("max_points", 5)
+
+            # Build exchange prompt - NOW we share the readings!
+            if language == "fr":
+                exchange_prompt = f"""─── QUESTION EN DÉSACCORD ───
+{kwargs.get('question_text', '')}
+
+Critères: {kwargs.get('criteria', 'Non spécifiés')}
+Note maximale: {max_points} points
+
+─── ÉCHANGE DES LECTURES ───
+Tu as lu: "{my_reading}"
+Tu as noté: {my_grade}/{max_points}
+
+L'autre correcteur a lu: "{other_reading}"
+Il a noté: {other_grade}/{max_points}
+
+─── ANALYSE COMPARATIVE ───
+1. Compare les deux lectures - y a-t-il une erreur de lecture?
+2. Si l'autre lecture semble plus précise, adopte-la
+3. Si ta lecture semble plus précise, maintiens-la avec justification
+4. Décide de ta note finale
+
+RÈGLES:
+- Les erreurs de lecture manuscrite sont courantes - reste ouvert
+- Ne change que si tu es convaincu que l'autre lecture est meilleure
+- Tu peux aussi proposer une troisième lecture si les deux sont incorrectes
+
+─── FORMAT DE RÉPONSE ───
+STUDENT_ANSWER_READ: [ta lecture finale]
+GRADE: [note]/{max_points}
+CONFIDENCE: [0.0-1.0]
+INTERNAL_REASONING: [analyse comparative]
+STUDENT_FEEDBACK: [feedback]"""
+            else:
+                exchange_prompt = f"""─── DISPUTED QUESTION ───
+{kwargs.get('question_text', '')}
+
+Criteria: {kwargs.get('criteria', 'Not specified')}
+Max points: {max_points}
+
+─── READING EXCHANGE ───
+You read: "{my_reading}"
+You graded: {my_grade}/{max_points}
+
+The other grader read: "{other_reading}"
+They graded: {other_grade}/{max_points}
+
+─── COMPARATIVE ANALYSIS ───
+1. Compare the two readings - is there a reading error?
+2. If the other reading seems more accurate, adopt it
+3. If your reading seems more accurate, maintain it with justification
+4. Decide on your final grade
+
+RULES:
+- Handwriting reading errors are common - stay open-minded
+- Only change if you are convinced the other reading is better
+- You can also propose a third reading if both are incorrect
+
+─── RESPONSE FORMAT ───
+STUDENT_ANSWER_READ: [your final reading]
+GRADE: [grade]/{max_points}
+CONFIDENCE: [0.0-1.0]
+INTERNAL_REASONING: [comparative analysis]
+STUDENT_FEEDBACK: [feedback]"""
+
+            prompts_sent[f"llm{i+1}"] = exchange_prompt.strip()
+
+            try:
+                # FRESH call with images RE-SENT
+                new_result = provider.grade_with_vision(
+                    question_text=kwargs.get("question_text", ""),
+                    criteria=exchange_prompt,
+                    image_path=image_paths,
+                    max_points=max_points,
+                    class_context=kwargs.get("class_context", ""),
+                    language=language
+                )
+                if asyncio.iscoroutine(new_result):
+                    new_result = await new_result
+
+                # Warn if grade couldn't be parsed
+                if new_result.get("grade") is None:
+                    import logging
+                    logging.warning(f"Failed to parse grade from {name} exchange response. Using isolated grade.")
+                    new_result["grade"] = my_grade
+                    new_result["_parse_failed"] = True
+
+                verified.append(new_result)
+            except Exception as e:
+                import logging
+                logging.error(f"Exchange verification failed for {name}: {e}")
+                verified.append(isolated_results[i])
+
+        return verified, prompts_sent
+
     async def _run_ultimatum_round(
         self,
         round1_results: List[Dict],
@@ -952,6 +1218,149 @@ FORBIDDEN: Don't choose randomly. Every decision must be justified.
                     new_result = await new_result
                 verified.append(new_result)
             except Exception as e:
+                verified.append(round1_results[i])
+
+        return verified, prompts_sent
+
+    async def _run_ultimatum_with_fresh_call(
+        self,
+        round1_results: List[Dict],
+        original_results: List[Dict],
+        image_paths: List[str],
+        **kwargs
+    ) -> Tuple[List[Dict], Dict[str, str]]:
+        """
+        Ultimatum with FRESH call + explicit evolution context + images re-sent.
+
+        Final attempt when disagreement persists after cross-verification.
+        Each LLM gets a completely fresh call with images re-sent.
+
+        Args:
+            round1_results: Results from first verification round
+            original_results: Original grading results (before any verification)
+            image_paths: List of image paths to RE-SEND
+            **kwargs: Original grading arguments
+
+        Returns:
+            Tuple of (final_results, prompts_sent)
+        """
+        verified = []
+        prompts_sent = {"llm1": None, "llm2": None}
+
+        for i, (name, provider) in enumerate(self.providers):
+            other_result = round1_results[1 - i]
+            other_reasoning = other_result.get("internal_reasoning", "")
+            other_grade = other_result.get("grade", 0)
+            other_original_grade = original_results[1 - i].get("grade", 0)
+            my_original_grade = original_results[i].get("grade", 0)
+            my_round1_grade = round1_results[i].get("grade", 0)
+
+            language = kwargs.get("language", "fr")
+            max_points = kwargs.get("max_points", 5)
+
+            # Detect if this LLM changed their grade
+            i_changed = abs(my_round1_grade - my_original_grade) > 0.01
+            other_changed = abs(other_grade - other_original_grade) > 0.01
+
+            # Build evolution summary
+            if language == "fr":
+                my_evolution = f"{my_original_grade} → {my_round1_grade}" if i_changed else f"{my_original_grade} (maintenue)"
+                other_evolution = f"{other_original_grade} → {other_grade}" if other_changed else f"{other_original_grade} (maintenue)"
+                change_warning = "\n⚠ ATTENTION: Tu as MODIFIÉ ta note après avoir vu l'avis de l'autre. Confirme que ce changement est justifié objectivement." if i_changed else ""
+            else:
+                my_evolution = f"{my_original_grade} → {my_round1_grade}" if i_changed else f"{my_original_grade} (maintained)"
+                other_evolution = f"{other_original_grade} → {other_grade}" if other_changed else f"{other_original_grade} (maintained)"
+                change_warning = "\n⚠ WARNING: You CHANGED your grade after seeing the other's opinion. Confirm that this change is objectively justified." if i_changed else ""
+
+            if language == "fr":
+                ultimatum_prompt = f"""
+─── ULTIMATUM - DÉCISION FINALE ───
+Question: {kwargs.get('question_text', '')}
+Note maximale: {max_points} points
+
+DÉSACCORD PERSISTANT après vérification croisée:
+- Ta note: {my_evolution}/{max_points}
+- Autre note: {other_evolution}/{max_points}
+{change_warning}
+Son raisonnement: {other_reasoning[:400]}
+
+─── RÉEXAMEN INDÉPENDANT ───
+1. RELIS TOI-MÊME la réponse de l'élève sur les images
+2. ANALYSE objectivement ce qui est correct et ce qui ne l'est pas
+3. Prends TA décision finale
+
+Tu dois choisir:
+- Option A: Accepter l'autre note → explique pourquoi cette analyse est meilleure
+- Option B: Maintenir ta note → arguments précis qui justifient ta position
+- SI INCERTAIN: abaisse ta CONFIANCE (< 0.5)
+
+INTERDICTION: Ne choisis pas au hasard. Chaque décision doit être justifiée.
+
+─── FORMAT DE RÉPONSE REQUIS ───
+STUDENT_ANSWER_READ: [ce que tu lis toi-même sur la copie]
+GRADE: [ta note finale]/{max_points}
+CONFIDENCE: [0.0-1.0]
+INTERNAL_REASONING: [ton analyse finale]
+STUDENT_FEEDBACK: [feedback pour l'élève]
+"""
+            else:
+                ultimatum_prompt = f"""
+─── ULTIMATUM - FINAL DECISION ───
+Question: {kwargs.get('question_text', '')}
+Max points: {max_points}
+
+PERSISTENT DISAGREEMENT after cross-verification:
+- Your grade: {my_evolution}/{max_points}
+- Other grade: {other_evolution}/{max_points}
+{change_warning}
+Their reasoning: {other_reasoning[:400]}
+
+─── INDEPENDENT RE-EXAMINATION ───
+1. RE-READ the student's answer yourself from the images
+2. ANALYZE objectively what is correct and what is not
+3. Make YOUR final decision
+
+You must choose:
+- Option A: Accept the other grade → explain why this analysis is better
+- Option B: Maintain your grade → precise arguments supporting your position
+- IF UNCERTAIN: lower your CONFIDENCE (< 0.5)
+
+FORBIDDEN: Don't choose randomly. Every decision must be justified.
+
+─── REQUIRED RESPONSE FORMAT ───
+STUDENT_ANSWER_READ: [what you read yourself from the copy]
+GRADE: [your final grade]/{max_points}
+CONFIDENCE: [0.0-1.0]
+INTERNAL_REASONING: [your final analysis]
+STUDENT_FEEDBACK: [feedback for the student]
+"""
+
+            prompts_sent[f"llm{i+1}"] = ultimatum_prompt.strip()
+
+            try:
+                # FRESH call with images RE-SENT
+                new_result = provider.grade_with_vision(
+                    question_text=kwargs.get("question_text", ""),
+                    criteria=ultimatum_prompt,
+                    image_path=image_paths,
+                    max_points=max_points,
+                    class_context=kwargs.get("class_context", ""),
+                    language=language
+                )
+                if asyncio.iscoroutine(new_result):
+                    new_result = await new_result
+
+                # Warn if grade couldn't be parsed
+                if new_result.get("grade") is None:
+                    import logging
+                    logging.warning(f"Failed to parse grade from {name} ultimatum response. Using round1 grade.")
+                    new_result["grade"] = my_round1_grade
+                    new_result["_parse_failed"] = True
+
+                verified.append(new_result)
+            except Exception as e:
+                import logging
+                logging.error(f"Ultimatum failed for {name}: {e}")
                 verified.append(round1_results[i])
 
         return verified, prompts_sent
@@ -1869,9 +2278,9 @@ CONFIDENCE: [0.0 to 1.0]"""
         result["reading"] = " ".join(content_parts) if content_parts else response
         return result
 
-    # ==================== HYBRID ARCHITECTURE ====================
+    # ==================== DUAL LLM GRADING ====================
 
-    async def grade_copy_hybrid(
+    async def grade_copy(
         self,
         questions: List[Dict[str, Any]],
         image_paths: List[str],
@@ -1880,12 +2289,14 @@ CONFIDENCE: [0.0 to 1.0]"""
         reading_disagreement_callback: callable = None
     ) -> Dict[str, Any]:
         """
-        Hybrid grading: single-pass + targeted verification.
+        Grade a copy using dual-LLM verification.
 
-        Phase 1: Single-pass with both LLMs (all questions in one call)
-        Phase 2: Analyze disagreements
-        Phase 3: Cross-verify only flagged questions
-        Phase 4: Assemble final results
+        Flow:
+        1. Single-pass: Both LLMs grade all questions in parallel
+        2. Disagreement analysis: Identify questions needing verification
+        3. Phase 2a: Isolated verification (each LLM re-reads independently)
+        4. Phase 2b: Exchange verification (LLMs share readings and discuss)
+        5. Phase 3: Ultimatum (final decision if still disagreeing)
 
         Args:
             questions: List of question dicts with:
@@ -1910,21 +2321,23 @@ CONFIDENCE: [0.0 to 1.0]"""
         total_start = time.time()
 
         # Notify start
-        await self._notify_progress('hybrid_phase_start', {
+        await self._notify_progress('grading_phase_start', {
             'phase': 'single_pass',
             'num_questions': len(questions),
             'num_pages': len(image_paths)
         })
 
-        # ===== PHASE 1: Single-Pass Grading =====
+        # ===== PHASE 1: Single-Pass Grading (FRESH call with images) =====
         single_pass_results = {}
-        single_pass_errors = []
+        single_pass_errors = {}
 
         async def run_single_pass(index: int, name: str, provider):
-            """Run single-pass grading for one provider."""
+            """Run single-pass grading for one provider (FRESH call with images)."""
             grader = SinglePassGrader(provider)
             try:
-                result = await grader.grade_all_questions(questions, image_paths, language)
+                result = await grader.grade_all_questions(
+                    questions, image_paths, language
+                )
                 return (index, name, result)
             except Exception as e:
                 return (index, name, None)
@@ -1937,15 +2350,15 @@ CONFIDENCE: [0.0 to 1.0]"""
             if result and result.parse_success:
                 single_pass_results[name] = result
             else:
-                single_pass_errors.append({
+                single_pass_errors[name] = {
                     "provider": name,
                     "error": result.parse_errors if result else "Unknown error"
-                })
+                }
 
         # Check if we have results from both providers
         if len(single_pass_results) < 2:
             # Fallback to per-question grading
-            await self._notify_progress('hybrid_fallback', {
+            await self._notify_progress('grading_fallback', {
                 'reason': 'single_pass_failed',
                 'errors': single_pass_errors
             })
@@ -1955,7 +2368,7 @@ CONFIDENCE: [0.0 to 1.0]"""
             )
 
         # ===== PHASE 2: Analyze Disagreements =====
-        await self._notify_progress('hybrid_phase_start', {
+        await self._notify_progress('grading_phase_start', {
             'phase': 'disagreement_analysis'
         })
 
@@ -1967,9 +2380,9 @@ CONFIDENCE: [0.0 to 1.0]"""
             single_pass_results[provider_names[1]].to_dict()
         )
 
-        # Note: hybrid_analysis_complete is emitted by session.py with full data
+        # Note: analysis_complete is emitted by session.py with full data
 
-        # ===== PHASE 3: Targeted Verification (if needed) =====
+        # ===== PHASE 3: Targeted Verification with FRESH calls (images RE-SENT) =====
         final_results = {}
         verification_audit = {}
 
@@ -1995,54 +2408,164 @@ CONFIDENCE: [0.0 to 1.0]"""
                 "final": final_results[qid]
             }
 
-        # Questions with disagreement: run cross-verification
+        # Questions with disagreement: run verification with FRESH calls (images RE-SENT)
         for disagreement in report.flagged_questions:
             qid = disagreement.question_id
 
-            # Note: hybrid_verification_start is emitted by session.py
+            # Note: verification_start is emitted by session.py
 
             # Find the question definition
             q_def = next((q for q in questions if q["id"] == qid), None)
             if not q_def:
                 continue
 
-            # Run per-question grading with cross-verification
-            verified_result = await self.grade_with_vision(
+            # Build initial results from single-pass for this question
+            sp_llm1_q = single_pass_results[provider_names[0]].questions.get(qid)
+            sp_llm2_q = single_pass_results[provider_names[1]].questions.get(qid)
+
+            initial_results = [
+                {
+                    "grade": sp_llm1_q.grade if sp_llm1_q else 0,
+                    "confidence": sp_llm1_q.confidence if sp_llm1_q else 0.5,
+                    "student_answer_read": sp_llm1_q.student_answer_read if sp_llm1_q else "",
+                    "internal_reasoning": sp_llm1_q.reasoning if sp_llm1_q else "",
+                    "student_feedback": sp_llm1_q.feedback if sp_llm1_q else ""
+                },
+                {
+                    "grade": sp_llm2_q.grade if sp_llm2_q else 0,
+                    "confidence": sp_llm2_q.confidence if sp_llm2_q else 0.5,
+                    "student_answer_read": sp_llm2_q.student_answer_read if sp_llm2_q else "",
+                    "internal_reasoning": sp_llm2_q.reasoning if sp_llm2_q else "",
+                    "student_feedback": sp_llm2_q.feedback if sp_llm2_q else ""
+                }
+            ]
+
+            # Run verification with FRESH call (images RE-SENT)
+            verified_results, verification_prompts = await self._run_verification_with_fresh_call(
+                initial_results,
+                image_paths,  # RE-SEND images
                 question_text=q_def["text"],
                 criteria=q_def["criteria"],
-                image_path=image_paths,
                 max_points=q_def["max_points"],
-                language=language,
-                question_id=qid,
-                reading_disagreement_callback=reading_disagreement_callback,
-                skip_reading_consensus=True  # Skip pre-reading in hybrid mode
+                language=language
             )
+
+            verified_grades = [r.get("grade", 0) for r in verified_results]
+            verified_readings = [r.get("student_answer_read", "") for r in verified_results]
+            verified_result = None
+            method = "verification"
+            agreement = True
+
+            # Check if still disagreeing after ISOLATED verification
+            if len(verified_grades) == 2 and verified_grades[0] != verified_grades[1]:
+                # Phase 2b: Exchange verification - share readings between LLMs
+                exchange_results, exchange_prompts = await self._run_exchange_verification(
+                    verified_results,
+                    image_paths,  # RE-SEND images
+                    question_text=q_def["text"],
+                    criteria=q_def["criteria"],
+                    max_points=q_def["max_points"],
+                    language=language
+                )
+                exchange_grades = [r.get("grade", 0) for r in exchange_results]
+
+                # Check if still disagreeing after EXCHANGE
+                if len(exchange_grades) == 2 and exchange_grades[0] != exchange_grades[1]:
+                    # Phase 3: Ultimatum - final decision
+                    final_results_list, ultimatum_prompts = await self._run_ultimatum_with_fresh_call(
+                        exchange_results,
+                        verified_results,  # Pass verified results as "original"
+                        image_paths,  # RE-SEND images again
+                        question_text=q_def["text"],
+                        criteria=q_def["criteria"],
+                        max_points=q_def["max_points"],
+                        language=language
+                    )
+                    final_grades = [r.get("grade", 0) for r in final_results_list]
+
+                    if len(final_grades) == 2 and final_grades[0] != final_grades[1]:
+                        # Persistent disagreement - average
+                        final_grade = sum(final_grades) / 2
+                        agreement = False
+                        method = "ultimatum_averaged"
+                    else:
+                        final_grade = final_grades[0] if final_grades else 0
+                        agreement = True
+                        method = "ultimatum_consensus"
+
+                    verified_result = {
+                        "grade": final_grade,
+                        "confidence": min(r.get("confidence", 0.5) for r in final_results_list),
+                        "student_answer_read": final_results_list[0].get("student_answer_read", ""),
+                        "student_feedback": final_results_list[0].get("student_feedback", ""),
+                        "internal_reasoning": final_results_list[0].get("internal_reasoning", ""),
+                        "comparison": {
+                            "initial": {"llm1": initial_results[0], "llm2": initial_results[1]},
+                            "after_isolated_verification": {"llm1": verified_results[0], "llm2": verified_results[1]},
+                            "after_exchange": {"llm1": exchange_results[0], "llm2": exchange_results[1]},
+                            "after_ultimatum": {"llm1": final_results_list[0], "llm2": final_results_list[1]},
+                            "final": {"grade": final_grade, "agreement": agreement}
+                        }
+                    }
+                else:
+                    # Agreement reached after EXCHANGE
+                    verified_result = {
+                        "grade": exchange_grades[0] if exchange_grades else 0,
+                        "confidence": (exchange_results[0].get("confidence", 0.5) + exchange_results[1].get("confidence", 0.5)) / 2,
+                        "student_answer_read": exchange_results[0].get("student_answer_read", ""),
+                        "student_feedback": exchange_results[0].get("student_feedback", ""),
+                        "internal_reasoning": exchange_results[0].get("internal_reasoning", ""),
+                        "comparison": {
+                            "initial": {"llm1": initial_results[0], "llm2": initial_results[1]},
+                            "after_isolated_verification": {"llm1": verified_results[0], "llm2": verified_results[1]},
+                            "after_exchange": {"llm1": exchange_results[0], "llm2": exchange_results[1]},
+                            "final": {"grade": exchange_grades[0] if exchange_grades else 0, "agreement": True}
+                        }
+                    }
+                    method = "exchange_consensus"
+                    agreement = True
+            else:
+                # Agreement reached after ISOLATED verification
+                verified_result = {
+                    "grade": verified_grades[0] if verified_grades else 0,
+                    "confidence": (verified_results[0].get("confidence", 0.5) + verified_results[1].get("confidence", 0.5)) / 2,
+                    "student_answer_read": verified_results[0].get("student_answer_read", ""),
+                    "student_feedback": verified_results[0].get("student_feedback", ""),
+                    "internal_reasoning": verified_results[0].get("internal_reasoning", ""),
+                    "comparison": {
+                        "initial": {"llm1": initial_results[0], "llm2": initial_results[1]},
+                        "after_isolated_verification": {"llm1": verified_results[0], "llm2": verified_results[1]},
+                        "final": {"grade": verified_grades[0] if verified_grades else 0, "agreement": True}
+                    }
+                }
+                method = "consensus"
+                agreement = True
 
             final_results[qid] = {
                 "grade": verified_result.get("grade"),
                 "confidence": verified_result.get("confidence"),
                 "student_answer_read": verified_result.get("student_answer_read", ""),
                 "student_feedback": verified_result.get("student_feedback", ""),
-                "internal_reasoning": verified_result.get("comparison", {}).get("final", {}).get("internal_reasoning", ""),
-                "method": "cross_verification"
+                "internal_reasoning": verified_result.get("internal_reasoning", ""),
+                "method": method
             }
 
             verification_audit[qid] = {
-                "method": "hybrid",
-                "agreement": verified_result.get("comparison", {}).get("final", {}).get("agreement", False),
+                "method": method,
+                "agreement": agreement,
                 "single_pass": {
-                    "llm1": single_pass_results[provider_names[0]].questions.get(qid).to_dict() if qid in single_pass_results[provider_names[0]].questions else None,
-                    "llm2": single_pass_results[provider_names[1]].questions.get(qid).to_dict() if qid in single_pass_results[provider_names[1]].questions else None,
+                    "llm1": sp_llm1_q.to_dict() if sp_llm1_q else None,
+                    "llm2": sp_llm2_q.to_dict() if sp_llm2_q else None,
                     "flagged_reason": disagreement.reason
                 },
-                "cross_verification": verified_result.get("comparison"),
+                "verification": verified_result.get("comparison") if verified_result else None,
                 "final": final_results[qid]
             }
 
         # ===== PHASE 4: Assemble Final Results =====
         total_duration = (time.time() - total_start) * 1000
 
-        await self._notify_progress('hybrid_complete', {
+        await self._notify_progress('grading_complete', {
             'total_questions': len(questions),
             'single_pass_agreed': len(report.agreed_questions),
             'verified': len(report.flagged_questions),
@@ -2052,7 +2575,7 @@ CONFIDENCE: [0.0 to 1.0]"""
         return {
             "questions": final_results,
             "audit": {
-                "method": "hybrid",
+                "method": "dual_llm",
                 "single_pass": {
                     provider_names[0]: single_pass_results[provider_names[0]].to_dict(),
                     provider_names[1]: single_pass_results[provider_names[1]].to_dict()
@@ -2068,7 +2591,7 @@ CONFIDENCE: [0.0 to 1.0]"""
                 "agreed_in_single_pass": len(report.agreed_questions),
                 "required_verification": len(report.flagged_questions),
                 "agreement_rate": report.agreement_rate,
-                "total_score": sum(r["grade"] for r in final_results.values()),
+                "total_score": sum(r["grade"] or 0 for r in final_results.values()),
                 "max_score": sum(q["max_points"] for q in questions)
             }
         }

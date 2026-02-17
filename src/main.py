@@ -18,6 +18,7 @@ Options:
 """
 
 import asyncio
+import re
 import sys
 import argparse
 from pathlib import Path
@@ -30,6 +31,16 @@ from rich.panel import Panel
 from rich.prompt import Confirm
 
 from core.session import GradingSessionOrchestrator
+
+
+def natural_sort_key(s: str):
+    """
+    Sort key for natural sorting of question IDs.
+    Q1, Q2, Q10 instead of Q1, Q10, Q2.
+    """
+    def convert(text):
+        return int(text) if text.isdigit() else text.lower()
+    return [convert(c) for c in re.split(r'(\d+)', str(s))]
 from config.settings import get_settings
 from ai import create_ai_provider
 from interaction.cli import CLI
@@ -388,6 +399,9 @@ async def command_correct(args):
     # Track token usage per copy
     prev_tokens = {'total': 0}
 
+    # Collect question results for sorted display at copy_done
+    current_copy_questions = {}
+
     # Progress callback for real-time display
     async def progress_callback(event_type: str, data: dict):
         nonlocal prev_tokens
@@ -397,6 +411,7 @@ async def command_correct(args):
             total = data['total_copies']
             name = data.get('student_name') or '???'
             llm_status['results'] = {}
+            current_copy_questions.clear()  # Reset for new copy
             console.print(f"\n[bold cyan]━━━ Copie {copy_idx}/{total} ━━━[/bold cyan] [yellow]{name}[/yellow]")
 
         elif event_type == 'question_start':
@@ -466,13 +481,25 @@ async def command_correct(args):
                 color = "red"
                 icon = "⚠"
 
-            console.print(f"  [{color}]{icon}[/{color}] {q_id}: [bold]{grade:.1f}/{max_pts}[/bold]")
+            # Store for sorted display at copy_done
+            current_copy_questions[q_id] = {
+                'grade': grade,
+                'max_pts': max_pts,
+                'color': color,
+                'icon': icon,
+                'note': ''
+            }
 
         elif event_type == 'copy_done':
             score = data['total_score']
             max_s = data['max_score']
             pct = (score / max_s * 100) if max_s > 0 else 0
-            conf = data['confidence']
+            conf = data.get('confidence', 0.5) or 0.5
+
+            # Display all questions sorted chronologically
+            for qid in sorted(current_copy_questions.keys(), key=natural_sort_key):
+                q = current_copy_questions[qid]
+                console.print(f"  [{q['color']}]{q['icon']}[/{q['color']}] {qid}: [bold]{q['grade']:.1f}/{q['max_pts']}[/bold][dim]{q['note']}[/dim]")
 
             # Calculate tokens used for this copy
             token_usage = data.get('token_usage')
@@ -502,16 +529,133 @@ async def command_correct(args):
             else:
                 console.print(" [green]✓[/green]")
 
+        # ===== CONVERSATION MODE EVENTS =====
+        elif event_type == 'single_pass_start':
+            num_q = data.get('num_questions', 0)
+            providers = data.get('providers', [])
+            # Shorten provider names for display
+            short_names = [p.replace("gemini-", "g-").replace("-preview", "") for p in providers]
+            console.print(f"  [dim]📤 Correction initiale: {len(providers)} LLM × {num_q} questions ({' vs '.join(short_names)})[/dim]")
+
+        elif event_type == 'single_pass_complete':
+            providers = data.get('providers', [])
+            single_pass = data.get('single_pass', {})
+
+            # Get all question IDs sorted naturally
+            all_qids = set()
+            for provider in providers:
+                result = single_pass.get(provider, {})
+                questions = result.get('questions', {})
+                all_qids.update(questions.keys())
+            sorted_qids = sorted(all_qids, key=natural_sort_key)
+
+            # Build a readable table
+            table = Table(show_header=True, header_style="bold dim", show_lines=False, box=None, padding=(0, 2))
+            table.add_column("Question", style="bold", width=10)
+            for idx, provider in enumerate(providers):
+                # Cleaner provider name with index to distinguish
+                if "gemini" in provider.lower():
+                    if "3" in provider:
+                        short_name = "Gemini 3"
+                    elif "2.5" in provider or "flash" in provider.lower():
+                        short_name = "Gemini 2.5"
+                    else:
+                        short_name = f"Gemini {idx+1}"
+                elif "openai" in provider.lower() or "gpt" in provider.lower():
+                    short_name = "GPT-4o" if "4o" in provider.lower() else "GPT"
+                else:
+                    short_name = f"LLM{idx+1}"
+                table.add_column(short_name, justify="center", width=12)
+
+            for qid in sorted_qids:
+                row = [qid]
+                for provider in providers:
+                    result = single_pass.get(provider, {})
+                    questions = result.get('questions', {})
+                    q_data = questions.get(qid, {})
+                    grade = q_data.get('grade', 0)
+                    row.append(f"{grade:.1f}")  # Just the grade, no /max_pts (it's always /1 or /2, redundant)
+                table.add_row(*row)
+
+            console.print(table)
+
+        elif event_type == 'analysis_complete':
+            agreed = data.get('agreed', 0)
+            flagged = data.get('flagged', 0)
+            total = data.get('total', 0)
+            flagged_questions = data.get('flagged_questions', [])
+
+            if flagged == 0:
+                console.print(f"  [green]✓ Analyse: {agreed}/{total} questions en accord[/green]")
+            else:
+                console.print(f"  [yellow]📊 Analyse: {agreed}/{total} accord, {flagged} désaccord(s)[/yellow]")
+                for fq in flagged_questions:
+                    qid = fq.get('question_id')
+                    reason = fq.get('reason', '')
+                    llm1_grade = fq.get('llm1', {}).get('grade', 0)
+                    llm2_grade = fq.get('llm2', {}).get('grade', 0)
+                    llm1_reading = fq.get('llm1', {}).get('reading', '')[:30]
+                    llm2_reading = fq.get('llm2', {}).get('reading', '')[:30]
+
+                    # Show appropriate info based on disagreement type
+                    if 'Lectures' in reason or 'lecture' in reason:
+                        # Reading disagreement - show readings
+                        console.print(f"    [yellow]⚠ {qid}:[/yellow] {reason}")
+                        console.print(f"        [dim]{llm1_reading}...[/dim] vs [dim]{llm2_reading}...[/dim]")
+                    else:
+                        # Grade disagreement - show grades
+                        console.print(f"    [yellow]⚠ {qid}:[/yellow] {reason} ({llm1_grade:.1f} vs {llm2_grade:.1f})")
+
+        elif event_type == 'verification_start':
+            qid = data.get('question_id')
+            reason = data.get('reason', '')
+            console.print(f"  [dim]🔄 Vérification {qid}...[/dim]")
+
+        elif event_type == 'question_done':
+            qid = data.get('question_id')
+            grade = data.get('grade', 0)
+            max_pts = data.get('max_points', 1)
+            method = data.get('method', 'unknown')
+            agreement = data.get('agreement', True)
+
+            # Determine display based on method
+            if method == 'single_pass_consensus':
+                color = "green"
+                icon = "✓"
+                note = ""
+            elif 'verification' in method or 'ultimatum' in method:
+                color = "yellow"
+                icon = "✓"
+                note = " (après vérification)"
+            else:
+                color = "green" if agreement else "red"
+                icon = "✓" if agreement else "⚠"
+                note = ""
+
+            # Store for sorted display at copy_done
+            current_copy_questions[qid] = {
+                'grade': grade,
+                'max_pts': max_pts,
+                'color': color,
+                'icon': icon,
+                'note': note
+            }
+
     # Run grading with progress updates
     if is_comparison_mode:
         # Show models being used
         providers_info = []
         for name, _ in orchestrator.ai.providers:
             providers_info.append(f"[cyan]{name}[/cyan]")
-        console.print(f"\n[bold magenta]🔄 Mode comparaison: 2 LLM[/bold magenta] ({' vs '.join(providers_info)})")
+        console.print(f"\n[bold magenta]🤖 Double correction: {' vs '.join(providers_info)}[/bold magenta]")
 
     console.print("\n[bold]Correction en cours...[/bold]")
-    graded = await orchestrator.grade_all(progress_callback=progress_callback)
+
+    # Use dual-LLM grading when in comparison mode, otherwise use per-question
+    if is_comparison_mode and hasattr(orchestrator.ai, 'grade_copy'):
+        graded = await orchestrator.grade_all(progress_callback=progress_callback)
+    else:
+        graded = await orchestrator.grade_all(progress_callback=progress_callback)
 
     # Show final summary table
     console.print(f"\n[bold green]✓ {len(graded)} copie(s) corrigée(s)[/bold green]")
