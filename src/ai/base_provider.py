@@ -6,6 +6,7 @@ including image processing, token tracking, and response parsing.
 """
 
 import base64
+import functools
 import re
 import time
 from abc import ABC, abstractmethod
@@ -57,6 +58,23 @@ def _sanitize_for_logging(text: str) -> str:
     return sanitized
 
 
+@functools.lru_cache(maxsize=128)
+def _cached_image_to_base64(image_path: str) -> str:
+    """
+    Convert an image file to base64 string with caching.
+
+    Uses LRU cache to avoid re-reading the same file multiple times.
+
+    Args:
+        image_path: Path to the image file
+
+    Returns:
+        Base64 encoded string of the image
+    """
+    with open(image_path, "rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
+
+
 class BaseProvider(ABC):
     """
     Abstract base class for AI providers.
@@ -82,9 +100,8 @@ class BaseProvider(ABC):
     # ==================== IMAGE UTILITIES ====================
 
     def _image_to_base64(self, image_path: str) -> str:
-        """Convert an image file to base64 string."""
-        with open(image_path, "rb") as f:
-            return base64.b64encode(f.read()).decode("utf-8")
+        """Convert an image file to base64 string (cached)."""
+        return _cached_image_to_base64(image_path)
 
     def _image_to_base64_from_pil(self, image: Image.Image) -> str:
         """Convert a PIL Image to base64 string."""

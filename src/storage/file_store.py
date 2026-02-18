@@ -34,6 +34,7 @@ from core.models import (
     GradingSession, GradedCopy, GradingPolicy,
     ClassAnswerMap, TeacherDecision, CopyDocument
 )
+from core.exceptions import SerializationError, ValidationFailedError
 from config.constants import (
     DATA_DIR, SESSIONS_INDEX,
     SESSION_JSON, POLICY_JSON, CLUSTERS_JSON, AUDIT_LOG,
@@ -87,20 +88,27 @@ class SessionStore:
         self._log("session_saved", f"Status: {session.status}")
 
     def load_session(self) -> Optional[GradingSession]:
-        """Charge l'état de la session."""
+        """Charge l'état de la session avec validation."""
         session_file = self.session_dir / SESSION_JSON
 
         if not session_file.exists():
             return None
 
-        with open(session_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        try:
+            with open(session_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise SerializationError(f"Invalid JSON in session file: {e}")
 
         # Convertir les dates
         if 'created_at' in data and isinstance(data['created_at'], str):
             data['created_at'] = datetime.fromisoformat(data['created_at'])
 
-        return GradingSession(**data)
+        # Validate with Pydantic model
+        try:
+            return GradingSession(**data)
+        except Exception as e:
+            raise ValidationFailedError(f"Session data validation failed: {e}", {"file": str(session_file)})
 
     # ==================== COPIES (annotation.json) ====================
 
@@ -246,7 +254,7 @@ class SessionStore:
         """
         Charge une copie corrigée (données complètes).
 
-        Lit audit.json.
+        Lit audit.json avec validation.
         """
         copy_dir = self.session_dir / "copies" / str(copy_number)
         audit_file = copy_dir / "audit.json"
@@ -254,13 +262,19 @@ class SessionStore:
         if not audit_file.exists():
             return None
 
-        with open(audit_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        try:
+            with open(audit_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise SerializationError(f"Invalid JSON in audit file: {e}")
 
         if 'graded_at' in data and isinstance(data['graded_at'], str):
             data['graded_at'] = datetime.fromisoformat(data['graded_at'])
 
-        return GradedCopy(**data)
+        try:
+            return GradedCopy(**data)
+        except Exception as e:
+            raise ValidationFailedError(f"GradedCopy validation failed: {e}", {"file": str(audit_file)})
 
     def is_graded(self, copy_number: str) -> bool:
         """Vérifie si une copie a été corrigée (audit.json existe)."""

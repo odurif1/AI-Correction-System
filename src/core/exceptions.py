@@ -12,7 +12,7 @@ class AICorrectionError(Exception):
     All custom exceptions should inherit from this class.
     """
 
-    def __init__(self, message: str, details: dict = None):
+    def __init__(self, message: str, details: dict | None = None):
         """
         Initialize the exception.
 

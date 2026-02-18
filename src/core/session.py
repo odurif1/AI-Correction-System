@@ -1079,8 +1079,13 @@ class GradingSessionOrchestrator:
                 f.write(image_bytes)
             page_images.append(image_path)
 
-        # Check cache
-        first_page_hash = hashlib.md5(open(page_images[0], 'rb').read()).hexdigest()[:8]
+        # Check cache (non-blocking file read)
+        def compute_file_hash(filepath: str) -> str:
+            """Compute MD5 hash of file (blocking operation)."""
+            with open(filepath, 'rb') as f:
+                return hashlib.md5(f.read()).hexdigest()[:8]
+
+        first_page_hash = await asyncio.to_thread(compute_file_hash, page_images[0])
         cache_key = f"multi_student_{first_page_hash}_{page_count}"
         cached = self.store.get_cached_analysis(cache_key)
         if cached:

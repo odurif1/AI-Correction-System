@@ -5,10 +5,10 @@ Provides natural sorting for question IDs and other identifiers.
 """
 
 import re
-from typing import List, Any
+from collections.abc import Sequence
 
 
-def natural_sort_key(s: Any) -> List:
+def natural_sort_key(s: object) -> list:
     """
     Sort key for natural sorting of question IDs.
 
@@ -29,7 +29,7 @@ def natural_sort_key(s: Any) -> List:
     return [convert(c) for c in re.split(r'(\d+)', str(s))]
 
 
-def question_sort_key(s: Any) -> tuple:
+def question_sort_key(s: object) -> tuple[int, int | str]:
     """
     Sort key specifically for question IDs like Q1, Q2, Q10.
 
