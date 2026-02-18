@@ -855,265 +855,397 @@ Original question: {kwargs.get('question_text', '')}"""
 
         return verified, prompts_sent
 
-    async def _run_verification_with_fresh_call(
-        self,
-        results: List[Dict],
-        image_paths: List[str],
-        **kwargs
-    ) -> Tuple[List[Dict], Dict[str, str]]:
-        """
-        Verification with FRESH call + explicit context + images re-sent.
+    # ==================== UNIFIED VERIFICATION METHODS ====================
 
-        Each LLM gets a completely fresh call with images re-sent and
-        explicit context about the other LLM's reasoning. This eliminates
-        anchoring bias and ensures a fresh look at the images.
+    async def _run_unified_verification(
+        self,
+        questions: List[Dict[str, Any]],
+        flagged_questions: List[Any],  # QuestionDisagreement objects
+        name_disagreement: Optional[Any],  # NameDisagreement object
+        single_pass_results: Dict[str, Any],  # SinglePassResult by provider name
+        image_paths: List[str],
+        language: str
+    ) -> Tuple[Dict[str, Dict], Optional[str], Dict[str, Any]]:
+        """
+        Run unified verification for ALL disagreements in ONE call per LLM.
+
+        This replaces the per-question verification loop with a single unified
+        call that handles all disagreements (name + questions) at once.
 
         Args:
-            results: Initial grading results from both LLMs
+            questions: List of all question definitions
+            flagged_questions: List of QuestionDisagreement objects from analyzer
+            name_disagreement: Optional NameDisagreement object
+            single_pass_results: Dict mapping provider_name -> SinglePassResult
             image_paths: List of image paths to RE-SEND
-            **kwargs: Original grading arguments
+            language: Language for prompts
 
         Returns:
-            Tuple of (verified_results, prompts_sent)
+            Tuple of:
+            - Dict of question_id -> verified result
+            - Optional consensus student name (or None if unchanged)
+            - Audit info dict
         """
-        verified = []
-        prompts_sent = {"llm1": None, "llm2": None}
+        import logging
+        from config.prompts import build_unified_verification_prompt
 
-        for i, (name, provider) in enumerate(self.providers):
-            my_initial = results[i]
-            other_initial = results[1 - i]
-            other_grade = other_initial.get("grade", 0)
-            my_grade = my_initial.get("grade", 0)
+        provider_names = [name for name, _ in self.providers]
 
-            language = kwargs.get("language", "fr")
-            max_points = kwargs.get("max_points", 5)
+        # Build disagreements list for prompt
+        disagreements = []
+        for d in flagged_questions:
+            qid = d.question_id
+            sp_llm1 = single_pass_results[provider_names[0]].questions.get(qid)
+            sp_llm2 = single_pass_results[provider_names[1]].questions.get(qid)
 
-            # Build explicit context prompt
-            # NOTE: We do NOT include previous readings OR reasoning to avoid anchoring on OCR errors
-            # The LLM must re-read the student's answer entirely fresh from the images
-            if language == "fr":
-                verify_prompt = f"""─── QUESTION À VÉRIFIER ───
-{kwargs.get('question_text', '')}
+            disagreements.append({
+                "question_id": qid,
+                "llm1": {
+                    "grade": sp_llm1.grade if sp_llm1 else 0,
+                    "reading": sp_llm1.student_answer_read if sp_llm1 else "",
+                    "confidence": sp_llm1.confidence if sp_llm1 else 0.5,
+                    "max_points": sp_llm1.max_points if sp_llm1 else 1.0
+                },
+                "llm2": {
+                    "grade": sp_llm2.grade if sp_llm2 else 0,
+                    "reading": sp_llm2.student_answer_read if sp_llm2 else "",
+                    "confidence": sp_llm2.confidence if sp_llm2 else 0.5,
+                    "max_points": sp_llm2.max_points if sp_llm2 else 1.0
+                },
+                "type": d.disagreement_type.value,
+                "reason": d.reason
+            })
 
-Critères: {kwargs.get('criteria', 'Non spécifiés')}
-Note maximale: {max_points} points
+        # Build name disagreement dict if present
+        name_dis_dict = None
+        if name_disagreement:
+            name_dis_dict = {
+                "llm1_name": name_disagreement.llm1_name,
+                "llm2_name": name_disagreement.llm2_name,
+                "similarity": name_disagreement.similarity
+            }
 
-─── SITUATION ───
-Tu as initialement noté: {my_grade}/{max_points}
-Un autre correcteur a noté: {other_grade}/{max_points}
+        # Build unified prompt
+        unified_prompt = build_unified_verification_prompt(
+            questions=questions,
+            disagreements=disagreements,
+            name_disagreement=name_dis_dict,
+            language=language
+        )
 
-Il y a un désaccord. Tu dois ré-examiner cette question.
+        # Call both providers in parallel
+        results_per_provider = {}
+        prompts_sent = {}
 
-─── INSTRUCTION ───
-1. RELIS TOI-MÊME la réponse de l'élève sur les images (ne présume de rien)
-2. Analyse OBJECTIVEMENT ce qui est correct et ce qui ne l'est pas
-3. Décide de TA note finale
-
-RÈGLES:
-- Lis attentivement l'écriture manuscrite lettre par lettre
-- Ne te fie à aucune lecture précédente - fais ta propre lecture
-- Note selon les critères, pas selon ton jugement initial
-- Si incertain: abaisse ta confiance (< 0.5)
-
-─── FORMAT DE RÉPONSE ───
-STUDENT_ANSWER_READ: [ce que tu lis toi-même sur la copie]
-GRADE: [note]/{max_points}
-CONFIDENCE: [0.0-1.0]
-INTERNAL_REASONING: [analyse]
-STUDENT_FEEDBACK: [feedback]"""
-            else:
-                verify_prompt = f"""─── QUESTION TO VERIFY ───
-{kwargs.get('question_text', '')}
-
-Criteria: {kwargs.get('criteria', 'Not specified')}
-Max points: {max_points}
-
-─── SITUATION ───
-You initially graded: {my_grade}/{max_points}
-Another grader graded: {other_grade}/{max_points}
-
-There is a disagreement. You must re-examine this question.
-
-─── INSTRUCTION ───
-1. RE-READ the student's answer yourself from the images (presume nothing)
-2. Analyze OBJECTIVELY what is correct and what is not
-3. Decide on YOUR final grade
-
-RULES:
-- Read the handwriting carefully letter by letter
-- Do not rely on any previous reading - make your own reading
-- Grade according to criteria, not according to your initial judgment
-- If uncertain: lower your confidence (< 0.5)
-
-─── RESPONSE FORMAT ───
-STUDENT_ANSWER_READ: [what you read yourself from the copy]
-GRADE: [grade]/{max_points}
-CONFIDENCE: [0.0-1.0]
-INTERNAL_REASONING: [analysis]
-STUDENT_FEEDBACK: [feedback]"""
-
-            prompts_sent[f"llm{i+1}"] = verify_prompt.strip()
-
+        async def call_provider(idx: int, name: str, provider):
             try:
-                # FRESH call with images RE-SENT
-                new_result = provider.grade_with_vision(
-                    question_text=kwargs.get("question_text", ""),
-                    criteria=verify_prompt,
+                # Use the provider's grade_with_vision method with the unified prompt
+                result = provider.grade_with_vision(
+                    question_text="Vérification unifiée de tous les désaccords",
+                    criteria=unified_prompt,
                     image_path=image_paths,
-                    max_points=max_points,
-                    class_context=kwargs.get("class_context", ""),
+                    max_points=10,  # Not used for unified prompt
                     language=language
                 )
-                if asyncio.iscoroutine(new_result):
-                    new_result = await new_result
-
-                # Warn if grade couldn't be parsed
-                if new_result.get("grade") is None:
-                    import logging
-                    logging.warning(f"Failed to parse grade from {name} verification response. Using original grade.")
-                    new_result["grade"] = my_grade
-                    new_result["_parse_failed"] = True
-
-                verified.append(new_result)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                return (idx, name, result)
             except Exception as e:
-                import logging
-                logging.error(f"Verification failed for {name}: {e}")
-                verified.append(results[i])
+                logging.error(f"Unified verification failed for {name}: {e}")
+                return (idx, name, None)
 
-        return verified, prompts_sent
+        # Run both providers in parallel
+        tasks = [call_provider(i, name, provider) for i, (name, provider) in enumerate(self.providers)]
+        provider_results = await asyncio.gather(*tasks)
 
-    async def _run_exchange_verification(
+        for idx, name, result in provider_results:
+            results_per_provider[name] = result
+            prompts_sent[f"llm{idx+1}"] = unified_prompt
+
+        # Parse JSON responses
+        verified_results = {}
+        consensus_name = None
+        remaining_disagreements = []
+
+        for qid in [d["question_id"] for d in disagreements]:
+            llm1_result = results_per_provider.get(provider_names[0], {})
+            llm2_result = results_per_provider.get(provider_names[1], {})
+
+            # Extract question results from JSON response
+            llm1_questions = llm1_result.get("questions", {}) if isinstance(llm1_result, dict) else {}
+            llm2_questions = llm2_result.get("questions", {}) if isinstance(llm2_result, dict) else {}
+
+            q1 = llm1_questions.get(qid, {})
+            q2 = llm2_questions.get(qid, {})
+
+            # Get single pass results for fallback
+            sp_llm1 = single_pass_results[provider_names[0]].questions.get(qid)
+            sp_llm2 = single_pass_results[provider_names[1]].questions.get(qid)
+
+            # Use parsed results or fallback to single pass
+            grade1 = q1.get("grade") if q1.get("grade") is not None else (sp_llm1.grade if sp_llm1 else 0)
+            grade2 = q2.get("grade") if q2.get("grade") is not None else (sp_llm2.grade if sp_llm2 else 0)
+
+            reading1 = q1.get("student_answer_read", "") or (sp_llm1.student_answer_read if sp_llm1 else "")
+            reading2 = q2.get("student_answer_read", "") or (sp_llm2.student_answer_read if sp_llm2 else "")
+
+            confidence1 = q1.get("confidence", 0.5) or (sp_llm1.confidence if sp_llm1 else 0.5)
+            confidence2 = q2.get("confidence", 0.5) or (sp_llm2.confidence if sp_llm2 else 0.5)
+
+            max_pts = q1.get("max_points") or (sp_llm1.max_points if sp_llm1 else 1.0)
+
+            # Check for agreement
+            if abs(grade1 - grade2) < 0.1:
+                # Agreement reached
+                verified_results[qid] = {
+                    "grade": grade1,
+                    "max_points": max_pts,
+                    "confidence": (confidence1 + confidence2) / 2,
+                    "student_answer_read": reading1,
+                    "student_feedback": q1.get("feedback", ""),
+                    "internal_reasoning": q1.get("reasoning", ""),
+                    "method": "unified_consensus"
+                }
+            else:
+                # Still disagreeing - store for ultimatum
+                remaining_disagreements.append({
+                    "question_id": qid,
+                    "llm1": {"grade": grade1, "reading": reading1, "confidence": confidence1, "max_points": max_pts},
+                    "llm2": {"grade": grade2, "reading": reading2, "confidence": confidence2, "max_points": max_pts}
+                })
+                # Use average for now (will be updated by ultimatum if needed)
+                verified_results[qid] = {
+                    "grade": (grade1 + grade2) / 2,
+                    "max_points": max_pts,
+                    "confidence": min(confidence1, confidence2),
+                    "student_answer_read": reading1,
+                    "student_feedback": q1.get("feedback", ""),
+                    "internal_reasoning": q1.get("reasoning", ""),
+                    "method": "unified_averaged",
+                    "_needs_ultimatum": True
+                }
+
+        # Handle name consensus
+        if name_disagreement:
+            llm1_result = results_per_provider.get(provider_names[0], {})
+            llm2_result = results_per_provider.get(provider_names[1], {})
+
+            name1 = llm1_result.get("student_name") if isinstance(llm1_result, dict) else None
+            name2 = llm2_result.get("student_name") if isinstance(llm2_result, dict) else None
+
+            if name1 and name2:
+                # Normalize and compare
+                n1_norm = name1.strip().lower()
+                n2_norm = name2.strip().lower()
+                if n1_norm == n2_norm:
+                    consensus_name = name1.strip()
+                else:
+                    # Still disagree - keep the first one
+                    consensus_name = name_disagreement.llm1_name
+            else:
+                consensus_name = name_disagreement.llm1_name
+
+        # Build audit info
+        audit_info = {
+            "type": "unified",
+            "prompts_sent": prompts_sent,
+            "questions_verified": list(verified_results.keys()),
+            "name_verified": name_disagreement is not None,
+            "remaining_disagreements": [d["question_id"] for d in remaining_disagreements],
+            "phases": 1
+        }
+
+        # Store remaining disagreements for ultimatum
+        self._unified_remaining = remaining_disagreements
+        self._unified_results = results_per_provider
+        self._unified_evolution = {d["question_id"]: [(d["llm1"]["grade"], d["llm2"]["grade"])] for d in disagreements}
+
+        return verified_results, consensus_name, audit_info
+
+    async def _run_unified_ultimatum(
         self,
-        isolated_results: List[Dict],
+        questions: List[Dict[str, Any]],
+        remaining_disagreements: List[Dict[str, Any]],
+        evolution: Dict[str, List[Tuple[float, float]]],
+        name_disagreement: Optional[Any],
+        verification_results: Dict[str, Dict],
         image_paths: List[str],
-        **kwargs
-    ) -> Tuple[List[Dict], Dict[str, str]]:
+        language: str
+    ) -> Tuple[Dict[str, Dict], Optional[str], Dict[str, Any]]:
         """
-        Exchange verification: each LLM sees the other's isolated reading and can adjust.
+        Run unified ultimatum for remaining disagreements after verification.
 
-        This phase comes AFTER isolated verification to allow cross-checking
-        without anchoring bias. Each LLM made its own fresh reading, now they
-        can compare and discuss.
+        This is the final phase when disagreement persists after unified verification.
 
         Args:
-            isolated_results: Results from isolated verification phase
+            questions: List of all question definitions
+            remaining_disagreements: List of disagreements still unresolved
+            evolution: Dict mapping question_id -> list of (llm1_grade, llm2_grade) tuples
+            name_disagreement: Optional NameDisagreement object (if still unresolved)
+            verification_results: Results from unified verification phase
             image_paths: List of image paths to RE-SEND
-            **kwargs: Original grading arguments
+            language: Language for prompts
 
         Returns:
-            Tuple of (exchange_results, prompts_sent)
+            Tuple of:
+            - Dict of question_id -> final result
+            - Optional final student name
+            - Audit info dict
         """
-        verified = []
-        prompts_sent = {"llm1": None, "llm2": None}
+        import logging
+        from config.prompts import build_unified_ultimatum_prompt
 
-        for i, (name, provider) in enumerate(self.providers):
-            my_isolated = isolated_results[i]
-            other_isolated = isolated_results[1 - i]
+        provider_names = [name for name, _ in self.providers]
 
-            my_grade = my_isolated.get("grade", 0)
-            my_reading = my_isolated.get("student_answer_read", "")
-            my_reasoning = my_isolated.get("internal_reasoning", "")
+        # Build disagreements list for ultimatum prompt
+        disagreements = []
+        for d in remaining_disagreements:
+            qid = d["question_id"]
+            q_evolution = evolution.get(qid, [])
 
-            other_grade = other_isolated.get("grade", 0)
-            other_reading = other_isolated.get("student_answer_read", "")
-            other_reasoning = other_isolated.get("internal_reasoning", "")
-
-            language = kwargs.get("language", "fr")
-            max_points = kwargs.get("max_points", 5)
-
-            # Build exchange prompt - NOW we share the readings!
-            if language == "fr":
-                exchange_prompt = f"""─── QUESTION EN DÉSACCORD ───
-{kwargs.get('question_text', '')}
-
-Critères: {kwargs.get('criteria', 'Non spécifiés')}
-Note maximale: {max_points} points
-
-─── ÉCHANGE DES LECTURES ───
-Tu as lu: "{my_reading}"
-Tu as noté: {my_grade}/{max_points}
-
-L'autre correcteur a lu: "{other_reading}"
-Il a noté: {other_grade}/{max_points}
-
-─── ANALYSE COMPARATIVE ───
-1. Compare les deux lectures - y a-t-il une erreur de lecture?
-2. Si l'autre lecture semble plus précise, adopte-la
-3. Si ta lecture semble plus précise, maintiens-la avec justification
-4. Décide de ta note finale
-
-RÈGLES:
-- Les erreurs de lecture manuscrite sont courantes - reste ouvert
-- Ne change que si tu es convaincu que l'autre lecture est meilleure
-- Tu peux aussi proposer une troisième lecture si les deux sont incorrectes
-
-─── FORMAT DE RÉPONSE ───
-STUDENT_ANSWER_READ: [ta lecture finale]
-GRADE: [note]/{max_points}
-CONFIDENCE: [0.0-1.0]
-INTERNAL_REASONING: [analyse comparative]
-STUDENT_FEEDBACK: [feedback]"""
+            # Get the latest grades (from verification phase)
+            if len(q_evolution) >= 1:
+                latest = q_evolution[-1]
             else:
-                exchange_prompt = f"""─── DISPUTED QUESTION ───
-{kwargs.get('question_text', '')}
+                latest = (d["llm1"]["grade"], d["llm2"]["grade"])
 
-Criteria: {kwargs.get('criteria', 'Not specified')}
-Max points: {max_points}
+            disagreements.append({
+                "question_id": qid,
+                "llm1": {
+                    "grade": latest[0],
+                    "reading": d["llm1"]["reading"],
+                    "confidence": d["llm1"]["confidence"],
+                    "max_points": d["llm1"]["max_points"]
+                },
+                "llm2": {
+                    "grade": latest[1],
+                    "reading": d["llm2"]["reading"],
+                    "confidence": d["llm2"]["confidence"],
+                    "max_points": d["llm2"]["max_points"]
+                }
+            })
 
-─── READING EXCHANGE ───
-You read: "{my_reading}"
-You graded: {my_grade}/{max_points}
+        # Build name disagreement dict if present
+        name_dis_dict = None
+        if name_disagreement:
+            name_dis_dict = {
+                "llm1_name": name_disagreement.llm1_name,
+                "llm2_name": name_disagreement.llm2_name
+            }
 
-The other grader read: "{other_reading}"
-They graded: {other_grade}/{max_points}
+        # Build evolution dict for prompt
+        evolution_dict = {}
+        for d in remaining_disagreements:
+            qid = d["question_id"]
+            evo = evolution.get(qid, [])
+            evolution_dict[qid] = evo
 
-─── COMPARATIVE ANALYSIS ───
-1. Compare the two readings - is there a reading error?
-2. If the other reading seems more accurate, adopt it
-3. If your reading seems more accurate, maintain it with justification
-4. Decide on your final grade
+        # Build unified ultimatum prompt
+        ultimatum_prompt = build_unified_ultimatum_prompt(
+            questions=questions,
+            disagreements=disagreements,
+            evolution=evolution_dict,
+            name_disagreement=name_dis_dict,
+            language=language
+        )
 
-RULES:
-- Handwriting reading errors are common - stay open-minded
-- Only change if you are convinced the other reading is better
-- You can also propose a third reading if both are incorrect
+        # Call both providers in parallel
+        results_per_provider = {}
+        prompts_sent = {}
 
-─── RESPONSE FORMAT ───
-STUDENT_ANSWER_READ: [your final reading]
-GRADE: [grade]/{max_points}
-CONFIDENCE: [0.0-1.0]
-INTERNAL_REASONING: [comparative analysis]
-STUDENT_FEEDBACK: [feedback]"""
-
-            prompts_sent[f"llm{i+1}"] = exchange_prompt.strip()
-
+        async def call_provider(idx: int, name: str, provider):
             try:
-                # FRESH call with images RE-SENT
-                new_result = provider.grade_with_vision(
-                    question_text=kwargs.get("question_text", ""),
-                    criteria=exchange_prompt,
+                result = provider.grade_with_vision(
+                    question_text="Ultimatum unifié - décision finale",
+                    criteria=ultimatum_prompt,
                     image_path=image_paths,
-                    max_points=max_points,
-                    class_context=kwargs.get("class_context", ""),
+                    max_points=10,
                     language=language
                 )
-                if asyncio.iscoroutine(new_result):
-                    new_result = await new_result
-
-                # Warn if grade couldn't be parsed
-                if new_result.get("grade") is None:
-                    import logging
-                    logging.warning(f"Failed to parse grade from {name} exchange response. Using isolated grade.")
-                    new_result["grade"] = my_grade
-                    new_result["_parse_failed"] = True
-
-                verified.append(new_result)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                return (idx, name, result)
             except Exception as e:
-                import logging
-                logging.error(f"Exchange verification failed for {name}: {e}")
-                verified.append(isolated_results[i])
+                logging.error(f"Unified ultimatum failed for {name}: {e}")
+                return (idx, name, None)
 
-        return verified, prompts_sent
+        tasks = [call_provider(i, name, provider) for i, (name, provider) in enumerate(self.providers)]
+        provider_results = await asyncio.gather(*tasks)
+
+        for idx, name, result in provider_results:
+            results_per_provider[name] = result
+            prompts_sent[f"llm{idx+1}"] = ultimatum_prompt
+
+        # Parse results and determine final outcomes
+        final_results = {}
+        final_name = None
+
+        for d in remaining_disagreements:
+            qid = d["question_id"]
+            llm1_result = results_per_provider.get(provider_names[0], {})
+            llm2_result = results_per_provider.get(provider_names[1], {})
+
+            llm1_questions = llm1_result.get("questions", {}) if isinstance(llm1_result, dict) else {}
+            llm2_questions = llm2_result.get("questions", {}) if isinstance(llm2_result, dict) else {}
+
+            q1 = llm1_questions.get(qid, {})
+            q2 = llm2_questions.get(qid, {})
+
+            grade1 = q1.get("grade") if q1.get("grade") is not None else d["llm1"]["grade"]
+            grade2 = q2.get("grade") if q2.get("grade") is not None else d["llm2"]["grade"]
+
+            confidence1 = q1.get("confidence", 0.5) or d["llm1"]["confidence"]
+            confidence2 = q2.get("confidence", 0.5) or d["llm2"]["confidence"]
+
+            max_pts = d["llm1"]["max_points"]
+
+            if abs(grade1 - grade2) < 0.1:
+                # Consensus reached in ultimatum
+                final_results[qid] = {
+                    "grade": grade1,
+                    "max_points": max_pts,
+                    "confidence": (confidence1 + confidence2) / 2,
+                    "student_answer_read": q1.get("student_answer_read", d["llm1"]["reading"]),
+                    "student_feedback": q1.get("feedback", ""),
+                    "internal_reasoning": q1.get("reasoning", ""),
+                    "method": "ultimatum_consensus"
+                }
+            else:
+                # Final disagreement - average
+                final_results[qid] = {
+                    "grade": (grade1 + grade2) / 2,
+                    "max_points": max_pts,
+                    "confidence": min(confidence1, confidence2),
+                    "student_answer_read": q1.get("student_answer_read", d["llm1"]["reading"]),
+                    "student_feedback": q1.get("feedback", ""),
+                    "internal_reasoning": q1.get("reasoning", ""),
+                    "method": "ultimatum_averaged"
+                }
+
+        # Handle final name
+        if name_disagreement:
+            llm1_result = results_per_provider.get(provider_names[0], {})
+            llm2_result = results_per_provider.get(provider_names[1], {})
+
+            name1 = llm1_result.get("student_name") if isinstance(llm1_result, dict) else None
+            name2 = llm2_result.get("student_name") if isinstance(llm2_result, dict) else None
+
+            if name1 and name2 and name1.strip().lower() == name2.strip().lower():
+                final_name = name1.strip()
+            else:
+                # Keep original disagreement name
+                final_name = name_disagreement.llm1_name
+
+        audit_info = {
+            "type": "unified_ultimatum",
+            "prompts_sent": prompts_sent,
+            "questions_verified": list(final_results.keys()),
+            "phases": 2
+        }
+
+        return final_results, final_name, audit_info
+
+    # ==================== FALLBACK ULTIMATUM (for grade_with_vision) ====================
 
     async def _run_ultimatum_round(
         self,
@@ -1122,10 +1254,13 @@ STUDENT_FEEDBACK: [feedback]"""
         **kwargs
     ) -> Tuple[List[Dict], Dict[str, str]]:
         """
-        Ultimatum round: final attempt when disagreement persists after cross-verification.
+        Ultimatum round for fallback per-question grading.
+
+        This is used by grade_with_vision when single-pass fails and we need
+        per-question verification. For the main flow, use unified verification.
 
         Args:
-            round1_results: Results from first verification round
+            round1_results: Results from verification round
             original_results: Original grading results (before any verification)
             **kwargs: Original grading arguments
 
@@ -1139,138 +1274,10 @@ STUDENT_FEEDBACK: [feedback]"""
             other_result = round1_results[1 - i]
             other_reasoning = other_result.get("internal_reasoning", "")
             other_grade = other_result.get("grade", 0)
-            other_original_grade = original_results[1 - i].get("grade", 0)
-            my_original_grade = original_results[i].get("grade", 0)
-            my_round1_grade = round1_results[i].get("grade", 0)
-
-            language = kwargs.get("language", "fr")
-
-            # Detect if this LLM changed their grade
-            i_changed = abs(my_round1_grade - my_original_grade) > 0.01
-            other_changed = abs(other_grade - other_original_grade) > 0.01
-
-            # Build evolution summary
-            if language == "fr":
-                my_evolution = f"{my_original_grade} → {my_round1_grade}" if i_changed else f"{my_original_grade} (maintenue)"
-                other_evolution = f"{other_original_grade} → {other_grade}" if other_changed else f"{other_original_grade} (maintenue)"
-                change_warning = "\n⚠ ATTENTION: Tu as MODIFIÉ ta note après avoir vu l'avis de l'autre. Confirme que ce changement est justifié objectivement." if i_changed else ""
-            else:
-                my_evolution = f"{my_original_grade} → {my_round1_grade}" if i_changed else f"{my_original_grade} (maintained)"
-                other_evolution = f"{other_original_grade} → {other_grade}" if other_changed else f"{other_original_grade} (maintained)"
-                change_warning = "\n⚠ WARNING: You CHANGED your grade after seeing the other's opinion. Confirm that this change is objectively justified." if i_changed else ""
-
-            if language == "fr":
-                ultimatum_prompt = f"""
-─── ULTIMATUM - DÉCISION FINALE ───
-DÉSACCORD PERSISTANT après vérification croisée:
-- Ta note: {my_evolution}/{kwargs.get('max_points', 5)}
-- Autre note: {other_evolution}/{kwargs.get('max_points', 5)}
-{change_warning}
-Son raisonnement: {other_reasoning[:400]}
-
-─── RÉEXAMEN INDÉPENDANT ───
-1. ANALYSE objectivement la réponse de l'élève
-2. Identifie ce qui est correct et ce qui ne l'est pas
-3. Prends TA décision finale
-
-Tu dois choisir:
-- Option A: Accepter l'autre note → explique pourquoi cette analyse est meilleure
-- Option B: Maintenir ta note → arguments précis qui justifient ta position
-- SI INCERTAIN: abaisse ta CONFIANCE (< 0.5)
-
-INTERDICTION: Ne choisis pas au hasard. Chaque décision doit être justifiée.
-"""
-            else:
-                ultimatum_prompt = f"""
-─── ULTIMATUM - FINAL DECISION ───
-PERSISTENT DISAGREEMENT after cross-verification:
-- Your grade: {my_evolution}/{kwargs.get('max_points', 5)}
-- Other grade: {other_evolution}/{kwargs.get('max_points', 5)}
-{change_warning}
-Their reasoning: {other_reasoning[:400]}
-
-─── INDEPENDENT RE-EXAMINATION ───
-1. ANALYZE the student's answer objectively
-2. Identify what is correct and what is not
-3. Make YOUR final decision
-
-You must choose:
-- Option A: Accept the other grade → explain why this analysis is better
-- Option B: Maintain your grade → precise arguments supporting your position
-- IF UNCERTAIN: lower your CONFIDENCE (< 0.5)
-
-FORBIDDEN: Don't choose randomly. Every decision must be justified.
-"""
-
-            # Store the prompt
-            prompts_sent[f"llm{i+1}"] = ultimatum_prompt.strip()
-
-            try:
-                new_result = provider.grade_with_vision(
-                    question_text=kwargs.get("question_text", ""),
-                    criteria=ultimatum_prompt,
-                    image_path=kwargs.get("image_path"),
-                    max_points=kwargs.get("max_points", 5),
-                    class_context=kwargs.get("class_context", ""),
-                    language=language
-                )
-                if asyncio.iscoroutine(new_result):
-                    new_result = await new_result
-                verified.append(new_result)
-            except Exception as e:
-                verified.append(round1_results[i])
-
-        return verified, prompts_sent
-
-    async def _run_ultimatum_with_fresh_call(
-        self,
-        round1_results: List[Dict],
-        original_results: List[Dict],
-        image_paths: List[str],
-        **kwargs
-    ) -> Tuple[List[Dict], Dict[str, str]]:
-        """
-        Ultimatum with FRESH call + explicit evolution context + images re-sent.
-
-        Final attempt when disagreement persists after cross-verification.
-        Each LLM gets a completely fresh call with images re-sent.
-
-        Args:
-            round1_results: Results from first verification round
-            original_results: Original grading results (before any verification)
-            image_paths: List of image paths to RE-SEND
-            **kwargs: Original grading arguments
-
-        Returns:
-            Tuple of (final_results, prompts_sent)
-        """
-        verified = []
-        prompts_sent = {"llm1": None, "llm2": None}
-
-        for i, (name, provider) in enumerate(self.providers):
-            other_result = round1_results[1 - i]
-            other_reasoning = other_result.get("internal_reasoning", "")
-            other_grade = other_result.get("grade", 0)
-            other_original_grade = original_results[1 - i].get("grade", 0)
-            my_original_grade = original_results[i].get("grade", 0)
-            my_round1_grade = round1_results[i].get("grade", 0)
+            my_grade = round1_results[i].get("grade", 0)
 
             language = kwargs.get("language", "fr")
             max_points = kwargs.get("max_points", 5)
-
-            # Detect if this LLM changed their grade
-            i_changed = abs(my_round1_grade - my_original_grade) > 0.01
-            other_changed = abs(other_grade - other_original_grade) > 0.01
-
-            # Build evolution summary
-            if language == "fr":
-                my_evolution = f"{my_original_grade} → {my_round1_grade}" if i_changed else f"{my_original_grade} (maintenue)"
-                other_evolution = f"{other_original_grade} → {other_grade}" if other_changed else f"{other_original_grade} (maintenue)"
-                change_warning = "\n⚠ ATTENTION: Tu as MODIFIÉ ta note après avoir vu l'avis de l'autre. Confirme que ce changement est justifié objectivement." if i_changed else ""
-            else:
-                my_evolution = f"{my_original_grade} → {my_round1_grade}" if i_changed else f"{my_original_grade} (maintained)"
-                other_evolution = f"{other_original_grade} → {other_grade}" if other_changed else f"{other_original_grade} (maintained)"
-                change_warning = "\n⚠ WARNING: You CHANGED your grade after seeing the other's opinion. Confirm that this change is objectively justified." if i_changed else ""
 
             if language == "fr":
                 ultimatum_prompt = f"""
@@ -1278,30 +1285,25 @@ FORBIDDEN: Don't choose randomly. Every decision must be justified.
 Question: {kwargs.get('question_text', '')}
 Note maximale: {max_points} points
 
-DÉSACCORD PERSISTANT après vérification croisée:
-- Ta note: {my_evolution}/{max_points}
-- Autre note: {other_evolution}/{max_points}
-{change_warning}
-Son raisonnement: {other_reasoning[:400]}
+DÉSACCORD PERSISTANT après vérification:
+- Ta note: {my_grade}/{max_points}
+- Autre note: {other_grade}/{max_points}
 
-─── RÉEXAMEN INDÉPENDANT ───
-1. RELIS TOI-MÊME la réponse de l'élève sur les images
-2. ANALYSE objectivement ce qui est correct et ce qui ne l'est pas
-3. Prends TA décision finale
+Son raisonnement: {other_reasoning[:300]}
 
-Tu dois choisir:
-- Option A: Accepter l'autre note → explique pourquoi cette analyse est meilleure
-- Option B: Maintenir ta note → arguments précis qui justifient ta position
+─── RÈGLES ───
+- Option A: Accepter l'autre note → explique pourquoi
+- Option B: Maintenir ta note → arguments précis
 - SI INCERTAIN: abaisse ta CONFIANCE (< 0.5)
 
-INTERDICTION: Ne choisis pas au hasard. Chaque décision doit être justifiée.
+INTERDICTION: Ne choisis pas au hasard.
 
-─── FORMAT DE RÉPONSE REQUIS ───
-STUDENT_ANSWER_READ: [ce que tu lis toi-même sur la copie]
-GRADE: [ta note finale]/{max_points}
+FORMAT DE RÉPONSE:
+GRADE: [note]/{max_points}
 CONFIDENCE: [0.0-1.0]
-INTERNAL_REASONING: [ton analyse finale]
-STUDENT_FEEDBACK: [feedback pour l'élève]
+STUDENT_ANSWER_READ: [lecture]
+INTERNAL_REASONING: [analyse]
+STUDENT_FEEDBACK: [feedback]
 """
             else:
                 ultimatum_prompt = f"""
@@ -1309,40 +1311,34 @@ STUDENT_FEEDBACK: [feedback pour l'élève]
 Question: {kwargs.get('question_text', '')}
 Max points: {max_points}
 
-PERSISTENT DISAGREEMENT after cross-verification:
-- Your grade: {my_evolution}/{max_points}
-- Other grade: {other_evolution}/{max_points}
-{change_warning}
-Their reasoning: {other_reasoning[:400]}
+PERSISTENT DISAGREEMENT after verification:
+- Your grade: {my_grade}/{max_points}
+- Other grade: {other_grade}/{max_points}
 
-─── INDEPENDENT RE-EXAMINATION ───
-1. RE-READ the student's answer yourself from the images
-2. ANALYZE objectively what is correct and what is not
-3. Make YOUR final decision
+Their reasoning: {other_reasoning[:300]}
 
-You must choose:
-- Option A: Accept the other grade → explain why this analysis is better
-- Option B: Maintain your grade → precise arguments supporting your position
+─── RULES ───
+- Option A: Accept the other grade → explain why
+- Option B: Maintain your grade → precise arguments
 - IF UNCERTAIN: lower your CONFIDENCE (< 0.5)
 
-FORBIDDEN: Don't choose randomly. Every decision must be justified.
+FORBIDDEN: Don't choose randomly.
 
-─── REQUIRED RESPONSE FORMAT ───
-STUDENT_ANSWER_READ: [what you read yourself from the copy]
-GRADE: [your final grade]/{max_points}
+RESPONSE FORMAT:
+GRADE: [grade]/{max_points}
 CONFIDENCE: [0.0-1.0]
-INTERNAL_REASONING: [your final analysis]
-STUDENT_FEEDBACK: [feedback for the student]
+STUDENT_ANSWER_READ: [reading]
+INTERNAL_REASONING: [analysis]
+STUDENT_FEEDBACK: [feedback]
 """
 
             prompts_sent[f"llm{i+1}"] = ultimatum_prompt.strip()
 
             try:
-                # FRESH call with images RE-SENT
                 new_result = provider.grade_with_vision(
                     question_text=kwargs.get("question_text", ""),
                     criteria=ultimatum_prompt,
-                    image_path=image_paths,
+                    image_path=kwargs.get("image_path"),
                     max_points=max_points,
                     class_context=kwargs.get("class_context", ""),
                     language=language
@@ -1350,17 +1346,14 @@ STUDENT_FEEDBACK: [feedback for the student]
                 if asyncio.iscoroutine(new_result):
                     new_result = await new_result
 
-                # Warn if grade couldn't be parsed
                 if new_result.get("grade") is None:
-                    import logging
-                    logging.warning(f"Failed to parse grade from {name} ultimatum response. Using round1 grade.")
-                    new_result["grade"] = my_round1_grade
+                    new_result["grade"] = my_grade
                     new_result["_parse_failed"] = True
 
                 verified.append(new_result)
             except Exception as e:
                 import logging
-                logging.error(f"Ultimatum failed for {name}: {e}")
+                logging.error(f"Ultimatum round failed for {name}: {e}")
                 verified.append(round1_results[i])
 
         return verified, prompts_sent
@@ -2286,7 +2279,8 @@ CONFIDENCE: [0.0 to 1.0]"""
         image_paths: List[str],
         language: str = "fr",
         disagreement_callback: callable = None,
-        reading_disagreement_callback: callable = None
+        reading_disagreement_callback: callable = None,
+        second_reading: bool = False
     ) -> Dict[str, Any]:
         """
         Grade a copy using dual-LLM verification.
@@ -2308,6 +2302,7 @@ CONFIDENCE: [0.0 to 1.0]"""
             language: Language for prompts
             disagreement_callback: Optional callback for grade disagreements
             reading_disagreement_callback: Optional callback for reading disagreements
+            second_reading: If True, include second reading instruction in prompts
 
         Returns:
             Dict with:
@@ -2336,7 +2331,7 @@ CONFIDENCE: [0.0 to 1.0]"""
             grader = SinglePassGrader(provider)
             try:
                 result = await grader.grade_all_questions(
-                    questions, image_paths, language
+                    questions, image_paths, language, second_reading=second_reading
                 )
                 return (index, name, result)
             except Exception as e:
@@ -2382,7 +2377,12 @@ CONFIDENCE: [0.0 to 1.0]"""
 
         # Note: analysis_complete is emitted by session.py with full data
 
-        # ===== PHASE 3: Targeted Verification with FRESH calls (images RE-SENT) =====
+        # ===== Determine initial student name (may be updated during verification) =====
+        # Start with single-pass consensus or first available
+        final_student_name = report.llm1_name or report.llm2_name
+        name_needs_verification = report.name_disagreement is not None
+
+        # ===== PHASE 3: Unified Verification (NEW) =====
         final_results = {}
         verification_audit = {}
 
@@ -2391,176 +2391,105 @@ CONFIDENCE: [0.0 to 1.0]"""
             llm1_q = single_pass_results[provider_names[0]].questions.get(qid)
             llm2_q = single_pass_results[provider_names[1]].questions.get(qid)
 
+            # Use detected max_points (prefer LLM1's detection, or average if different)
+            detected_max_points = llm1_q.max_points if llm1_q else 1.0
+
             # Use LLM1's result as base (they agreed anyway)
             final_results[qid] = {
                 "grade": llm1_q.grade,
+                "max_points": detected_max_points,  # Include detected scale
                 "confidence": (llm1_q.confidence + llm2_q.confidence) / 2,
                 "student_answer_read": llm1_q.student_answer_read,
                 "student_feedback": llm1_q.feedback,
                 "internal_reasoning": llm1_q.reasoning,
                 "method": "single_pass_consensus"
             }
+            # Simplified audit - no need to repeat llm1/llm2 data (already in single_pass)
             verification_audit[qid] = {
                 "method": "single_pass",
-                "agreement": True,
-                "llm1": llm1_q.to_dict(),
-                "llm2": llm2_q.to_dict(),
-                "final": final_results[qid]
+                "agreement": True
             }
 
-        # Questions with disagreement: run verification with FRESH calls (images RE-SENT)
-        for disagreement in report.flagged_questions:
-            qid = disagreement.question_id
+        # ===== UNIFIED VERIFICATION for ALL disagreements =====
+        if report.has_any_disagreement:
+            await self._notify_progress('grading_phase_start', {
+                'phase': 'unified_verification',
+                'num_disagreements': len(report.flagged_questions),
+                'name_disagreement': report.name_disagreement is not None
+            })
 
-            # Note: verification_start is emitted by session.py
-
-            # Find the question definition
-            q_def = next((q for q in questions if q["id"] == qid), None)
-            if not q_def:
-                continue
-
-            # Build initial results from single-pass for this question
-            sp_llm1_q = single_pass_results[provider_names[0]].questions.get(qid)
-            sp_llm2_q = single_pass_results[provider_names[1]].questions.get(qid)
-
-            initial_results = [
-                {
-                    "grade": sp_llm1_q.grade if sp_llm1_q else 0,
-                    "confidence": sp_llm1_q.confidence if sp_llm1_q else 0.5,
-                    "student_answer_read": sp_llm1_q.student_answer_read if sp_llm1_q else "",
-                    "internal_reasoning": sp_llm1_q.reasoning if sp_llm1_q else "",
-                    "student_feedback": sp_llm1_q.feedback if sp_llm1_q else ""
-                },
-                {
-                    "grade": sp_llm2_q.grade if sp_llm2_q else 0,
-                    "confidence": sp_llm2_q.confidence if sp_llm2_q else 0.5,
-                    "student_answer_read": sp_llm2_q.student_answer_read if sp_llm2_q else "",
-                    "internal_reasoning": sp_llm2_q.reasoning if sp_llm2_q else "",
-                    "student_feedback": sp_llm2_q.feedback if sp_llm2_q else ""
-                }
-            ]
-
-            # Run verification with FRESH call (images RE-SENT)
-            verified_results, verification_prompts = await self._run_verification_with_fresh_call(
-                initial_results,
-                image_paths,  # RE-SEND images
-                question_text=q_def["text"],
-                criteria=q_def["criteria"],
-                max_points=q_def["max_points"],
+            # Run unified verification for ALL disagreements in ONE call per LLM
+            verified_results, consensus_name, verification_info = await self._run_unified_verification(
+                questions=questions,
+                flagged_questions=report.flagged_questions,
+                name_disagreement=report.name_disagreement,
+                single_pass_results=single_pass_results,
+                image_paths=image_paths,
                 language=language
             )
 
-            verified_grades = [r.get("grade", 0) for r in verified_results]
-            verified_readings = [r.get("student_answer_read", "") for r in verified_results]
-            verified_result = None
-            method = "verification"
-            agreement = True
+            # Update student name if consensus reached
+            if consensus_name:
+                final_student_name = consensus_name
 
-            # Check if still disagreeing after ISOLATED verification
-            if len(verified_grades) == 2 and verified_grades[0] != verified_grades[1]:
-                # Phase 2b: Exchange verification - share readings between LLMs
-                exchange_results, exchange_prompts = await self._run_exchange_verification(
-                    verified_results,
-                    image_paths,  # RE-SEND images
-                    question_text=q_def["text"],
-                    criteria=q_def["criteria"],
-                    max_points=q_def["max_points"],
-                    language=language
-                )
-                exchange_grades = [r.get("grade", 0) for r in exchange_results]
+            # Merge verified results into final_results
+            final_results.update(verified_results)
 
-                # Check if still disagreeing after EXCHANGE
-                if len(exchange_grades) == 2 and exchange_grades[0] != exchange_grades[1]:
-                    # Phase 3: Ultimatum - final decision
-                    final_results_list, ultimatum_prompts = await self._run_ultimatum_with_fresh_call(
-                        exchange_results,
-                        verified_results,  # Pass verified results as "original"
-                        image_paths,  # RE-SEND images again
-                        question_text=q_def["text"],
-                        criteria=q_def["criteria"],
-                        max_points=q_def["max_points"],
-                        language=language
-                    )
-                    final_grades = [r.get("grade", 0) for r in final_results_list]
+            # Build audit for verified questions
+            for d in report.flagged_questions:
+                qid = d.question_id
+                sp_llm1_q = single_pass_results[provider_names[0]].questions.get(qid)
+                sp_llm2_q = single_pass_results[provider_names[1]].questions.get(qid)
 
-                    if len(final_grades) == 2 and final_grades[0] != final_grades[1]:
-                        # Persistent disagreement - average
-                        final_grade = sum(final_grades) / 2
-                        agreement = False
-                        method = "ultimatum_averaged"
-                    else:
-                        final_grade = final_grades[0] if final_grades else 0
-                        agreement = True
-                        method = "ultimatum_consensus"
-
-                    verified_result = {
-                        "grade": final_grade,
-                        "confidence": min(r.get("confidence", 0.5) for r in final_results_list),
-                        "student_answer_read": final_results_list[0].get("student_answer_read", ""),
-                        "student_feedback": final_results_list[0].get("student_feedback", ""),
-                        "internal_reasoning": final_results_list[0].get("internal_reasoning", ""),
-                        "comparison": {
-                            "initial": {"llm1": initial_results[0], "llm2": initial_results[1]},
-                            "after_isolated_verification": {"llm1": verified_results[0], "llm2": verified_results[1]},
-                            "after_exchange": {"llm1": exchange_results[0], "llm2": exchange_results[1]},
-                            "after_ultimatum": {"llm1": final_results_list[0], "llm2": final_results_list[1]},
-                            "final": {"grade": final_grade, "agreement": agreement}
-                        }
-                    }
-                else:
-                    # Agreement reached after EXCHANGE
-                    verified_result = {
-                        "grade": exchange_grades[0] if exchange_grades else 0,
-                        "confidence": (exchange_results[0].get("confidence", 0.5) + exchange_results[1].get("confidence", 0.5)) / 2,
-                        "student_answer_read": exchange_results[0].get("student_answer_read", ""),
-                        "student_feedback": exchange_results[0].get("student_feedback", ""),
-                        "internal_reasoning": exchange_results[0].get("internal_reasoning", ""),
-                        "comparison": {
-                            "initial": {"llm1": initial_results[0], "llm2": initial_results[1]},
-                            "after_isolated_verification": {"llm1": verified_results[0], "llm2": verified_results[1]},
-                            "after_exchange": {"llm1": exchange_results[0], "llm2": exchange_results[1]},
-                            "final": {"grade": exchange_grades[0] if exchange_grades else 0, "agreement": True}
-                        }
-                    }
-                    method = "exchange_consensus"
-                    agreement = True
-            else:
-                # Agreement reached after ISOLATED verification
-                verified_result = {
-                    "grade": verified_grades[0] if verified_grades else 0,
-                    "confidence": (verified_results[0].get("confidence", 0.5) + verified_results[1].get("confidence", 0.5)) / 2,
-                    "student_answer_read": verified_results[0].get("student_answer_read", ""),
-                    "student_feedback": verified_results[0].get("student_feedback", ""),
-                    "internal_reasoning": verified_results[0].get("internal_reasoning", ""),
-                    "comparison": {
-                        "initial": {"llm1": initial_results[0], "llm2": initial_results[1]},
-                        "after_isolated_verification": {"llm1": verified_results[0], "llm2": verified_results[1]},
-                        "final": {"grade": verified_grades[0] if verified_grades else 0, "agreement": True}
+                verification_audit[qid] = {
+                    "method": verified_results[qid].get("method", "unified"),
+                    "agreement": not verified_results[qid].get("_needs_ultimatum", False),
+                    "reason": d.reason,
+                    "evolution": {
+                        "initial": [
+                            sp_llm1_q.grade if sp_llm1_q else 0,
+                            sp_llm2_q.grade if sp_llm2_q else 0
+                        ],
+                        "final": verified_results[qid].get("grade")
                     }
                 }
-                method = "consensus"
-                agreement = True
 
-            final_results[qid] = {
-                "grade": verified_result.get("grade"),
-                "confidence": verified_result.get("confidence"),
-                "student_answer_read": verified_result.get("student_answer_read", ""),
-                "student_feedback": verified_result.get("student_feedback", ""),
-                "internal_reasoning": verified_result.get("internal_reasoning", ""),
-                "method": method
-            }
+            # Check if there are remaining disagreements needing ultimatum
+            remaining = getattr(self, '_unified_remaining', [])
+            if remaining:
+                await self._notify_progress('grading_phase_start', {
+                    'phase': 'unified_ultimatum',
+                    'num_remaining': len(remaining)
+                })
 
-            verification_audit[qid] = {
-                "method": method,
-                "agreement": agreement,
-                "single_pass": {
-                    "llm1": sp_llm1_q.to_dict() if sp_llm1_q else None,
-                    "llm2": sp_llm2_q.to_dict() if sp_llm2_q else None,
-                    "flagged_reason": disagreement.reason
-                },
-                "verification": verified_result.get("comparison") if verified_result else None,
-                "final": final_results[qid]
-            }
+                # Run unified ultimatum
+                ultimatum_results, final_name, ultimatum_info = await self._run_unified_ultimatum(
+                    questions=questions,
+                    remaining_disagreements=remaining,
+                    evolution=getattr(self, '_unified_evolution', {}),
+                    name_disagreement=report.name_disagreement if name_needs_verification else None,
+                    verification_results=verified_results,
+                    image_paths=image_paths,
+                    language=language
+                )
+
+                # Update with ultimatum results
+                for qid, result in ultimatum_results.items():
+                    final_results[qid] = result
+                    verification_audit[qid] = {
+                        "method": result.get("method", "ultimatum"),
+                        "agreement": "consensus" in result.get("method", ""),
+                        "evolution": {
+                            **verification_audit[qid].get("evolution", {}),
+                            "after_ultimatum": result.get("grade")
+                        }
+                    }
+
+                if final_name:
+                    final_student_name = final_name
+
+            # Store verification info in audit
+            verification_audit["_unified"] = verification_info
 
         # ===== PHASE 4: Assemble Final Results =====
         total_duration = (time.time() - total_start) * 1000
@@ -2572,27 +2501,97 @@ CONFIDENCE: [0.0 to 1.0]"""
             'total_duration_ms': round(total_duration, 1)
         })
 
-        return {
-            "questions": final_results,
-            "audit": {
-                "method": "dual_llm",
-                "single_pass": {
-                    provider_names[0]: single_pass_results[provider_names[0]].to_dict(),
-                    provider_names[1]: single_pass_results[provider_names[1]].to_dict()
+        # Helper for natural sorting (Q1, Q2, Q10 instead of Q1, Q10, Q2)
+        def natural_sort_key(s):
+            import re
+            match = re.match(r'Q(\d+)', str(s))
+            if match:
+                return (0, int(match.group(1)))
+            return (1, str(s))
+
+        # Build audit organized BY QUESTION (not by phase), in natural order
+        questions_audit = {}
+
+        for qid in sorted(final_results.keys(), key=natural_sort_key):
+            sp_llm1_q = single_pass_results[provider_names[0]].questions.get(qid)
+            sp_llm2_q = single_pass_results[provider_names[1]].questions.get(qid)
+
+            questions_audit[qid] = {
+                # Single pass results for each LLM
+                provider_names[0]: {
+                    "grade": sp_llm1_q.grade if sp_llm1_q else None,
+                    "max_points": sp_llm1_q.max_points if sp_llm1_q else 1.0,
+                    "reading": sp_llm1_q.student_answer_read if sp_llm1_q else "",
+                    "reasoning": sp_llm1_q.reasoning if sp_llm1_q else "",
+                    "feedback": sp_llm1_q.feedback if sp_llm1_q else "",
+                    "confidence": sp_llm1_q.confidence if sp_llm1_q else 0.5
                 },
-                "disagreement_report": report.to_dict(),
-                "verification": verification_audit,
-                "timing": {
-                    "total_ms": round(total_duration, 1)
+                provider_names[1]: {
+                    "grade": sp_llm2_q.grade if sp_llm2_q else None,
+                    "max_points": sp_llm2_q.max_points if sp_llm2_q else 1.0,
+                    "reading": sp_llm2_q.student_answer_read if sp_llm2_q else "",
+                    "reasoning": sp_llm2_q.reasoning if sp_llm2_q else "",
+                    "feedback": sp_llm2_q.feedback if sp_llm2_q else "",
+                    "confidence": sp_llm2_q.confidence if sp_llm2_q else 0.5
+                },
+                # Verification (null if agreed in single pass)
+                "verification": verification_audit.get(qid),
+                # Final result
+                "final": {
+                    "grade": final_results[qid].get("grade"),
+                    "max_points": final_results[qid].get("max_points"),
+                    "confidence": final_results[qid].get("confidence"),
+                    "feedback": final_results[qid].get("student_feedback")
                 }
+            }
+
+        # Build final_results in natural order too
+        sorted_final_results = {qid: final_results[qid] for qid in sorted(final_results.keys(), key=natural_sort_key)}
+
+        # Build results section (simplified final results per question)
+        results = {}
+        for qid in sorted(final_results.keys(), key=natural_sort_key):
+            results[qid] = {
+                "grade": final_results[qid].get("grade"),
+                "max_points": final_results[qid].get("max_points"),
+                "reading": final_results[qid].get("student_answer_read", ""),
+                "feedback": final_results[qid].get("student_feedback", "")
+            }
+
+        # Build verification summary
+        verification_summary = {
+            "type": "unified",
+            "questions_verified": list(verification_audit.keys()),
+            "name_verified": report.name_disagreement is not None
+        }
+        if "_unified" in verification_audit:
+            verification_summary["phases"] = verification_audit["_unified"].get("phases", 1)
+            del verification_audit["_unified"]
+
+        return {
+            "results": results,
+            "student_name": final_student_name,
+            "student_name_disagreement": report.name_disagreement.to_dict() if report.name_disagreement else None,
+            "options": {
+                "mode": "dual_llm",
+                "providers": provider_names,
+                "verification_type": "unified",
+                "second_reading": second_reading,
+                "num_pages": len(image_paths),
+                "num_questions": len(questions)
             },
+            "verification": verification_summary,
+            "llm_comparison": questions_audit,
             "summary": {
                 "total_questions": len(questions),
                 "agreed_in_single_pass": len(report.agreed_questions),
                 "required_verification": len(report.flagged_questions),
                 "agreement_rate": report.agreement_rate,
                 "total_score": sum(r["grade"] or 0 for r in final_results.values()),
-                "max_score": sum(q["max_points"] for q in questions)
+                "max_score": sum(r.get("max_points", 1.0) for r in final_results.values())
+            },
+            "timing": {
+                "total_ms": round(total_duration, 1)
             }
         }
 
@@ -2621,7 +2620,6 @@ CONFIDENCE: [0.0 to 1.0]"""
                 max_points=q["max_points"],
                 language=language,
                 question_id=qid,
-                disagreement_callback=disagreement_callback,
                 reading_disagreement_callback=reading_disagreement_callback
             )
 
@@ -2644,6 +2642,9 @@ CONFIDENCE: [0.0 to 1.0]"""
             "questions": final_results,
             "audit": {
                 "method": "per_question_fallback",
+                "options": {
+                    "second_reading": False  # Fallback doesn't support second reading
+                },
                 "verification": verification_audit,
                 "timing": {
                     "total_ms": round(total_duration, 1)

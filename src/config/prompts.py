@@ -496,7 +496,8 @@ def _format_questions_for_feedback(graded_copy: Any, language: str) -> str:
 
 def build_multi_question_grading_prompt(
     questions: List[Dict[str, Any]],
-    language: str = "fr"
+    language: str = "fr",
+    second_reading: bool = False
 ) -> str:
     """
     Build prompt for grading multiple questions in a single API call.
@@ -508,6 +509,7 @@ def build_multi_question_grading_prompt(
             - criteria: Grading criteria
             - max_points: Maximum points
         language: Language for prompt
+        second_reading: If True, add second reading instruction in prompt
 
     Returns:
         Formatted prompt for multi-question grading
@@ -515,43 +517,42 @@ def build_multi_question_grading_prompt(
     # Build questions section
     questions_section = ""
     for i, q in enumerate(questions, 1):
+        # Don't show max_points since it needs to be detected by the LLM
         questions_section += f"""
 ━━━ QUESTION {q['id']} ━━━
 TEXTE: {q['text']}
 CRITÈRES: {q['criteria']}
-NOTE MAX: {q['max_points']} points
 
 """
 
     if language == "fr":
-        return f"""Tu es un correcteur expérimenté. Analyse cette copie et corrige TOUTES les questions.
+        base_prompt = f"""Tu es un correcteur expérimenté. Analyse cette copie et corrige TOUTES les questions.
 
 ━━━ QUESTIONS À CORRIGER ━━━
 {questions_section}
 
-━━━ INSTRUCTIONS ━━━
-1. Parcours TOUTES les pages de la copie
+━━━ INSTRUCTIONS IMPORTANTES ━━━
+1. CHERCHE D'ABORD LE BARÈME sur le document:
+   - Regarde en haut de la page, à côté de chaque question
+   - Le barème est souvent indiqué comme "(1pt)", "(2 pts)", "/1", "/2", etc.
+   - Si tu ne trouves pas le barème, utilise 1 point par défaut
+
 2. Pour CHAQUE question:
-   - Localise la réponse de l'élève (précise la page/zone)
+   - Localise la réponse de l'élève
    - Lis EXACTEMENT ce qu'il a écrit
-   - Note selon les critères
-   - Évalue ta CERTITUDE (0-1)
-3. Génère un feedback sobre pour chaque question
+   - Note sur le barème détecté (0 à max)
+   - Évalue ta certitude (0-1)
 
-━━━ DÉFINITION DE LA CERTITUDE ━━━
-- 1.0: Réponse claire, note évidente
-- 0.8-0.9: Réponse lisible, interprétation fiable
-- 0.6-0.7: Légère incertitude
-- < 0.6: Forte incertitude, révision possible
+3. Génère un feedback sobre
 
-━━━ RÈGLES DE FEEDBACK ━━━
-- Ton sobre et professionnel
-- Questions faciles: 1-5 mots
-- Questions difficiles: diagnostic + correction
-- Pas de félicitations
+━━━ NOTATION RELATIVE AU BARÈME ━━━
+- La note DOIT être comprise entre 0 et le barème détecté
+- Exemple: si barème = 2 points, la note peut être 0, 0.5, 1, 1.5 ou 2
+- 0 = réponse fausse ou absente
+- Max = réponse complète et correcte
 
 ━━━ FORMAT DE RÉPONSE (JSON) ━━━
-Réponds UNIQUEMENT avec un JSON valide, sans texte avant/après:
+Réponds UNIQUEMENT avec un JSON valide:
 
 {{
   "student_name": "<nom détecté ou null>",
@@ -559,45 +560,43 @@ Réponds UNIQUEMENT avec un JSON valide, sans texte avant/après:
     "Q1": {{
       "location": "<page X, zone Y>",
       "student_answer_read": "<texte exact écrit par l'élève>",
-      "grade": <note>,
+      "max_points": <barème détecté sur la copie>,
+      "grade": <note sur le barème>,
       "confidence": <0.0-1.0>,
-      "reasoning": "<analyse technique justifiant la note>",
+      "reasoning": "<analyse technique>",
       "feedback": "<retour sobre>"
     }},
-    "Q2": {{ ... }},
-    ...
-  }},
-  "overall_comments": "<commentaire global optionnel>"
+    "Q2": {{ ... }}
+  }}
 }}"""
     else:
-        return f"""You are an experienced grader. Analyze this copy and grade ALL questions.
+        base_prompt = f"""You are an experienced grader. Analyze this copy and grade ALL questions.
 
 ━━━ QUESTIONS TO GRADE ━━━
 {questions_section}
 
-━━━ INSTRUCTIONS ━━━
-1. Go through ALL pages of the copy
+━━━ IMPORTANT INSTRUCTIONS ━━━
+1. FIRST FIND THE SCALE on the document:
+   - Look at the top of the page, next to each question
+   - Scale is often indicated as "(1pt)", "(2 pts)", "/1", "/2", etc.
+   - If you can't find the scale, use 1 point as default
+
 2. For EACH question:
-   - Locate the student's answer (specify page/zone)
+   - Locate the student's answer
    - Read EXACTLY what they wrote
-   - Grade according to criteria
-   - Evaluate your CERTAINTY (0-1)
-3. Generate sober feedback for each question
+   - Grade on the detected scale (0 to max)
+   - Evaluate your certainty (0-1)
 
-━━━ CERTAINTY DEFINITION ━━━
-- 1.0: Clear answer, obvious grade
-- 0.8-0.9: Readable, reliable interpretation
-- 0.6-0.7: Slight uncertainty
-- < 0.6: High uncertainty, may need review
+3. Generate sober feedback
 
-━━━ FEEDBACK RULES ━━━
-- Sober professional tone
-- Easy questions: 1-5 words
-- Difficult questions: diagnosis + correction
-- No congratulations
+━━━ GRADING RELATIVE TO SCALE ━━━
+- Grade MUST be between 0 and the detected scale
+- Example: if scale = 2 points, grade can be 0, 0.5, 1, 1.5 or 2
+- 0 = wrong or missing answer
+- Max = complete and correct answer
 
 ━━━ RESPONSE FORMAT (JSON) ━━━
-Respond ONLY with valid JSON, no text before/after:
+Respond ONLY with valid JSON:
 
 {{
   "student_name": "<detected name or null>",
@@ -605,16 +604,42 @@ Respond ONLY with valid JSON, no text before/after:
     "Q1": {{
       "location": "<page X, zone Y>",
       "student_answer_read": "<exact text written by student>",
-      "grade": <score>,
+      "max_points": <scale detected on copy>,
+      "grade": <score on scale>,
       "confidence": <0.0-1.0>,
-      "reasoning": "<technical analysis justifying the grade>",
+      "reasoning": "<technical analysis>",
       "feedback": "<sober feedback>"
     }},
-    "Q2": {{ ... }},
-    ...
-  }},
-  "overall_comments": "<optional overall comment>"
+    "Q2": {{ ... }}
+  }}
 }}"""
+
+    # Add second reading instruction if enabled
+    if second_reading:
+        if language == "fr":
+            base_prompt += """
+
+━━━ DEUXIÈME LECTURE (IMPORTANT) ━━━
+Après ta première correction:
+1. RELIS ta correction en entier
+2. Vérifie que chaque note correspond au barème détecté
+3. Vérifie que tes lectures des réponses sont exactes
+4. Ajuste si nécessaire
+
+Tu dois faire ce travail de vérification DANS CETTE MÊME RÉPONSE."""
+        else:
+            base_prompt += """
+
+━━━ SECOND READING (IMPORTANT) ━━━
+After your first grading pass:
+1. RE-READ your corrections entirely
+2. Verify each grade matches the detected scale
+3. Verify your readings of answers are accurate
+4. Adjust if necessary
+
+You must do this verification IN THIS SAME RESPONSE."""
+
+    return base_prompt
 
 
 def build_cross_copy_analysis_prompt(
@@ -689,6 +714,325 @@ COMMON_CORRECT: <list of common correct answers, comma-separated, or "none">
 COMMON_ERRORS: <list of common errors, comma-separated, or "none">
 UNIQUE_APPROACHES: <list of unique approaches, comma-separated, or "none">
 DIFFICULTY_ESTIMATE: <estimate 0.0-1.0>"""
+
+
+# ============= UNIFIED VERIFICATION PROMPTS =============
+
+def build_unified_verification_prompt(
+    questions: List[Dict[str, Any]],
+    disagreements: List[Dict[str, Any]],
+    name_disagreement: Optional[Dict[str, Any]] = None,
+    language: str = "fr"
+) -> str:
+    """
+    Build unified verification prompt for ALL disagreements.
+
+    Args:
+        questions: List of all question dicts with id, text, criteria, max_points
+        disagreements: List of disagreement dicts, each with:
+            - question_id: str
+            - llm1: {grade, reading, confidence, max_points}
+            - llm2: {grade, reading, confidence, max_points}
+            - type: disagreement type
+            - reason: str
+        name_disagreement: Optional dict with llm1_name, llm2_name
+        language: Language for prompt
+
+    Returns:
+        Formatted prompt for unified verification
+    """
+    # Build question lookup
+    question_lookup = {q["id"]: q for q in questions}
+
+    # Build name section if there's a name disagreement
+    name_section = ""
+    if name_disagreement:
+        if language == "fr":
+            name_section = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── NOM DE L'ÉLÈVE ───
+- Vous avez lu: "{name_disagreement.get('llm1_name', '')}"
+- L'autre correcteur a lu: "{name_disagreement.get('llm2_name', '')}"
+→ Réexaminez le nom sur la copie.
+"""
+        else:
+            name_section = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── STUDENT NAME ───
+- You read: "{name_disagreement.get('llm1_name', '')}"
+- The other grader read: "{name_disagreement.get('llm2_name', '')}"
+→ Re-examine the name on the copy.
+"""
+
+    # Build questions section
+    questions_section = ""
+    for d in disagreements:
+        qid = d["question_id"]
+        q = question_lookup.get(qid, {})
+        llm1 = d.get("llm1", {})
+        llm2 = d.get("llm2", {})
+
+        if language == "fr":
+            questions_section += f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── QUESTION {qid} ───
+Texte: {q.get('text', 'N/A')}
+Critères: {q.get('criteria', 'Non spécifiés')}
+Barème: {llm1.get('max_points', 1)} point(s)
+
+- Vous avez noté: {llm1.get('grade', 0)}/{llm1.get('max_points', 1)} (lecture: "{llm1.get('reading', '')}")
+- L'autre a noté: {llm2.get('grade', 0)}/{llm2.get('max_points', 1)} (lecture: "{llm2.get('reading', '')}")
+"""
+        else:
+            questions_section += f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── QUESTION {qid} ───
+Text: {q.get('text', 'N/A')}
+Criteria: {q.get('criteria', 'Not specified')}
+Scale: {llm1.get('max_points', 1)} point(s)
+
+- You graded: {llm1.get('grade', 0)}/{llm1.get('max_points', 1)} (reading: "{llm1.get('reading', '')}")
+- The other graded: {llm2.get('grade', 0)}/{llm2.get('max_points', 1)} (reading: "{llm2.get('reading', '')}")
+"""
+
+    # Build questions JSON format
+    questions_json = ""
+    for d in disagreements:
+        qid = d["question_id"]
+        llm1 = d.get("llm1", {})
+        questions_json += f'''
+    "{qid}": {{
+      "student_answer_read": "<votre lecture>",
+      "grade": <note>,
+      "max_points": {llm1.get('max_points', 1)},
+      "confidence": <0.0-1.0>,
+      "reasoning": "<analyse>",
+      "feedback": "<feedback>"
+    }},'''
+
+    # Remove trailing comma
+    if questions_json.endswith(','):
+        questions_json = questions_json[:-1]
+
+    if language == "fr":
+        return f"""─── VÉRIFICATION UNIFIÉE ───
+
+Vous avez corrigé cette copie avec un autre correcteur.
+Certains points sont en désaccord. Veuillez réexaminer TOUS ces éléments.
+{name_section}{questions_section}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── RÈGLES IMPORTANTES ───
+1. RELISEZ VOUS-MÊME les réponses sur les images (ne présumez de rien)
+2. Analysez OBJECTIVEMENT ce qui est correct et ce qui ne l'est pas
+3. Les erreurs de lecture manuscrite sont courantes - restez ouvert
+4. Ne changez que si vous êtes convaincu que l'autre analyse est meilleure
+5. Vous pouvez proposer une troisième lecture si les deux sont incorrectes
+6. Si incertain: abaissez votre confiance (< 0.5)
+
+⚠ INTERDICTION: Ne choisissez pas au hasard. Chaque décision doit être justifiée.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── FORMAT DE RÉPONSE (JSON) ───
+Réponds UNIQUEMENT avec un JSON valide:
+{{
+  "student_name": "<nom final ou null si inchangé>",
+  "questions": {{{questions_json}
+  }}
+}}"""
+    else:
+        return f"""─── UNIFIED VERIFICATION ───
+
+You graded this copy with another grader.
+Some points are in disagreement. Please re-examine ALL these elements.
+{name_section}{questions_section}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── IMPORTANT RULES ───
+1. RE-READ the answers yourself from the images (presume nothing)
+2. Analyze OBJECTIVELY what is correct and what is not
+3. Handwriting reading errors are common - stay open-minded
+4. Only change if you are convinced the other analysis is better
+5. You can propose a third reading if both are incorrect
+6. If uncertain: lower your confidence (< 0.5)
+
+⚠ FORBIDDEN: Don't choose randomly. Every decision must be justified.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── RESPONSE FORMAT (JSON) ───
+Respond ONLY with valid JSON:
+{{
+  "student_name": "<final name or null if unchanged>",
+  "questions": {{{questions_json}
+  }}
+}}"""
+
+
+def build_unified_ultimatum_prompt(
+    questions: List[Dict[str, Any]],
+    disagreements: List[Dict[str, Any]],
+    evolution: Dict[str, List[float]],
+    name_disagreement: Optional[Dict[str, Any]] = None,
+    name_evolution: Optional[List[str]] = None,
+    language: str = "fr"
+) -> str:
+    """
+    Build unified ultimatum prompt for remaining disagreements after verification.
+
+    Args:
+        questions: List of all question dicts
+        disagreements: List of disagreement dicts (only unresolved ones)
+        evolution: Dict mapping question_id -> list of grade tuples [(initial1, initial2), (after_v1, after_v2)]
+        name_disagreement: Optional dict with original name disagreement
+        name_evolution: Optional list of name tuples [(llm1_initial, llm2_initial), (llm1_after, llm2_after)]
+        language: Language for prompt
+
+    Returns:
+        Formatted prompt for unified ultimatum
+    """
+    # Build question lookup
+    question_lookup = {q["id"]: q for q in questions}
+
+    # Build name section if there's a name disagreement
+    name_section = ""
+    if name_disagreement:
+        if language == "fr":
+            name_section = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── NOM DE L'ÉLÈVE (TOUJOURS EN DÉSACCORD) ───
+- Vous avez lu initialement: "{name_disagreement.get('llm1_name', '')}"
+- L'autre a lu initialement: "{name_disagreement.get('llm2_name', '')}"
+→ DÉCISION FINALE requise.
+"""
+        else:
+            name_section = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── STUDENT NAME (STILL IN DISAGREEMENT) ───
+- You initially read: "{name_disagreement.get('llm1_name', '')}"
+- The other initially read: "{name_disagreement.get('llm2_name', '')}"
+→ FINAL DECISION required.
+"""
+
+    # Build questions section with evolution
+    questions_section = ""
+    for d in disagreements:
+        qid = d["question_id"]
+        q = question_lookup.get(qid, {})
+        q_evolution = evolution.get(qid, [])
+        llm1 = d.get("llm1", {})
+        llm2 = d.get("llm2", {})
+
+        # Format evolution
+        if len(q_evolution) >= 2:
+            initial = q_evolution[0]
+            after_v = q_evolution[1]
+            if language == "fr":
+                evolution_text = f"Évolution: {initial[0]} → {after_v[0]} (vous) | {initial[1]} → {after_v[1]} (autre)"
+            else:
+                evolution_text = f"Evolution: {initial[0]} → {after_v[0]} (you) | {initial[1]} → {after_v[1]} (other)"
+        elif len(q_evolution) == 1:
+            initial = q_evolution[0]
+            if language == "fr":
+                evolution_text = f"Notes initiales: {initial[0]} (vous) | {initial[1]} (autre)"
+            else:
+                evolution_text = f"Initial grades: {initial[0]} (you) | {initial[1]} (other)"
+        else:
+            evolution_text = ""
+
+        if language == "fr":
+            questions_section += f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── QUESTION {qid} (TOUJOURS EN DÉSACCORD) ───
+Texte: {q.get('text', 'N/A')}
+Critères: {q.get('criteria', 'Non spécifiés')}
+Barème: {llm1.get('max_points', 1)} point(s)
+
+- Votre note actuelle: {llm1.get('grade', 0)}/{llm1.get('max_points', 1)}
+- Note de l'autre: {llm2.get('grade', 0)}/{llm2.get('max_points', 1)}
+- {evolution_text}
+"""
+        else:
+            questions_section += f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── QUESTION {qid} (STILL IN DISAGREEMENT) ───
+Text: {q.get('text', 'N/A')}
+Criteria: {q.get('criteria', 'Not specified')}
+Scale: {llm1.get('max_points', 1)} point(s)
+
+- Your current grade: {llm1.get('grade', 0)}/{llm1.get('max_points', 1)}
+- Other's grade: {llm2.get('grade', 0)}/{llm2.get('max_points', 1)}
+- {evolution_text}
+"""
+
+    # Build questions JSON format
+    questions_json = ""
+    for d in disagreements:
+        qid = d["question_id"]
+        llm1 = d.get("llm1", {})
+        questions_json += f'''
+    "{qid}": {{
+      "student_answer_read": "<votre lecture finale>",
+      "grade": <note finale>,
+      "max_points": {llm1.get('max_points', 1)},
+      "confidence": <0.0-1.0>,
+      "reasoning": "<justification finale>",
+      "feedback": "<feedback>"
+    }},'''
+
+    # Remove trailing comma
+    if questions_json.endswith(','):
+        questions_json = questions_json[:-1]
+
+    if language == "fr":
+        return f"""─── ULTIMATUM UNIFIÉ - DÉCISION FINALE ───
+
+Le désaccord PERSISTE après vérification. Vous devez prendre une DÉCISION FINALE.
+{name_section}{questions_section}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── VOS OPTIONS ───
+Pour CHAQUE point en désaccord, vous devez choisir:
+- Option A: Accepter l'autre note/nom → expliquez pourquoi cette analyse est meilleure
+- Option B: Maintenir votre note/nom → arguments précis qui justifient votre position
+- SI INCERTAIN: abaissez votre CONFIANCE (< 0.5)
+
+⚠ INTERDICTION: Ne choisissez pas au hasard. Chaque décision doit être justifiée.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── FORMAT DE RÉPONSE (JSON) ───
+Réponds UNIQUEMENT avec un JSON valide:
+{{
+  "student_name": "<nom final ou null si inchangé>",
+  "questions": {{{questions_json}
+  }}
+}}"""
+    else:
+        return f"""─── UNIFIED ULTIMATUM - FINAL DECISION ───
+
+Disagreement PERSISTS after verification. You must make a FINAL DECISION.
+{name_section}{questions_section}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── YOUR OPTIONS ───
+For EACH point in disagreement, you must choose:
+- Option A: Accept the other grade/name → explain why this analysis is better
+- Option B: Maintain your grade/name → precise arguments supporting your position
+- IF UNCERTAIN: lower your CONFIDENCE (< 0.5)
+
+⚠ FORBIDDEN: Don't choose randomly. Every decision must be justified.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+─── RESPONSE FORMAT (JSON) ───
+Respond ONLY with valid JSON:
+{{
+  "student_name": "<final name or null if unchanged>",
+  "questions": {{{questions_json}
+  }}
+}}"""
 
 
 # Test
