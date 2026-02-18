@@ -17,6 +17,7 @@ from core.models import (
     GradingSession, CopyDocument, GradedCopy, ClassAnswerMap,
     TeacherDecision, SessionStatus, ConfidenceLevel, generate_id
 )
+from core.workflow_state import CorrectionState, WorkflowPhase
 from ai import create_ai_provider
 from ai.provider_factory import create_comparison_provider
 from config.settings import get_settings
@@ -52,7 +53,8 @@ class GradingSessionOrchestrator:
         force_single_llm: bool = False,
         pages_per_student: int = None,
         second_reading: bool = False,
-        parallel: int = 6
+        parallel: int = 6,
+        workflow_state: CorrectionState = None
     ):
         """
         Initialize the orchestrator.
@@ -75,6 +77,7 @@ class GradingSessionOrchestrator:
             pages_per_student: If set, activates individual reading mode (PDF pre-split by page count)
             second_reading: If True, enables second reading (2 passes for Single LLM, re-reading instruction for Dual LLM)
             parallel: Number of copies to process in parallel (default: 6)
+            workflow_state: Optional CorrectionState for tracking workflow state
         """
         from config.constants import DATA_DIR
 
@@ -88,6 +91,9 @@ class GradingSessionOrchestrator:
         self._pages_per_student = pages_per_student
         self._second_reading = second_reading
         self._parallel = parallel
+
+        # Workflow state tracking
+        self._workflow_state = workflow_state
 
         # Initialize session
         if session_id:
@@ -132,6 +138,24 @@ class GradingSessionOrchestrator:
         # Analysis results (available after analyze_only)
         self._analysis_complete = False
         self._grading_complete = False
+
+    @property
+    def workflow_state(self) -> CorrectionState:
+        """Get the workflow state, creating a default if not set."""
+        if self._workflow_state is None:
+            self._workflow_state = CorrectionState(
+                session_id=self.session_id,
+                phase=WorkflowPhase.INITIALIZATION
+            )
+        return self._workflow_state
+
+    def set_workflow_state(self, state: CorrectionState) -> None:
+        """Update the workflow state."""
+        self._workflow_state = state
+
+    def update_workflow_phase(self, phase: WorkflowPhase) -> None:
+        """Update the workflow phase."""
+        self._workflow_state = self.workflow_state.with_phase(phase)
 
     # ==================== COMPLETE WORKFLOW ====================
 

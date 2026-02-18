@@ -30,6 +30,7 @@ from rich.table import Table
 from rich.panel import Panel
 
 from core.session import GradingSessionOrchestrator
+from core.workflow import CorrectionWorkflow, WorkflowConfig, WorkflowCallbacks
 from utils.sorting import natural_sort_key
 from config.settings import get_settings
 from config.constants import DEFAULT_PARALLEL_COPIES
@@ -84,6 +85,109 @@ def validate_pdf_path(path_str: str) -> tuple[bool, str]:
         return False, f"Not a PDF file: {path.suffix}"
 
     return True, ""
+
+
+def create_workflow_callbacks(
+    cli: CLI,
+    language: str,
+    auto_mode: bool
+) -> WorkflowCallbacks:
+    """
+    Create workflow callbacks that integrate with CLI.
+
+    Args:
+        cli: CLI instance for user interaction
+        language: Language for prompts
+        auto_mode: Whether to auto-resolve disagreements
+
+    Returns:
+        WorkflowCallbacks instance
+    """
+    async def on_disagreement(
+        question_id: str,
+        question_text: str,
+        llm1_name: str,
+        llm1_result: dict,
+        llm2_name: str,
+        llm2_result: dict,
+        max_points: float
+    ) -> tuple[float, str]:
+        """Handle grading disagreement."""
+        grade1 = llm1_result.get('grade', 0) or 0
+        grade2 = llm2_result.get('grade', 0) or 0
+        average_grade = (grade1 + grade2) / 2
+
+        if auto_mode:
+            cli.console.print(
+                f"    [yellow]⚠ {llm1_name}: {grade1} vs "
+                f"{llm2_name}: {grade2} → moyenne: {average_grade:.2f}[/yellow]"
+            )
+            return average_grade, "merge"
+
+        try:
+            llm1_result['max_points'] = max_points
+            llm2_result['max_points'] = max_points
+            return cli.show_disagreement(
+                question_id=question_id or "Question",
+                question_text=question_text,
+                llm1_name=llm1_name,
+                llm1_result=llm1_result,
+                llm2_name=llm2_name,
+                llm2_result=llm2_result,
+                language=language
+            )
+        except (EOFError, KeyboardInterrupt):
+            cli.console.print(f"    [dim]Utilisation de la moyenne: {average_grade:.2f}[/dim]")
+            return average_grade, "merge"
+
+    async def on_name_disagreement(llm1_result: dict, llm2_result: dict) -> str:
+        """Handle name disagreement."""
+        if auto_mode:
+            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+                return llm1_result.get('name') or "Inconnu"
+            return llm2_result.get('name') or "Inconnu"
+
+        try:
+            return cli.show_name_disagreement(
+                llm1_result=llm1_result,
+                llm2_result=llm2_result,
+                language=language
+            )
+        except (EOFError, KeyboardInterrupt):
+            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+                return llm1_result.get('name') or "Inconnu"
+            return llm2_result.get('name') or "Inconnu"
+
+    async def on_reading_disagreement(
+        llm1_result: dict,
+        llm2_result: dict,
+        question_text: str,
+        image_path
+    ) -> str:
+        """Handle reading disagreement."""
+        if auto_mode:
+            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+                return llm1_result.get('reading', '')
+            return llm2_result.get('reading', '')
+
+        try:
+            return cli.show_reading_disagreement(
+                llm1_result=llm1_result,
+                llm2_result=llm2_result,
+                question_text=question_text,
+                image_path=image_path,
+                language=language
+            )
+        except (EOFError, KeyboardInterrupt):
+            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+                return llm1_result.get('reading', '')
+            return llm2_result.get('reading', '')
+
+    return WorkflowCallbacks(
+        on_disagreement=on_disagreement,
+        on_name_disagreement=on_name_disagreement,
+        on_reading_disagreement=on_reading_disagreement
+    )
 
 
 async def command_correct(args):

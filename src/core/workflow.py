@@ -252,6 +252,45 @@ class CorrectionWorkflow:
         # Fallback: use first available
         return llm1_result.get('name') or llm2_result.get('name') or "Inconnu"
 
+    async def handle_reading_disagreement(
+        self,
+        llm1_result: Dict[str, Any],
+        llm2_result: Dict[str, Any],
+        question_text: str,
+        image_path
+    ) -> str:
+        """
+        Handle a reading disagreement between LLMs.
+
+        Args:
+            llm1_result: Reading result from first LLM
+            llm2_result: Reading result from second LLM
+            question_text: Question being read
+            image_path: Path to image being read
+
+        Returns:
+            Chosen reading
+        """
+        # Auto mode: use higher confidence
+        if self.config.auto_mode:
+            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+                return llm1_result.get('reading', '')
+            return llm2_result.get('reading', '')
+
+        # Interactive mode: use callback
+        if self.callbacks.on_reading_disagreement:
+            result = self.callbacks.on_reading_disagreement(
+                llm1_result, llm2_result, question_text, image_path
+            )
+            if asyncio.iscoroutine(result):
+                return await result
+            return result
+
+        # Fallback: use higher confidence
+        if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+            return llm1_result.get('reading', '')
+        return llm2_result.get('reading', '')
+
     async def run(
         self,
         pdf_paths: List[str],
