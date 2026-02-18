@@ -6,6 +6,7 @@ including image processing, token tracking, and response parsing.
 """
 
 import base64
+import re
 import time
 from abc import ABC, abstractmethod
 from io import BytesIO
@@ -14,6 +15,46 @@ from typing import Dict, Any, List, Optional
 from PIL import Image
 
 from core.models import AICallResult
+
+
+def _sanitize_for_logging(text: str) -> str:
+    """
+    Sanitize text for logging by removing potential API keys and secrets.
+
+    Args:
+        text: Text to sanitize
+
+    Returns:
+        Sanitized text with sensitive values masked
+    """
+    if not text:
+        return text
+
+    # Patterns for common API key formats
+    patterns = [
+        # Generic API keys (sk-*, api_key=, etc.)
+        (r'(sk-[a-zA-Z0-9]{20,})', r'sk-[REDACTED]'),
+        (r'(api[_-]?key\s*[=:]\s*["\']?)([a-zA-Z0-9_-]{20,})', r'\1[REDACTED]'),
+        # Bearer tokens
+        (r'(Bearer\s+)([a-zA-Z0-9_-]{20,})', r'\1[REDACTED]'),
+        # JWT-like tokens
+        (r'(eyJ[a-zA-Z0-9_-]*\.)([a-zA-Z0-9_-]+)(\.[a-zA-Z0-9_-]+)', r'\1[REDACTED]\3'),
+        # Google API keys (AIza...)
+        (r'(AIza[a-zA-Z0-9_-]{35})', r'AIza[REDACTED]'),
+        # OpenAI API keys
+        (r'(sk-[a-zA-Z0-9]{48})', r'sk-[REDACTED]'),
+        # Generic long alphanumeric strings that look like keys
+        (r'(["\']?[a-zA-Z0-9_-]{32,}["\']?)', lambda m: m.group(0) if len(m.group(0)) < 40 else '[REDACTED]'),
+    ]
+
+    sanitized = text
+    for pattern, replacement in patterns:
+        if callable(replacement):
+            sanitized = re.sub(pattern, replacement, sanitized)
+        else:
+            sanitized = re.sub(pattern, replacement, sanitized)
+
+    return sanitized
 
 
 class BaseProvider(ABC):
@@ -62,11 +103,15 @@ class BaseProvider(ABC):
         prompt_tokens: int = None,
         completion_tokens: int = None
     ):
-        """Log an AI call to audit trail."""
+        """Log an AI call to audit trail with sanitized output."""
+        # Sanitize summaries to remove potential API keys
+        safe_input = _sanitize_for_logging(input_summary)
+        safe_response = _sanitize_for_logging(response_summary)
+
         self.call_history.append(AICallResult(
             prompt_type=prompt_type,
-            input_summary=input_summary,
-            response_summary=response_summary,
+            input_summary=safe_input,
+            response_summary=safe_response,
             duration_ms=duration_ms,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens

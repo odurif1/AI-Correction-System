@@ -7,6 +7,8 @@ Provides phased workflow for interactive correction.
 
 import asyncio
 import re
+import tempfile
+import os
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +28,7 @@ from storage.session_store import SessionStore
 from vision.pdf_reader import PDFReader
 from export.analytics import DataExporter, AnalyticsGenerator
 from config.prompts import detect_language
+from utils.sorting import question_sort_key
 
 
 class GradingSessionOrchestrator:
@@ -300,88 +303,6 @@ class GradingSessionOrchestrator:
         progress_callback: callable = None
     ) -> List[GradedCopy]:
         """
-        Phase 3: Grade all copies.
-
-        Must be called after confirm_scale().
-
-        Args:
-            progress_callback: Optional callback for progress updates
-                Signature: async def callback(event_type, data)
-                Events: 'copy_start', 'question_start', 'question_done', 'copy_done'
-
-        Returns:
-            List of GradedCopy objects
-        """
-        if not self._analysis_complete:
-            raise RuntimeError("Must call analyze_only() before grade_all()")
-
-        if not self.question_scales:
-            raise RuntimeError("Must call confirm_scale() before grade_all()")
-
-        self.session.status = SessionStatus.GRADING
-
-        # Set progress callback on AI provider (for ComparisonProvider)
-        if hasattr(self.ai, 'set_progress_callback') and progress_callback:
-            self.ai.set_progress_callback(progress_callback)
-
-        # Create grader with progress callback and reading consensus options
-        grader = IntelligentGrader(
-            policy=self.session.policy,
-            class_map=self.session.class_map,
-            ai_provider=self.ai,
-            progress_callback=progress_callback,
-            reading_disagreement_callback=self._reading_disagreement_callback,
-            skip_reading_consensus=self._skip_reading_consensus
-        )
-
-        total_copies = len(self.session.copies)
-
-        # Grade each copy
-        for i, copy in enumerate(self.session.copies):
-            # Notify copy start
-            if progress_callback:
-                await self._call_callback(progress_callback, 'copy_start', {
-                    'copy_index': i + 1,
-                    'total_copies': total_copies,
-                    'copy_id': copy.id,
-                    'student_name': copy.student_name,
-                    'questions': list(self.question_scales.keys())
-                })
-
-            graded = await grader.grade_copy(
-                copy,
-                questions=self.detected_questions,
-                question_scales=self.question_scales
-            )
-            self.session.graded_copies.append(graded)
-            self._save_sync()
-
-            # Notify copy done
-            if progress_callback:
-                # Get token usage for this copy
-                token_usage = None
-                if hasattr(self.ai, 'get_token_usage'):
-                    token_usage = self.ai.get_token_usage()
-
-                await self._call_callback(progress_callback, 'copy_done', {
-                    'copy_index': i + 1,
-                    'total_copies': total_copies,
-                    'copy_id': copy.id,
-                    'student_name': copy.student_name,
-                    'total_score': graded.total_score,
-                    'max_score': graded.max_score,
-                    'confidence': graded.confidence,
-                    'token_usage': token_usage
-                })
-
-        self._grading_complete = True
-        return self.session.graded_copies
-
-    async def grade_all(
-        self,
-        progress_callback: callable = None
-    ) -> List[GradedCopy]:
-        """
         Grade all copies using stateless architecture.
 
         Each call is independent with explicit context and images re-sent:
@@ -426,16 +347,8 @@ class GradingSessionOrchestrator:
 
         total_copies = len(self.session.copies)
 
-        # Build questions list (sorted naturally)
-        def natural_sort_key(s):
-            import re
-            match = re.match(r'Q(\d+)', s)
-            if match:
-                return (0, int(match.group(1)))
-            return (1, s)
-
         questions = []
-        for q_id in sorted(self.detected_questions.keys(), key=natural_sort_key):
+        for q_id in sorted(self.detected_questions.keys(), key=question_sort_key):
             q_text = self.detected_questions[q_id]
             questions.append({
                 "id": q_id,
@@ -489,7 +402,7 @@ class GradingSessionOrchestrator:
                 )
 
                 # Populate in natural order (Q1, Q2, ... Q10, Q11)
-                for q_id in sorted(result.questions.keys(), key=natural_sort_key):
+                for q_id in sorted(result.questions.keys(), key=question_sort_key):
                     q_result = result.questions[q_id]
                     graded.grades[q_id] = q_result.grade
                     graded.confidence_by_question[q_id] = q_result.confidence
@@ -516,7 +429,7 @@ class GradingSessionOrchestrator:
                 }
 
                 # Notify per question
-                for q_id in sorted(graded.grades.keys(), key=natural_sort_key):
+                for q_id in sorted(graded.grades.keys(), key=question_sort_key):
                     if progress_callback:
                         await self._call_callback(progress_callback, 'question_done', {
                             'question_id': q_id,
@@ -585,17 +498,8 @@ class GradingSessionOrchestrator:
         total_copies = len(self.session.copies)
         provider_names = [name for name, _ in self.ai.providers] if hasattr(self.ai, 'providers') else []
 
-        # Build questions list for stateless grading (sorted in natural order Q1, Q2, ... Q10, Q11)
-        def natural_sort_key(s):
-            """Sort Q1, Q2, Q10 naturally (not Q1, Q10, Q2)"""
-            import re
-            match = re.match(r'Q(\d+)', s)
-            if match:
-                return (0, int(match.group(1)))
-            return (1, s)
-
         questions = []
-        for q_id in sorted(self.detected_questions.keys(), key=natural_sort_key):
+        for q_id in sorted(self.detected_questions.keys(), key=question_sort_key):
             q_text = self.detected_questions[q_id]
             questions.append({
                 "id": q_id,
@@ -678,7 +582,7 @@ class GradingSessionOrchestrator:
 
                 # Notify final results per question (in natural order)
                 results_data = result.get("results", {})
-                for q_id in sorted(results_data.keys(), key=natural_sort_key):
+                for q_id in sorted(results_data.keys(), key=question_sort_key):
                     q_result = results_data[q_id]
                     q_audit = verification.get(q_id, {})
                     method = q_audit.get('method', 'unknown')
@@ -708,7 +612,7 @@ class GradingSessionOrchestrator:
                     copy.student_name = consensus_name
 
                 # Extract grades from results section (already in natural order from above)
-                for q_id in sorted(results_data.keys(), key=natural_sort_key):
+                for q_id in sorted(results_data.keys(), key=question_sort_key):
                     q_result = results_data[q_id]
                     grade = q_result.get("grade", 0)
                     feedback = q_result.get("feedback", "")
@@ -1063,11 +967,16 @@ class GradingSessionOrchestrator:
         reader = PDFReader(pdf_path)
         page_count = reader.get_page_count()
 
+        # Create temp directory for this session's images (auto-cleanup)
+        temp_dir = self.store.session_dir / "temp_images"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
         # Convert pages to images
         page_images = []
         for page_num in range(page_count):
             image_bytes = reader.get_page_image_bytes(page_num)
-            image_path = f"/tmp/pdf_single_{hashlib.md5(pdf_path.encode()).hexdigest()[:8]}_p{page_num}.png"
+            # Use session-specific temp directory instead of /tmp
+            image_path = str(temp_dir / f"page_{copy_index}_{page_num}.png")
             with open(image_path, 'wb') as f:
                 f.write(image_bytes)
             page_images.append(image_path)
@@ -1156,11 +1065,16 @@ class GradingSessionOrchestrator:
 
         page_count = reader.get_page_count()
 
+        # Create temp directory for this session's images (auto-cleanup)
+        temp_dir = self.store.session_dir / "temp_images"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
         # Convert all pages to images first
         page_images = []
         for page_num in range(page_count):
             image_bytes = reader.get_page_image_bytes(page_num)
-            image_path = f"/tmp/pdf_{hashlib.md5(pdf_path.encode()).hexdigest()[:8]}_page{page_num}.png"
+            # Use session-specific temp directory instead of /tmp
+            image_path = str(temp_dir / f"page_{page_num}.png")
             with open(image_path, 'wb') as f:
                 f.write(image_bytes)
             page_images.append(image_path)

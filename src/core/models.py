@@ -39,8 +39,13 @@ class SessionStatus(str, Enum):
 
 
 def generate_id() -> str:
-    """Generate a unique ID."""
-    return str(uuid.uuid4())[:8]
+    """
+    Generate a unique ID.
+
+    Uses full UUID to avoid collision risks.
+    For display purposes, callers can truncate to first 8 characters.
+    """
+    return str(uuid.uuid4())
 
 
 class CopyDocument(BaseModel):
@@ -139,6 +144,9 @@ class GradingSession(BaseModel):
     # Storage paths
     storage_path: Optional[str] = None
 
+    # Individual reading mode (PDF pre-split)
+    pages_per_student: Optional[int] = None  # If set, activates individual mode
+
 
 class GradedCopy(BaseModel):
     """
@@ -167,6 +175,14 @@ class GradedCopy(BaseModel):
     # {question_id: technical analysis for teachers}
     student_feedback: Dict[str, str] = Field(default_factory=dict)
     # {question_id: pedagogical feedback for students}
+
+    # Readings (what the AI read from the student's answer)
+    readings: Dict[str, str] = Field(default_factory=dict)
+    # {question_id: text read from student's answer}
+
+    # Detected max points per question (from document)
+    max_points_by_question: Dict[str, float] = Field(default_factory=dict)
+    # {question_id: max_points detected from document}
 
     # LLM Comparison data (for dual-LLM mode)
     llm_comparison: Optional[Dict[str, Any]] = None

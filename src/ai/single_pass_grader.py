@@ -10,7 +10,7 @@ Each call is independent with images sent fresh.
 import json
 import re
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass
 
 
@@ -21,6 +21,7 @@ class QuestionResult:
     location: str
     student_answer_read: str
     grade: float
+    max_points: float  # Detected from the copy
     confidence: float
     reasoning: str
     feedback: str
@@ -30,6 +31,7 @@ class QuestionResult:
             "location": self.location,
             "student_answer_read": self.student_answer_read,
             "grade": self.grade,
+            "max_points": self.max_points,
             "confidence": self.confidence,
             "reasoning": self.reasoning,
             "feedback": self.feedback
@@ -52,6 +54,7 @@ class SinglePassResult:
             "student_name": self.student_name,
             "questions": {qid: q.to_dict() for qid, q in self.questions.items()},
             "overall_comments": self.overall_comments,
+            "raw_response": self.raw_response[:5000] if self.raw_response else "",  # Truncate for storage
             "parse_success": self.parse_success,
             "parse_errors": self.parse_errors,
             "duration_ms": self.duration_ms
@@ -83,7 +86,8 @@ class SinglePassGrader:
         self,
         questions: List[Dict[str, Any]],
         image_paths: List[str],
-        language: str = "fr"
+        language: str = "fr",
+        second_reading: bool = False
     ) -> SinglePassResult:
         """
         Grade all questions in a single API call.
@@ -96,6 +100,7 @@ class SinglePassGrader:
                 - max_points: Maximum points
             image_paths: List of image paths (all pages)
             language: Language for prompts
+            second_reading: If True, include second reading instruction in prompt
 
         Returns:
             SinglePassResult with all question grades
@@ -104,8 +109,8 @@ class SinglePassGrader:
 
         start_time = time.time()
 
-        # Build the prompt
-        prompt = build_multi_question_grading_prompt(questions, language)
+        # Build the prompt with second_reading option
+        prompt = build_multi_question_grading_prompt(questions, language, second_reading=second_reading)
 
         # Add multi-page context
         num_pages = len(image_paths)
@@ -234,6 +239,7 @@ class SinglePassGrader:
 
                 # Extract fields
                 grade_match = re.search(r'"grade"\s*:\s*([\d.]+)', q_block)
+                max_pts_match = re.search(r'"max_points"\s*:\s*([\d.]+)', q_block)
                 conf_match = re.search(r'"confidence"\s*:\s*([\d.]+)', q_block)
                 read_match = re.search(r'"student_answer_read"\s*:\s*"([^"]*)"', q_block)
                 feedback_match = re.search(r'"feedback"\s*:\s*"([^"]*)"', q_block)
@@ -242,6 +248,7 @@ class SinglePassGrader:
 
                 data["questions"][qid] = {
                     "grade": float(grade_match.group(1)) if grade_match else 0.0,
+                    "max_points": float(max_pts_match.group(1)) if max_pts_match else q.get("max_points", 1.0),
                     "confidence": float(conf_match.group(1)) if conf_match else 0.5,
                     "student_answer_read": read_match.group(1) if read_match else "",
                     "feedback": feedback_match.group(1) if feedback_match else "",
@@ -269,9 +276,11 @@ class SinglePassGrader:
             qid = q["id"]
             q_data = data.get("questions", {}).get(qid, {})
 
+            # Get max_points from LLM response (detected) or fallback to question default
+            max_points = float(q_data.get("max_points", q.get("max_points", 1.0)))
+
             # Validate grade is within bounds
             grade = float(q_data.get("grade", 0))
-            max_points = q.get("max_points", 5)
             grade = max(0, min(grade, max_points))
 
             questions_result[qid] = QuestionResult(
@@ -279,6 +288,7 @@ class SinglePassGrader:
                 location=q_data.get("location", ""),
                 student_answer_read=q_data.get("student_answer_read", ""),
                 grade=grade,
+                max_points=max_points,
                 confidence=float(q_data.get("confidence", 0.5)),
                 reasoning=q_data.get("reasoning", ""),
                 feedback=q_data.get("feedback", "")
@@ -293,3 +303,157 @@ class SinglePassGrader:
             parse_errors=parse_errors,
             duration_ms=duration_ms
         )
+
+    async def grade_with_self_verification(
+        self,
+        questions: List[Dict[str, Any]],
+        image_paths: List[str],
+        language: str = "fr"
+    ) -> Tuple[SinglePassResult, Dict[str, Any]]:
+        """
+        Grade with two passes for self-verification.
+
+        Pass 1: Initial grading
+        Pass 2: Self-verification with own results
+
+        Args:
+            questions: List of question dicts
+            image_paths: List of image paths
+            language: Language for prompts
+
+        Returns:
+            Tuple of (final_result, verification_audit)
+        """
+        # Phase 1: Initial grading
+        first_result = await self.grade_all_questions(questions, image_paths, language)
+
+        if not first_result.parse_success:
+            # If first pass failed, return as-is
+            return first_result, {"phase1_success": False, "error": "First pass parsing failed"}
+
+        # Phase 2: Self-verification
+        verification_prompt = self._build_self_verification_prompt(
+            questions, first_result, language
+        )
+
+        # Add multi-page context
+        num_pages = len(image_paths)
+        if num_pages > 1:
+            if language == "fr":
+                page_context = f"\n\nIMPORTANT: Tu as accès à {num_pages} pages de cette copie."
+            else:
+                page_context = f"\n\nIMPORTANT: You have access to {num_pages} pages of this copy."
+            verification_prompt = verification_prompt + page_context
+
+        start_time = time.time()
+        try:
+            response = self.provider.call_vision(
+                prompt=verification_prompt,
+                image_path=image_paths if len(image_paths) > 1 else image_paths[0]
+            )
+            duration_ms = (time.time() - start_time) * 1000
+
+            # Parse the verification response
+            second_result = self._parse_response(response, questions, duration_ms)
+
+            # Build audit trail
+            verification_audit = {
+                "phase1_success": True,
+                "phase2_success": second_result.parse_success,
+                "phase1_duration_ms": first_result.duration_ms,
+                "phase2_duration_ms": second_result.duration_ms,
+                "phase1_questions": {qid: q.to_dict() for qid, q in first_result.questions.items()},
+                "phase2_questions": {qid: q.to_dict() for qid, q in second_result.questions.items()},
+                "changes": self._detect_changes(first_result, second_result)
+            }
+
+            # Return the second result (verified)
+            return second_result, verification_audit
+
+        except Exception as e:
+            duration_ms = (time.time() - start_time) * 1000
+            # Return first result if verification fails
+            return first_result, {
+                "phase1_success": True,
+                "phase2_success": False,
+                "phase2_error": str(e),
+                "phase1_duration_ms": first_result.duration_ms,
+                "phase2_duration_ms": duration_ms
+            }
+
+    def _build_self_verification_prompt(
+        self,
+        questions: List[Dict[str, Any]],
+        first_result: SinglePassResult,
+        language: str = "fr"
+    ) -> str:
+        """Build prompt for self-verification phase."""
+        # Format first results as JSON for the prompt
+        first_results_json = {
+            "student_name": first_result.student_name,
+            "questions": {}
+        }
+        for qid, q_result in first_result.questions.items():
+            first_results_json["questions"][qid] = {
+                "student_answer_read": q_result.student_answer_read,
+                "grade": q_result.grade,
+                "max_points": q_result.max_points,
+                "confidence": q_result.confidence,
+                "reasoning": q_result.reasoning
+            }
+
+        results_str = json.dumps(first_results_json, indent=2, ensure_ascii=False)
+
+        if language == "fr":
+            return f"""Tu as déjà corrigé cette copie. Voici tes premiers résultats:
+
+```json
+{results_str}
+```
+
+TÂCHE: Relis cette correction et vérifie:
+1. Les notes sont-elles cohérentes avec le barème détecté?
+2. Les lectures des réponses sont-elles exactes?
+3. Y a-t-il des erreurs évidentes à corriger?
+
+Si tu dois ajuster une note, explique pourquoi dans le champ "reasoning".
+Réponds avec le MÊME format JSON que précédemment.
+
+IMPORTANT: Ne change pas tes notes "juste au cas où". Change SEULEMENT si tu identifies une erreur réelle."""
+        else:
+            return f"""You have already graded this copy. Here are your first results:
+
+```json
+{results_str}
+```
+
+TASK: Re-read this grading and verify:
+1. Are grades consistent with the detected scale?
+2. Are the answer readings accurate?
+3. Are there obvious errors to correct?
+
+If you need to adjust a grade, explain why in the "reasoning" field.
+Respond with the SAME JSON format as before.
+
+IMPORTANT: Do not change your grades "just in case". Change ONLY if you identify a real error."""
+
+    def _detect_changes(
+        self,
+        first_result: SinglePassResult,
+        second_result: SinglePassResult
+    ) -> Dict[str, Any]:
+        """Detect what changed between first and second pass."""
+        changes = {}
+        for qid in first_result.questions.keys():
+            if qid in second_result.questions:
+                q1 = first_result.questions[qid]
+                q2 = second_result.questions[qid]
+                if abs(q1.grade - q2.grade) > 0.01:
+                    changes[qid] = {
+                        "grade_changed": True,
+                        "grade_before": q1.grade,
+                        "grade_after": q2.grade,
+                        "reading_changed": q1.student_answer_read != q2.student_answer_read,
+                        "reasoning_after": q2.reasoning[:200] if q2.reasoning else ""
+                    }
+        return changes

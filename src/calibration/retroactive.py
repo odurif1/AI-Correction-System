@@ -13,9 +13,10 @@ from core.models import (
     GradingSession, GradedCopy, TeacherDecision, SimilarCopies,
     CopyDocument, UncertaintyType
 )
-from ai.openai_provider import OpenAIProvider
+from ai import create_ai_provider
 from analysis.clustering import EmbeddingClustering
 from storage.session_store import SessionStore
+from config.constants import NAME_SIMILARITY_THRESHOLD
 
 
 class RetroactiveApplier:
@@ -32,17 +33,17 @@ class RetroactiveApplier:
     def __init__(
         self,
         session: GradingSession,
-        ai_provider: OpenAIProvider = None
+        ai_provider = None
     ):
         """
         Initialize the retroactive applier.
 
         Args:
             session: Current grading session
-            ai_provider: AI provider (creates default if None)
+            ai_provider: AI provider (creates default using factory if None)
         """
         self.session = session
-        self.ai = ai_provider or OpenAIProvider()
+        self.ai = ai_provider or create_ai_provider()
         self.clustering = EmbeddingClustering()
 
     def find_similar(
@@ -86,7 +87,7 @@ class RetroactiveApplier:
                         source_copy.embedding,
                         copy.embedding
                     )
-                    if similarity >= 0.85:  # High similarity threshold
+                    if similarity >= NAME_SIMILARITY_THRESHOLD:
                         similar_by_embedding.append((copy.id, similarity))
 
         # Combine and deduplicate
@@ -215,14 +216,14 @@ class RetroactiveApplier:
             if graded and decision.question_id in graded.grades:
                 # Calculate new grade based on the decision
                 grade_adjustment = decision.new_score - decision.original_score
-                new_grade = graded.grades[decision.question_id] + grade_adjustment
+                old_grade = graded.grades[decision.question_id] or 0
+                new_grade = old_grade + grade_adjustment
 
                 # Update
-                old_grade = graded.grades[decision.question_id]
                 graded.grades[decision.question_id] = max(0, new_grade)
 
                 # Update total
-                graded.total_score += (new_grade - old_grade)
+                graded.total_score = (graded.total_score or 0) + (new_grade - old_grade)
 
                 # Track adjustment
                 from core.models import TeacherAdjustment

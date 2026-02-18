@@ -27,8 +27,17 @@ CONFIDENCE_THRESHOLD_ASK: Final[float] = 0.60
 
 # Grading Thresholds
 GRADE_DIFFERENCE_THRESHOLD: Final[float] = 0.5  # Difference to trigger cross-verification
+GRADE_THRESHOLD: Final[float] = 0.5  # Minimum grade difference to consider significant
 JACCARD_SIMILARITY_THRESHOLD: Final[float] = 0.3  # For reading compatibility
 READING_LENGTH_RATIO_THRESHOLD: Final[float] = 1.5  # For choosing longer reading
+
+# Similarity Thresholds
+ANSWER_SIMILARITY_THRESHOLD: Final[float] = 0.8  # For considering answers "similar"
+NAME_SIMILARITY_THRESHOLD: Final[float] = 0.85  # For name matching
+
+# Processing Defaults
+DEFAULT_PARALLEL_COPIES: Final[int] = 6  # Number of copies to process in parallel
+DEFAULT_PAGES_PER_STUDENT: Final[int] = 2  # Default pages per student
 
 # Clustering
 EMBEDDING_MODEL: Final[str] = "text-embedding-3-small"
@@ -81,3 +90,8 @@ ANNOTATION_ALPHA: Final[float] = 0.3
 API_HOST: Final[str] = "127.0.0.1"
 API_PORT: Final[int] = 8000
 API_WORKERS: Final[int] = 1
+
+# API Timeouts (in seconds)
+API_CONNECT_TIMEOUT: Final[float] = 30.0  # Connection timeout
+API_READ_TIMEOUT: Final[float] = 120.0  # Read timeout for API calls
+API_EMBEDDING_TIMEOUT: Final[float] = 60.0  # Timeout for embedding calls

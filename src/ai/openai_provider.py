@@ -7,6 +7,7 @@ Handles communication with OpenAI's GPT-4o and embedding models.
 import base64
 import time
 from typing import List, Dict, Any
+import httpx
 
 from openai import OpenAI, OpenAIError
 from tenacity import retry, stop_after_attempt, retry_if_exception_type
@@ -14,7 +15,7 @@ from PIL import Image
 
 from ai.base_provider import BaseProvider
 from config.settings import get_settings
-from config.constants import MAX_RETRIES, MAX_TOKENS, TEMPERATURE
+from config.constants import MAX_RETRIES, MAX_TOKENS, TEMPERATURE, API_CONNECT_TIMEOUT, API_READ_TIMEOUT
 
 
 class OpenAIProvider(BaseProvider):
@@ -43,9 +44,17 @@ class OpenAIProvider(BaseProvider):
             raise ValueError("OpenAI API key is required. Set AI_CORRECTION_OPENAI_API_KEY.")
 
         if not mock_mode:
+            # Configure timeout for API calls
+            timeout = httpx.Timeout(
+                connect=API_CONNECT_TIMEOUT,
+                read=API_READ_TIMEOUT,
+                write=API_CONNECT_TIMEOUT,
+                pool=API_CONNECT_TIMEOUT
+            )
             self.client = OpenAI(
                 api_key=self.api_key,
-                base_url=base_url or settings.openai_organization
+                base_url=base_url or settings.openai_organization,
+                timeout=timeout
             )
 
         self.model = settings.model

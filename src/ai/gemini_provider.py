@@ -268,10 +268,27 @@ class GeminiProvider(BaseProvider):
         return result.embeddings[0].values
 
     def get_embeddings(self, texts: List[str]) -> List[List[float]]:
-        """Get embeddings for multiple texts."""
+        """
+        Get embeddings for multiple texts using batch API.
+
+        Uses the Gemini batch embedding endpoint for efficiency.
+        Falls back to individual calls if batch fails.
+        """
         if self.mock_mode:
             return [self.get_embedding(text) for text in texts]
-        return [self.get_embedding(text) for text in texts]
+
+        try:
+            # Use batch API for multiple texts (up to 100 per request)
+            result = self.client.models.embed_content(
+                model=self.embedding_model,
+                contents=texts
+            )
+            return [embedding.values for embedding in result.embeddings]
+        except Exception as e:
+            # Fall back to individual calls if batch fails
+            import logging
+            logging.warning(f"Batch embedding failed, falling back to individual calls: {e}")
+            return [self.get_embedding(text) for text in texts]
 
     # Override grade_with_vision to add multi-page support
     def grade_with_vision(

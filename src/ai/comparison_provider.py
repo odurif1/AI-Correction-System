@@ -215,8 +215,10 @@ class ComparisonProvider:
             result = self.progress_callback(event_type, data)
             if asyncio.iscoroutine(result):
                 await result
-        except Exception:
-            pass
+        except Exception as e:
+            # Log but don't break grading - callback errors shouldn't stop the process
+            import logging
+            logging.warning(f"Progress callback error for {event_type}: {e}")
 
     # ==================== GRADING HELPER METHODS ====================
 
@@ -1681,7 +1683,9 @@ Consider this detection. If you agree, confirm. Otherwise, explain why.
                 # The verify_context would need to be added to the prompt
                 # For simplicity, we just use the base result
                 verified.append(base_result)
-            except Exception:
+            except Exception as e:
+                import logging
+                logging.warning(f"Name verification failed for provider: {e}")
                 verified.append(results[i])
 
         return verified

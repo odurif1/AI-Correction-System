@@ -3,8 +3,8 @@ Main CLI entry point for the AI correction system.
 
 Usage:
     python src/main.py correct copies/*.pdf
-    python src/main.py correct copies/*.pdf --scale Q1=5,Q2=3,Q3=4
     python src/main.py correct copies/*.pdf --auto
+    python src/main.py correct copies.pdf --pages-per-student 2
     python src/main.py api --port 8000
     python src/main.py status <session_id>
     python src/main.py export <session_id>
@@ -12,9 +12,9 @@ Usage:
 
 Options:
     --auto      Mode automatique sans interaction utilisateur.
-                - Utilise le barème détecté automatiquement
+                - Le barème est détecté automatiquement pendant la correction
                 - En cas de désaccord entre les 2 IA: prend la moyenne
-                Sans --auto: demande confirmation du barème et choix utilisateur pour les désaccords
+                Sans --auto: demande choix utilisateur pour les désaccords
 """
 
 import asyncio
@@ -28,20 +28,11 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.table import Table
 from rich.panel import Panel
-from rich.prompt import Confirm
 
 from core.session import GradingSessionOrchestrator
-
-
-def natural_sort_key(s: str):
-    """
-    Sort key for natural sorting of question IDs.
-    Q1, Q2, Q10 instead of Q1, Q10, Q2.
-    """
-    def convert(text):
-        return int(text) if text.isdigit() else text.lower()
-    return [convert(c) for c in re.split(r'(\d+)', str(s))]
+from utils.sorting import natural_sort_key
 from config.settings import get_settings
+from config.constants import DEFAULT_PARALLEL_COPIES
 from ai import create_ai_provider
 from interaction.cli import CLI
 
@@ -238,6 +229,13 @@ async def command_correct(args):
             else:
                 return llm2_result.get('reading', '')
 
+    # Validate required options
+    if not args.pages_per_student:
+        cli.console.print("[red]Erreur: L'option --pages-per-student est requise.[/red]")
+        cli.console.print("[dim]Exemple: --pages-per-student 2 pour 2 pages par élève[/dim]")
+        cli.console.print("[dim]Utilisez --help pour plus d'informations[/dim]")
+        return 1
+
     # Create orchestrator with callbacks
     orchestrator = GradingSessionOrchestrator(
         pdf_paths,
@@ -245,7 +243,10 @@ async def command_correct(args):
         name_disagreement_callback=name_disagreement_callback,
         reading_disagreement_callback=reading_disagreement_callback,
         skip_reading_consensus=args.skip_reading,
-        force_single_llm=args.single
+        force_single_llm=args.single,
+        pages_per_student=args.pages_per_student,
+        second_reading=args.second_reading,
+        parallel=args.parallel
     )
 
     # Show which LLMs are being used (for verification)
@@ -260,15 +261,6 @@ async def command_correct(args):
         cli.console.print(f"\n[bold cyan]🤖 Modèle utilisé (mode simple):[/bold cyan]")
         cli.console.print(f"  [yellow]{model_name}[/yellow]")
         cli.console.print("")
-
-    # Parse explicit scale if provided
-    explicit_scale = None
-    if args.scale:
-        explicit_scale = {}
-        for part in args.scale.split(','):
-            if '=' in part:
-                q_id, pts = part.split('=')
-                explicit_scale[q_id.strip()] = float(pts.strip())
 
     # ============================================================
     # Phase 1: Analyze
@@ -293,98 +285,21 @@ async def command_correct(args):
         cli.show_success(f"Analyzed {analysis['copies_count']} copies")
 
     # ============================================================
-    # Phase 1b: Re-analyze low confidence elements (if not auto)
-    # ============================================================
-    low_confidence = analysis.get('scale_low_confidence', [])
-    if low_confidence and not args.auto:
-        cli.show_warning(f"Low confidence scale for: {', '.join(low_confidence)}")
-
-        if language == 'fr':
-            reanalyze = Confirm.ask(
-                f"Re-analyser {len(low_confidence)} element(s) avec faible confiance ?",
-                default=True
-            )
-        else:
-            reanalyze = Confirm.ask(
-                f"Re-analyze {len(low_confidence)} low-confidence element(s)?",
-                default=True
-            )
-
-        if reanalyze:
-            cli.show_info("Re-analyzing with focused attention...")
-            updated = await orchestrator.re_analyze_low_confidence()
-
-            if updated:
-                cli.show_success(f"Updated {len(updated)} element(s)")
-                # Update analysis with new values
-                analysis['scale'].update({k: v['points'] for k, v in updated.items()})
-                # Remove from low confidence if now confident
-                low_confidence = [q for q in low_confidence if q not in updated]
-
-    # ============================================================
-    # Phase 2: Confirm/Define Scale
+    # Phase 2: Setup Scale (will be detected during grading)
     # ============================================================
 
     # Check if we have any questions detected
-    if not analysis['questions'] and not explicit_scale:
+    if not analysis['questions']:
         cli.show_error("Aucune question détectée. L'analyse a peut-être échoué.")
         return 1
 
-    if explicit_scale:
-        # Use explicit scale from command line
-        scale = explicit_scale
-        cli.show_info(f"Using provided scale: {scale}")
-
-    elif analysis.get('scale_high_confidence'):
-        # Scale detected with high confidence - use directly, no confirmation needed
-        scale = analysis['scale']
-        cli.show_success(f"Barème détecté avec haute confiance: {scale}")
-
-    elif analysis['scale_detected'] and not args.auto:
-        # Scale detected but not all high confidence - ask user to confirm
-        scale = cli.confirm_scale(
-            analysis['scale'],
-            analysis['questions'],
-            language=language
-        )
-
-    else:
-        # Scale not fully detected - MUST ask user
-        scale = analysis['scale'].copy()
-
-        # Collect all questions that need scale
-        unknown_questions = set(analysis.get('scale_unknown', []))
-        unknown_questions.update(low_confidence)
-
-        # Also add any detected questions without scale
-        for q_id in analysis['questions'].keys():
-            if q_id not in scale:
-                unknown_questions.add(q_id)
-
-        if unknown_questions:
-            if args.auto:
-                cli.show_error(f"Scale unknown for: {', '.join(sorted(unknown_questions))}")
-                cli.show_error("Cannot proceed in auto mode without scale.")
-                cli.show_info("Use --scale to provide values (e.g., --scale Q1=5,Q2=3)")
-                return 1
-
-            # Ask user for each unknown scale
-            if language == 'fr':
-                cli.show_warning(f"Barème inconnu pour: {', '.join(sorted(unknown_questions))}")
-            else:
-                cli.show_warning(f"Scale unknown for: {', '.join(sorted(unknown_questions))}")
-
-            for q_id in sorted(unknown_questions):
-                pts = cli.ask_for_single_scale(q_id, language=language)
-                scale[q_id] = pts
-
-    # Verify we have a valid scale for all questions
-    missing_scale = [q for q in analysis['questions'].keys() if q not in scale]
-    if missing_scale:
-        cli.show_error(f"Missing scale for: {', '.join(missing_scale)}")
-        return 1
+    # Use default scale of 1.0 for each question
+    # The actual scale will be detected by the LLM during grading
+    scale = {q: 1.0 for q in analysis['questions'].keys()}
 
     orchestrator.confirm_scale(scale)
+    cli.show_info(f"Questions détectées: {list(analysis['questions'].keys())}")
+    cli.show_info("Le barème sera détecté automatiquement pendant la correction.")
 
     # ============================================================
     # Phase 3: Grade All Copies (with live display)
@@ -649,13 +564,26 @@ async def command_correct(args):
             providers_info.append(f"[cyan]{name}[/cyan]")
         console.print(f"\n[bold magenta]🤖 Double correction: {' vs '.join(providers_info)}[/bold magenta]")
 
-    console.print("\n[bold]Correction en cours...[/bold]")
+    # Animated spinner during grading
+    with console.status("[bold cyan]⠋ Correction en cours...[/bold cyan]", spinner="dots") as status:
+        # Update status with copy count as copies are processed
+        copies_completed = [0]  # Use list to allow mutation in nested function
 
-    # Use dual-LLM grading when in comparison mode, otherwise use per-question
-    if is_comparison_mode and hasattr(orchestrator.ai, 'grade_copy'):
-        graded = await orchestrator.grade_all(progress_callback=progress_callback)
-    else:
-        graded = await orchestrator.grade_all(progress_callback=progress_callback)
+        async def status_callback(event_type: str, data: dict):
+            """Wrapper callback that updates status spinner."""
+            # Update spinner text with progress
+            if event_type == 'copy_done':
+                copies_completed[0] += 1
+                total = data.get('total_copies', 0)
+                status.update(f"[bold cyan]⠋ Correction: {copies_completed[0]}/{total} copies[/bold cyan]")
+            # Call original callback
+            await progress_callback(event_type, data)
+
+        # Use dual-LLM grading when in comparison mode, otherwise use per-question
+        if is_comparison_mode and hasattr(orchestrator.ai, 'grade_copy'):
+            graded = await orchestrator.grade_all(progress_callback=status_callback)
+        else:
+            graded = await orchestrator.grade_all(progress_callback=status_callback)
 
     # Show final summary table
     console.print(f"\n[bold green]✓ {len(graded)} copie(s) corrigée(s)[/bold green]")
@@ -935,8 +863,8 @@ def main():
         epilog="""
 Examples:
   %(prog)s correct copies/*.pdf
-  %(prog)s correct copies/*.pdf --scale Q1=5,Q2=3,Q3=4
   %(prog)s correct copies/*.pdf --auto
+  %(prog)s correct copies.pdf --pages-per-student 2
   %(prog)s correct copies/*.pdf --output ./my_grades
   %(prog)s status abc123
   %(prog)s analytics abc123
@@ -946,10 +874,9 @@ Examples:
 
 Note on --auto:
   En mode automatique (--auto), aucune interaction utilisateur n'est requise.
-  - Le barème détecté est utilisé directement
+  - Le barème est détecté automatiquement pendant la correction
   - En cas de désaccord entre les 2 IA: la moyenne est automatiquement appliquée
-  Sans --auto: le programme demande confirmation du barème et sollicite l'utilisateur
-  pour arbitrer les désaccords entre IA.
+  Sans --auto: le programme sollicite l'utilisateur pour arbitrer les désaccords entre IA.
 
 Note on --single:
   Par défaut, si COMPARISON_MODE=true dans .env, le système utilise 2 LLM en parallèle.
@@ -957,6 +884,23 @@ Note on --single:
   - Plus rapide (une seule API call par question)
   - Moins coûteux (50% d'API calls en moins)
   - Pas de vérification croisée en cas d'erreur
+
+Note on --pages-per-student (--pps):
+  Active le mode lecture individuelle où le PDF est pré-découpé par copie élève.
+  Chaque LLM analyse une copie à la fois (pas de lecture d'ensemble).
+  Avantages:
+  - Focus LLM concentré sur une seule copie
+  - Aucune contamination entre copies
+  - Pas d'appel IA pour détecter les élèves (découpage par pages fixes)
+  Exemple: --pages-per-student 2 pour un PDF de 8 pages → 4 copies de 2 pages
+
+Note on --second-reading:
+  Active la deuxième lecture pour améliorer la qualité de correction.
+  - Mode Single LLM (--single): 2 passes - le LLM reçoit ses propres résultats
+    et peut les ajuster (2 appels API au lieu d'1)
+  - Mode Dual LLM (défaut): Ajoute une instruction de relecture dans le prompt
+    initial, demandant au LLM de vérifier sa correction dans le même appel
+  Par défaut: OFF (pas de deuxième lecture)
         """
     )
 
@@ -968,10 +912,6 @@ Note on --single:
         "pdfs",
         nargs="+",
         help="PDF files or directories to process"
-    )
-    correct_parser.add_argument(
-        "--scale",
-        help="Explicit grading scale (e.g., Q1=5,Q2=3,Q3=4)"
     )
     correct_parser.add_argument(
         "--auto",
@@ -1006,6 +946,22 @@ Note on --single:
         "--skip-reading",
         action="store_true",
         help="Ignorer le consensus de lecture (les LLM notent directement sans valider ce qu'ils lisent)"
+    )
+    correct_parser.add_argument(
+        "--pages-per-student", "--pps",
+        type=int,
+        help="Nombre de pages par élève (active le mode lecture individuelle - PDF pré-découpé)"
+    )
+    correct_parser.add_argument(
+        "--second-reading",
+        action="store_true",
+        help="Active la deuxième lecture: en mode Single LLM, 2 passes (2 appels API); en mode Dual LLM, ajoute instruction de relecture dans le prompt"
+    )
+    correct_parser.add_argument(
+        "--parallel",
+        type=int,
+        default=DEFAULT_PARALLEL_COPIES,
+        help=f"Nombre de copies traitées en parallèle (défaut: {DEFAULT_PARALLEL_COPIES}). Accélère le traitement en mode individuel (Single ou Dual LLM)"
     )
 
     # Status command

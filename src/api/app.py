@@ -11,6 +11,10 @@ from typing import List, Optional, Dict
 from pathlib import Path
 import shutil
 import uuid
+import re
+
+# Maximum file size for uploads (50 MB)
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 
 from config.settings import get_settings
 from core.session import GradingSessionOrchestrator
@@ -165,12 +169,40 @@ def create_app() -> FastAPI:
         upload_dir = Path(f"temp/{session_id}")
         upload_dir.mkdir(parents=True, exist_ok=True)
 
+        # Resolve to absolute path for validation
+        upload_dir_resolved = upload_dir.resolve()
+
         pdf_paths = []
         for file in files:
-            if not file.filename.endswith(".pdf"):
+            if not file.filename or not file.filename.lower().endswith(".pdf"):
                 continue
 
-            file_path = upload_dir / file.filename
+            # Sanitize filename: remove path separators and dangerous characters
+            safe_filename = re.sub(r'[^\w\-.]', '_', Path(file.filename).stem) + ".pdf"
+
+            # Use UUID to ensure uniqueness and prevent collisions
+            unique_filename = f"{uuid.uuid4().hex[:8]}_{safe_filename}"
+            file_path = upload_dir / unique_filename
+
+            # Validate the resolved path is within upload_dir (prevent path traversal)
+            try:
+                resolved_path = file_path.resolve()
+                if not str(resolved_path).startswith(str(upload_dir_resolved)):
+                    raise HTTPException(status_code=400, detail="Invalid file path")
+            except (OSError, ValueError):
+                raise HTTPException(status_code=400, detail="Invalid file path")
+
+            # Check file size
+            file.file.seek(0, 2)  # Seek to end
+            file_size = file.file.tell()
+            file.file.seek(0)  # Reset to beginning
+
+            if file_size > MAX_UPLOAD_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024*1024)} MB"
+                )
+
             with open(file_path, "wb") as f:
                 shutil.copyfileobj(file.file, f)
             pdf_paths.append(str(file_path))
