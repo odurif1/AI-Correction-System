@@ -4,6 +4,15 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Code Quality](https://img.shields.io/badge/code%20quality-audit%20complet-green.svg)]()
+
+### Caractéristiques
+
+- **Dual LLM**: Deux IA notent en parallèle avec vérification croisée
+- **Architecture Unifiée**: 60-80% d'appels API en moins grâce à la vérification unifiée
+- **Infrastructure Robuste**: Circuit breaker, rate limiting, retry automatique
+- **Traçabilité Complète**: Audit détaillé de chaque décision
+- **Mode Auto**: Correction automatique sans interaction
 
 ---
 
@@ -390,19 +399,118 @@ data/
 ```
 src/
 ├── ai/                    # Providers LLM
-│   ├── base_provider.py        # Classe abstraite
-│   ├── gemini_provider.py
-│   ├── openai_provider.py
-│   ├── comparison_provider.py  # DUAL LLM avec 3 phases
+│   ├── __init__.py             # Exports avec lazy imports
+│   ├── base_provider.py        # Classe abstraite + error handling
+│   ├── gemini_provider.py      # Provider Google Gemini
+│   ├── openai_provider.py      # Provider OpenAI
+│   ├── comparison_provider.py  # DUAL LLM avec vérification unifiée
 │   ├── single_pass_grader.py   # Notation toutes questions en 1 appel
+│   ├── provider_factory.py     # Factory pour providers
 │   └── disagreement_analyzer.py
 ├── core/                  # Modèles et orchestration
-│   ├── models.py               # Dataclasses
-│   └── session.py              # Orchestrateur
+│   ├── __init__.py             # Exports publics
+│   ├── models.py               # Dataclasses (GradingSession, GradedCopy...)
+│   ├── exceptions.py           # Hiérarchie d'exceptions custom
+│   ├── session.py              # Orchestrateur de session
+│   ├── workflow.py             # Workflow de correction
+│   └── workflow_state.py       # État immutable du workflow
+├── config/                # Configuration
+│   ├── __init__.py             # Exports publics
+│   ├── settings.py             # Paramètres (env vars)
+│   ├── constants.py            # Constantes centralisées
+│   ├── prompts.py              # Templates de prompts
+│   └── logging_config.py       # Configuration logging
+├── utils/                 # Utilitaires
+│   ├── __init__.py             # Exports publics
+│   ├── sorting.py              # Tri naturel (Q1, Q2, Q10)
+│   ├── confidence.py           # Calcul de confiance
+│   ├── rate_limiter.py         # Rate limiting + Circuit breaker
+│   ├── retry.py                # Retry avec backoff exponentiel
+│   └── type_guards.py          # Validation runtime des types
 ├── grading/               # Moteur de notation
+│   ├── grader.py               # IntelligentGrader
+│   ├── feedback.py             # Génération de feedback
+│   └── uncertainty.py          # Calcul d'incertitude
 ├── vision/                # Lecture PDF
+│   ├── __init__.py
+│   └── pdf_reader.py           # PDFReader avec context manager
 ├── storage/               # Stockage JSON
-└── main.py                # CLI
+│   ├── __init__.py
+│   └── file_store.py           # SessionStore avec file locking
+├── export/                # Export résultats
+│   ├── __init__.py
+│   ├── pdf_annotator.py        # Annotation PDF
+│   └── analytics.py            # Rapports et statistiques
+├── analysis/              # Analyse cross-copies
+│   ├── __init__.py
+│   ├── clustering.py           # Clustering embeddings
+│   └── cross_copy.py           # Détection similarités
+├── calibration/           # Calibration et cohérence
+│   ├── __init__.py
+│   ├── retroactive.py          # Application décisions rétroactives
+│   └── consistency.py          # Détection incohérences
+├── interaction/           # Interface utilisateur
+│   ├── __init__.py
+│   └── cli.py                  # CLI interactive
+├── api/                   # API REST (optionnel)
+│   ├── __init__.py
+│   └── app.py                  # FastAPI application
+└── main.py                # Point d'entrée CLI
+```
+
+---
+
+## Infrastructure et Robustesse
+
+### Gestion des Erreurs
+
+```python
+from core.exceptions import (
+    AICorrectionError,      # Exception de base
+    ProviderError,          # Erreur de provider
+    APIConnectionError,     # Erreur de connexion
+    APITimeoutError,        # Timeout
+    ParsingError,           # Erreur de parsing
+)
+```
+
+### Rate Limiting et Circuit Breaker
+
+```python
+from utils import (
+    RateLimiter,            # Token bucket rate limiter
+    CircuitBreaker,         # Protection contre APIs défaillantes
+    get_gemini_rate_limiter,
+    get_openai_circuit_breaker,
+)
+```
+
+### Retry avec Backoff
+
+```python
+from utils import retry_with_backoff, API_RETRY_CONFIG
+
+@retry_with_backoff(max_attempts=3, base_delay=1.0)
+async def call_api():
+    ...
+```
+
+### Logging Centralisé
+
+```python
+from config import setup_logging, get_logger
+
+setup_logging(level="INFO", log_file="app.log")
+logger = get_logger(__name__)
+```
+
+### Validation des Types
+
+```python
+from utils import is_grading_result, ensure_dict, ensure_float
+
+if is_grading_result(response):
+    grade = ensure_float(response.get('grade'))
 ```
 
 ---
@@ -415,7 +523,43 @@ pytest tests/
 
 # Formatage
 black src/ && isort src/
+
+# Type checking
+mypy src/
 ```
+
+---
+
+## Améliorations Récentes (v2.0)
+
+### Sécurité
+- ✅ Protection contre path traversal dans les uploads
+- ✅ Limite de taille des fichiers (50 MB max)
+- ✅ Sanitisation des clés API dans les logs
+
+### Performance
+- ✅ Cache LRU pour conversion base64 des images
+- ✅ Embeddings batchés pour l'API Gemini
+- ✅ I/O non-bloquant avec `asyncio.to_thread`
+
+### Robustesse
+- ✅ Circuit breaker pour protéger contre les APIs défaillantes
+- ✅ Rate limiting avec token bucket
+- ✅ Retry avec backoff exponentiel et jitter
+- ✅ Timeouts configurables pour tous les appels API
+- ✅ File locking atomique pour les opérations concurrentes
+
+### Architecture
+- ✅ Hiérarchie d'exceptions custom (`AICorrectionError`, `ProviderError`...)
+- ✅ État de workflow immutable (`CorrectionState`)
+- ✅ Module exports dans tous les `__init__.py`
+- ✅ Type guards pour validation runtime
+
+### Qualité Code
+- ✅ Centralisation des constantes (magic numbers)
+- ✅ Suppression du code dupliqué (`natural_sort_key`)
+- ✅ Context managers pour ressources (PDF, fichiers)
+- ✅ Logging centralisé avec configuration flexible
 
 ---
 
