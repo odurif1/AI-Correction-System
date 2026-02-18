@@ -1,7 +1,7 @@
 """
 Core module for the AI correction system.
 
-Exports key models and exceptions for easy access.
+Exports key models, exceptions, and workflow state for easy access.
 """
 
 from core.models import (
@@ -14,6 +14,17 @@ from core.models import (
     ConfidenceLevel,
     UncertaintyType,
     generate_id,
+)
+
+from core.workflow_state import (
+    CorrectionState,
+    WorkflowPhase,
+)
+
+from core.workflow import (
+    CorrectionWorkflow,
+    WorkflowCallbacks,
+    WorkflowConfig,
 )
 
 from core.exceptions import (
@@ -59,6 +70,13 @@ __all__ = [
     'ConfidenceLevel',
     'UncertaintyType',
     'generate_id',
+    # Workflow State
+    'CorrectionState',
+    'WorkflowPhase',
+    # Workflow
+    'CorrectionWorkflow',
+    'WorkflowCallbacks',
+    'WorkflowConfig',
     # Exceptions
     'AICorrectionError',
     'ConfigurationError',
