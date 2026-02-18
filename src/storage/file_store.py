@@ -449,13 +449,18 @@ class SessionStore:
         # Ensure base directory exists
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-        # Use file locking to prevent race conditions
-        lock_path = index_file.with_suffix('.lock')
+        # Use a dedicated lock file (not the index file itself)
+        # Using 'a' mode is atomic on POSIX - file is created if it doesn't exist
+        lock_path = self.base_dir / ".index.lock"
 
-        with open(lock_path, 'w') as lock_file:
+        # Use context manager pattern for clean lock handling
+        lock_fd = None
+        try:
+            # Open in append mode (atomic create on POSIX)
+            lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_WRONLY, 0o644)
             try:
-                # Acquire exclusive lock
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+                # Acquire exclusive lock (blocks until available)
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
                 # Charger l'index existant
                 if index_file.exists():
@@ -470,18 +475,20 @@ class SessionStore:
                     'path': str(self.session_dir)
                 }
 
-                # Sauvegarder
-                with open(index_file, 'w', encoding='utf-8') as f:
+                # Sauvegarder atomiquement (write to temp, then rename)
+                temp_file = index_file.with_suffix('.tmp')
+                with open(temp_file, 'w', encoding='utf-8') as f:
                     json.dump(index, f, indent=2, ensure_ascii=False)
+                temp_file.replace(index_file)  # Atomic on POSIX
+
             finally:
                 # Release lock
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-        # Clean up lock file (optional, but keeps things tidy)
-        try:
-            lock_path.unlink()
-        except Exception:
-            pass
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            if lock_fd is not None:
+                os.close(lock_fd)
+            # Note: We don't delete the lock file - it's reused across calls
+            # This avoids race conditions with lock file creation/deletion
 
     # ==================== CLEANUP ====================
 

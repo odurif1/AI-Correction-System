@@ -54,24 +54,28 @@ class PDFAnnotator:
         Returns:
             Path to annotated PDF
         """
-        # Open original PDF
-        doc = fitz.open(copy.pdf_path)
-
-        # Add cover page with summary
-        self._add_cover_page(doc, copy, graded)
-
-        # Annotate each page
-        for page_num in range(len(doc)):
-            page = doc[page_num]
-            self._annotate_page(page, page_num, copy, graded)
-
         # Determine output path
         if output_path is None:
             output_path = f"{copy.id}_annotated.pdf"
 
-        # Save
-        doc.save(output_path)
-        doc.close()
+        # Open and process with proper resource management
+        doc = None
+        try:
+            doc = fitz.open(copy.pdf_path)
+
+            # Add cover page with summary
+            self._add_cover_page(doc, copy, graded)
+
+            # Annotate each page
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                self._annotate_page(page, page_num, copy, graded)
+
+            # Save
+            doc.save(output_path)
+        finally:
+            if doc is not None:
+                doc.close()
 
         return output_path
 
@@ -276,46 +280,50 @@ class BatchAnnotator:
         Returns:
             Path to report PDF
         """
-        doc = fitz.open()
+        doc = None
+        try:
+            doc = fitz.open()
 
-        # Add title page
-        page = doc.new_page(width=595, height=842)
-        self.annotator._add_text_centered(
-            page, "Grading Report", y=100, size=24, bold=True
-        )
-        self.annotator._add_text_centered(
-            page, f"Session: {self.session.session_id}", y=140, size=14
-        )
-        self.annotator._add_text_centered(
-            page, f"Date: {datetime.now().strftime('%Y-%m-%d')}", y=170, size=12
-        )
-
-        # Add statistics
-        if self.session.graded_copies:
-            scores = [g.total_score for g in self.session.graded_copies]
-            avg = sum(scores) / len(scores)
-
-            y = 250
-            self.annotator._add_text(
-                page, f"Total Copies: {len(self.session.graded_copies)}",
-                100, y, size=12
+            # Add title page
+            page = doc.new_page(width=595, height=842)
+            self.annotator._add_text_centered(
+                page, "Grading Report", y=100, size=24, bold=True
             )
-            y += 25
-            self.annotator._add_text(
-                page, f"Class Average: {avg:.1f}", 100, y, size=12
+            self.annotator._add_text_centered(
+                page, f"Session: {self.session.session_id}", y=140, size=14
             )
-            y += 25
-            self.annotator._add_text(
-                page, f"Highest Score: {max(scores):.1f}", 100, y, size=12
-            )
-            y += 25
-            self.annotator._add_text(
-                page, f"Lowest Score: {min(scores):.1f}", 100, y, size=12
+            self.annotator._add_text_centered(
+                page, f"Date: {datetime.now().strftime('%Y-%m-%d')}", y=170, size=12
             )
 
-        # Save
-        output_path = self.output_dir / f"{self.session.session_id}_report.pdf"
-        doc.save(str(output_path))
-        doc.close()
+            # Add statistics
+            if self.session.graded_copies:
+                scores = [g.total_score for g in self.session.graded_copies]
+                avg = sum(scores) / len(scores)
+
+                y = 250
+                self.annotator._add_text(
+                    page, f"Total Copies: {len(self.session.graded_copies)}",
+                    100, y, size=12
+                )
+                y += 25
+                self.annotator._add_text(
+                    page, f"Class Average: {avg:.1f}", 100, y, size=12
+                )
+                y += 25
+                self.annotator._add_text(
+                    page, f"Highest Score: {max(scores):.1f}", 100, y, size=12
+                )
+                y += 25
+                self.annotator._add_text(
+                    page, f"Lowest Score: {min(scores):.1f}", 100, y, size=12
+                )
+
+            # Save
+            output_path = self.output_dir / f"{self.session.session_id}_report.pdf"
+            doc.save(str(output_path))
+        finally:
+            if doc is not None:
+                doc.close()
 
         return str(output_path)

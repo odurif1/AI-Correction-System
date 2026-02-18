@@ -7,6 +7,7 @@ including image processing, token tracking, and response parsing.
 
 import base64
 import functools
+import logging
 import re
 import time
 from abc import ABC, abstractmethod
@@ -16,6 +17,13 @@ from typing import Dict, Any, List, Optional
 from PIL import Image
 
 from core.models import AICallResult
+from core.exceptions import (
+    ProviderError,
+    APIConnectionError,
+    APITimeoutError,
+    APIResponseError,
+    ParsingError,
+)
 
 
 def _sanitize_for_logging(text: str) -> str:
@@ -73,6 +81,90 @@ def _cached_image_to_base64(image_path: str) -> str:
     """
     with open(image_path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
+
+
+class APIErrorContext:
+    """
+    Context manager for consistent API error handling.
+
+    Wraps API calls with proper error translation and logging.
+
+    Usage:
+        with APIErrorContext("vision call"):
+            response = client.call(...)
+    """
+
+    def __init__(self, operation: str, provider_name: str = "unknown"):
+        """
+        Initialize error context.
+
+        Args:
+            operation: Description of the operation being performed
+            provider_name: Name of the provider (for error messages)
+        """
+        self.operation = operation
+        self.provider_name = provider_name
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            return False
+
+        # Log the error
+        logging.error(f"{self.provider_name} API error during {self.operation}: {exc_val}")
+
+        # Translate common exceptions to custom exceptions
+        exc_name = exc_type.__name__ if exc_type else "Unknown"
+
+        # Connection errors
+        if any(name in exc_name for name in ['Connection', 'Connect', 'Network']):
+            raise APIConnectionError(
+                f"Failed to connect during {self.operation}: {exc_val}"
+            ) from exc_val
+
+        # Timeout errors
+        if any(name in exc_name for name in ['Timeout', 'TimedOut']):
+            raise APITimeoutError(
+                f"Timeout during {self.operation}: {exc_val}"
+            ) from exc_val
+
+        # Rate limiting
+        if 'Rate' in exc_name or '429' in str(exc_val):
+            raise APIResponseError(
+                f"Rate limited during {self.operation}: {exc_val}"
+            ) from exc_val
+
+        # JSON/parsing errors
+        if any(name in exc_name for name in ['JSON', 'Parse', 'Decode']):
+            raise ParsingError(
+                f"Failed to parse response during {self.operation}: {exc_val}"
+            ) from exc_val
+
+        # Generic API error
+        raise ProviderError(
+            f"API error during {self.operation}: {exc_val}"
+        ) from exc_val
+
+
+def handle_api_errors(operation: str):
+    """
+    Decorator for consistent API error handling.
+
+    Usage:
+        @handle_api_errors("vision call")
+        def call_vision(self, ...):
+            ...
+    """
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            provider_name = getattr(self, '__class__.__name__', 'unknown')
+            with APIErrorContext(operation, provider_name):
+                return func(self, *args, **kwargs)
+        return wrapper
+    return decorator
 
 
 class BaseProvider(ABC):
