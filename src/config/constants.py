@@ -95,3 +95,15 @@ API_WORKERS: Final[int] = 1
 API_CONNECT_TIMEOUT: Final[float] = 30.0  # Connection timeout
 API_READ_TIMEOUT: Final[float] = 120.0  # Read timeout for API calls
 API_EMBEDDING_TIMEOUT: Final[float] = 60.0  # Timeout for embedding calls
+
+# Prompt Configuration
+DEFAULT_LANGUAGE: Final[str] = "fr"  # Default language for prompts
+MAX_FEEDBACK_WORDS: Final[int] = 25  # Maximum words in student feedback
+MIN_CONFIDENCE_FOR_AUTO: Final[float] = 0.6  # Minimum confidence for auto-grade
+SUPPORTED_LANGUAGES: Final[tuple] = ("fr", "en", "es", "de", "it")
+
+# Language Detection Keywords (for detect_language)
+LANGUAGE_KEYWORDS: Final[Dict[str, list]] = {
+    "fr": ["le", "la", "les", "des", "du", "de", "et", "est", "en", "un", "une"],
+    "en": ["the", "a", "an", "is", "are", "of", "to", "in", "and", "or", "but"],
+}

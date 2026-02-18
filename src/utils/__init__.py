@@ -26,6 +26,20 @@ from utils.retry import (
     AGGRESSIVE_RETRY_CONFIG,
     CONSERVATIVE_RETRY_CONFIG,
 )
+from utils.type_guards import (
+    is_dict_with_keys,
+    is_grading_result,
+    is_reading_result,
+    is_question_detection,
+    is_student_name_result,
+    is_api_error,
+    is_list_of,
+    is_scale_detection,
+    ensure_dict,
+    ensure_list,
+    ensure_str,
+    ensure_float,
+)
 
 __all__ = [
     'choose_by_confidence',
@@ -49,4 +63,16 @@ __all__ = [
     'API_RETRY_CONFIG',
     'AGGRESSIVE_RETRY_CONFIG',
     'CONSERVATIVE_RETRY_CONFIG',
+    'is_dict_with_keys',
+    'is_grading_result',
+    'is_reading_result',
+    'is_question_detection',
+    'is_student_name_result',
+    'is_api_error',
+    'is_list_of',
+    'is_scale_detection',
+    'ensure_dict',
+    'ensure_list',
+    'ensure_str',
+    'ensure_float',
 ]
