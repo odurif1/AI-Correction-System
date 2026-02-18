@@ -17,6 +17,15 @@ from utils.rate_limiter import (
     rate_limited,
     with_circuit_breaker,
 )
+from utils.retry import (
+    RetryConfig,
+    RetryExhausted,
+    retry_with_backoff,
+    retry_with_config,
+    API_RETRY_CONFIG,
+    AGGRESSIVE_RETRY_CONFIG,
+    CONSERVATIVE_RETRY_CONFIG,
+)
 
 __all__ = [
     'choose_by_confidence',
@@ -33,4 +42,11 @@ __all__ = [
     'get_openai_circuit_breaker',
     'rate_limited',
     'with_circuit_breaker',
+    'RetryConfig',
+    'RetryExhausted',
+    'retry_with_backoff',
+    'retry_with_config',
+    'API_RETRY_CONFIG',
+    'AGGRESSIVE_RETRY_CONFIG',
+    'CONSERVATIVE_RETRY_CONFIG',
 ]

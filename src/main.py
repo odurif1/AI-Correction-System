@@ -48,6 +48,44 @@ def check_api_key() -> bool:
     return True
 
 
+def validate_pdf_path(path_str: str) -> tuple[bool, str]:
+    """
+    Validate a PDF path for security and correctness.
+
+    Args:
+        path_str: Path string to validate
+
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    from pathlib import Path
+
+    # Check for empty path
+    if not path_str or not path_str.strip():
+        return False, "Empty path provided"
+
+    path = Path(path_str)
+
+    # Check for path traversal attempts
+    try:
+        # Resolve to absolute path
+        resolved = path.resolve()
+    except (OSError, ValueError) as e:
+        return False, f"Invalid path: {e}"
+
+    # Check for suspicious patterns
+    suspicious = ['..', '~', '$', '|', ';', '&', '`']
+    for pattern in suspicious:
+        if pattern in path_str:
+            return False, f"Suspicious pattern '{pattern}' in path"
+
+    # Check extension
+    if path.suffix.lower() != '.pdf':
+        return False, f"Not a PDF file: {path.suffix}"
+
+    return True, ""
+
+
 async def command_correct(args):
     """Run correction on PDF files with interactive workflow."""
     if not check_api_key():
@@ -56,13 +94,23 @@ async def command_correct(args):
     cli = CLI()
     cli.show_header()
 
-    # Get PDF paths
+    # Get PDF paths with validation
     pdf_paths = []
     for pattern in args.pdfs:
+        # Validate path first
+        is_valid, error = validate_pdf_path(pattern)
+        if not is_valid:
+            cli.show_warning(f"Invalid path '{pattern}': {error}")
+            continue
+
         path = Path(pattern)
         if path.exists():
             if path.is_dir():
-                pdf_paths.extend(str(p) for p in path.glob("*.pdf"))
+                # For directories, validate each PDF found
+                for pdf_file in path.glob("*.pdf"):
+                    is_valid, _ = validate_pdf_path(str(pdf_file))
+                    if is_valid:
+                        pdf_paths.append(str(pdf_file))
             else:
                 pdf_paths.append(str(path))
         else:

@@ -7,6 +7,7 @@ Used as Phase 1 of the stateless grading approach.
 Each call is independent with images sent fresh.
 """
 
+import asyncio
 import json
 import re
 import time

@@ -1,10 +1,18 @@
 """
 Configuration module for the AI correction system.
 
-Provides settings, constants, and prompt templates.
+Provides settings, constants, prompt templates, and logging configuration.
 """
 
 from config.settings import get_settings, Settings
+from config.logging_config import (
+    setup_logging,
+    get_logger,
+    LoggingContext,
+    log_function_call,
+    log_async_function_call,
+    logger,
+)
 from config.constants import (
     # Model Configuration
     DEFAULT_MODEL,
@@ -38,8 +46,17 @@ from config.constants import (
 )
 
 __all__ = [
+    # Settings
     'get_settings',
     'Settings',
+    # Logging
+    'setup_logging',
+    'get_logger',
+    'LoggingContext',
+    'log_function_call',
+    'log_async_function_call',
+    'logger',
+    # Constants
     'DEFAULT_MODEL',
     'DEFAULT_VISION_MODEL',
     'MAX_TOKENS',

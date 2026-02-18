@@ -12,6 +12,7 @@ import fitz  # PyMuPDF
 from PIL import Image
 
 from config.constants import PDF_DPI
+from core.exceptions import PDFReadError, InvalidPDFError
 
 
 class PDFReader:
@@ -31,10 +32,29 @@ class PDFReader:
 
         Args:
             pdf_path: Path to PDF file
+
+        Raises:
+            InvalidPDFError: If file doesn't exist or isn't a PDF
+            PDFReadError: If PDF cannot be opened
         """
         self.pdf_path = Path(pdf_path)
-        self.doc = fitz.open(str(self.pdf_path))
-        self.page_count = len(self.doc)
+        self.doc = None
+        self.page_count = 0
+
+        # Validate file exists
+        if not self.pdf_path.exists():
+            raise InvalidPDFError(f"PDF file not found: {pdf_path}")
+
+        # Validate extension
+        if self.pdf_path.suffix.lower() != ".pdf":
+            raise InvalidPDFError(f"Not a PDF file: {pdf_path}")
+
+        # Open PDF with error handling
+        try:
+            self.doc = fitz.open(str(self.pdf_path))
+            self.page_count = len(self.doc)
+        except Exception as e:
+            raise PDFReadError(f"Failed to open PDF: {e}") from e
 
     def get_page_count(self) -> int:
         """Get the number of pages in the PDF."""
