@@ -329,22 +329,24 @@ class DisagreementAnalyzer:
 
         grade_diff = abs(grade1 - grade2)
         scale_diff = abs(max_pts1 - max_pts2)
+        grade_threshold = max_pts1 * GRADE_DIFF_PERCENTAGE
+        grades_differ = grade_diff >= grade_threshold
+
+        # Compute reading similarity with SequenceMatcher
+        r1 = reading1.lower().strip()
+        r2 = reading2.lower().strip()
+        reading_similar = (r1 == r2) or (r1 in r2) or (r2 in r1) or \
+                         (SequenceMatcher(None, r1, r2).ratio() >= READING_SIMILARITY_THRESHOLD)
 
         # Check FIRST: barème différent (scale difference)
-        # This is important because it affects how we interpret grades
-        if scale_diff > 0.1:  # Tolérance de 0.1 pour les arrondis
+        if scale_diff > 0.1:
             return QuestionDisagreement(
                 question_id=qid,
                 disagreement_type=DisagreementType.SCALE_DIFFERENCE,
-                llm1_grade=grade1,
-                llm2_grade=grade2,
-                grade_difference=grade_diff,
-                llm1_reading=reading1,
-                llm2_reading=reading2,
-                llm1_confidence=conf1,
-                llm2_confidence=conf2,
-                llm1_max_points=max_pts1,
-                llm2_max_points=max_pts2,
+                llm1_grade=grade1, llm2_grade=grade2, grade_difference=grade_diff,
+                llm1_reading=reading1, llm2_reading=reading2,
+                llm1_confidence=conf1, llm2_confidence=conf2,
+                llm1_max_points=max_pts1, llm2_max_points=max_pts2,
                 reason=f"Barème détecté différent: {max_pts1} vs {max_pts2} points"
             )
 
@@ -352,67 +354,46 @@ class DisagreementAnalyzer:
         not_found_indicators = ['non', 'no', 'pas visible', 'not visible', 'absent', 'not found', 'non trouvé']
         r1_not_found = any(ind in reading1.lower() for ind in not_found_indicators)
         r2_not_found = any(ind in reading2.lower() for ind in not_found_indicators)
-
         if r1_not_found != r2_not_found:
             return QuestionDisagreement(
                 question_id=qid,
                 disagreement_type=DisagreementType.NOT_FOUND_CONFLICT,
-                llm1_grade=grade1,
-                llm2_grade=grade2,
-                grade_difference=grade_diff,
-                llm1_reading=reading1,
-                llm2_reading=reading2,
-                llm1_confidence=conf1,
-                llm2_confidence=conf2,
-                llm1_max_points=max_pts1,
-                llm2_max_points=max_pts2,
+                llm1_grade=grade1, llm2_grade=grade2, grade_difference=grade_diff,
+                llm1_reading=reading1, llm2_reading=reading2,
+                llm1_confidence=conf1, llm2_confidence=conf2,
+                llm1_max_points=max_pts1, llm2_max_points=max_pts2,
                 reason="Un LLM a trouvé la réponse, l'autre non"
             )
 
-        # Check: lecture différente (AVANT la note car c'est souvent la cause racine)
-        # Only flag "substantial" differences, not "partial" (one contains the other)
-        reading_diff_type = self._classify_reading_difference(reading1, reading2)
-        if reading_diff_type == "substantial":
+        # Check: lecture différente ET notes différentes → flag
+        if not reading_similar and grades_differ:
             return QuestionDisagreement(
                 question_id=qid,
                 disagreement_type=DisagreementType.READING_DIFFERENCE,
-                llm1_grade=grade1,
-                llm2_grade=grade2,
-                grade_difference=grade_diff,
-                llm1_reading=reading1,
-                llm2_reading=reading2,
-                llm1_confidence=conf1,
-                llm2_confidence=conf2,
-                llm1_max_points=max_pts1,
-                llm2_max_points=max_pts2,
-                reading_difference_type=reading_diff_type,
-                reason=f"Lectures différentes ({reading_diff_type}): '{reading1}' vs '{reading2}'"
+                llm1_grade=grade1, llm2_grade=grade2, grade_difference=grade_diff,
+                llm1_reading=reading1, llm2_reading=reading2,
+                llm1_confidence=conf1, llm2_confidence=conf2,
+                llm1_max_points=max_pts1, llm2_max_points=max_pts2,
+                reason=f"Lectures et notes différentes: '{reading1}' vs '{reading2}'"
             )
 
-        # Check: différence de note significative (seulement si lectures identiques)
-        # Seuil = 10% du barème de la question
-        grade_threshold = max_pts1 * GRADE_DIFF_PERCENTAGE
-        if grade_diff >= grade_threshold:
+        # Check: différence de note significative
+        if grades_differ:
             return QuestionDisagreement(
                 question_id=qid,
                 disagreement_type=DisagreementType.GRADE_DIFFERENCE,
-                llm1_grade=grade1,
-                llm2_grade=grade2,
-                grade_difference=grade_diff,
-                llm1_reading=reading1,
-                llm2_reading=reading2,
-                llm1_confidence=conf1,
-                llm2_confidence=conf2,
-                llm1_max_points=max_pts1,
-                llm2_max_points=max_pts2,
-                reason=f"Différence de note: {grade_diff:.2f} pts (seuil: {grade_threshold:.2f} pts = 10% du barème)"
+                llm1_grade=grade1, llm2_grade=grade2, grade_difference=grade_diff,
+                llm1_reading=reading1, llm2_reading=reading2,
+                llm1_confidence=conf1, llm2_confidence=conf2,
+                llm1_max_points=max_pts1, llm2_max_points=max_pts2,
+                reason=f"Différence de note: {grade_diff:.2f} pts (seuil: {grade_threshold:.2f})"
             )
 
         # Accord
         return None
 
     def _classify_reading_difference(self, reading1: str, reading2: str) -> Optional[str]:
-        """Classifie le type de différence de lecture."""
+        """Classifie le type de différence de lecture avec SequenceMatcher."""
         if not reading1 and not reading2:
             return None
         if not reading1 or not reading2:
@@ -424,33 +405,12 @@ class DisagreementAnalyzer:
         if r1 == r2:
             return None
 
-        # Différence d'accents seulement
-        import unicodedata
-        def strip_accents(s):
-            return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
-
-        if strip_accents(r1) == strip_accents(r2):
-            return "accent"
-
-        # Chevauchement partiel
+        # Check for partial overlap (one contains the other)
         if r1 in r2 or r2 in r1:
             return "partial"
 
-        # Similarité Jaccard
-        words1 = set(r1.split())
-        words2 = set(r2.split())
-
-        stop_words = {'le', 'la', 'les', 'un', 'une', 'des', 'de', 'du', 'a', 'est', 'et', 'ou',
-                      'the', 'a', 'an', 'is', 'are', 'and', 'or', 'to', 'in', 'of'}
-        words1 -= stop_words
-        words2 -= stop_words
-
-        if not words1 or not words2:
-            return "substantial"
-
-        intersection = len(words1 & words2)
-        union = len(words1 | words2)
-        similarity = intersection / union if union > 0 else 0
+        # Use SequenceMatcher for similarity
+        similarity = SequenceMatcher(None, r1, r2).ratio()
 
         if similarity < READING_SIMILARITY_THRESHOLD:
             return "substantial"
@@ -461,14 +421,14 @@ class DisagreementAnalyzer:
 def are_readings_substantially_different(reading1: str, reading2: str) -> bool:
     """
     Check if two readings are substantially different.
-    Used to detect reading disagreements even when grades agree.
+    Uses SequenceMatcher for character-level similarity comparison.
 
     Args:
         reading1: First reading
         reading2: Second reading
 
     Returns:
-        True if readings are substantially different
+        True if readings are substantially different (similarity < 0.8)
     """
     if not reading1 or not reading2:
         return bool(reading1) != bool(reading2)
@@ -479,32 +439,10 @@ def are_readings_substantially_different(reading1: str, reading2: str) -> bool:
     if r1 == r2:
         return False
 
-    # Check for accent-only differences
-    import unicodedata
-    def strip_accents(s):
-        return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
-
-    if strip_accents(r1) == strip_accents(r2):
-        return False
-
-    # Check for partial overlap
+    # Check for partial overlap (one contains the other)
     if r1 in r2 or r2 in r1:
         return False
 
-    # Jaccard similarity
-    words1 = set(r1.split())
-    words2 = set(r2.split())
-
-    stop_words = {'le', 'la', 'les', 'un', 'une', 'des', 'de', 'du', 'a', 'est', 'et', 'ou',
-                  'the', 'a', 'an', 'is', 'are', 'and', 'or', 'to', 'in', 'of'}
-    words1 -= stop_words
-    words2 -= stop_words
-
-    if not words1 or not words2:
-        return True
-
-    intersection = len(words1 & words2)
-    union = len(words1 | words2)
-    similarity = intersection / union if union > 0 else 0
-
+    # Use SequenceMatcher for character-level similarity
+    similarity = SequenceMatcher(None, r1, r2).ratio()
     return similarity < READING_SIMILARITY_THRESHOLD
