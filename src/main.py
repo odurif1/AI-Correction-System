@@ -429,7 +429,8 @@ async def command_correct(args):
         language='auto',
         llm1_name=llm1_name,
         llm2_name=llm2_name,
-        display_language='fr'
+        display_language='fr',
+        session_id=orchestrator.session_id
     )
 
     # ============================================================

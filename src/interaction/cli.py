@@ -80,7 +80,8 @@ class CLI:
         language: str = "auto",
         llm1_name: str = None,
         llm2_name: str = None,
-        display_language: str = "fr"
+        display_language: str = "fr",
+        session_id: str = None
     ):
         """
         Display compact startup screen with configuration.
@@ -93,6 +94,7 @@ class CLI:
             llm1_name: First LLM name (for comparison mode)
             llm2_name: Second LLM name (for comparison mode)
             display_language: UI language
+            session_id: Session identifier
         """
         # Header
         header = Panel(
@@ -118,6 +120,8 @@ class CLI:
             config_lines.append(f"[bold]🔧 Pages/student:[/bold] {pages_per_student}")
             lang_display = "Auto-detect" if language == "auto" else language.upper()
             config_lines.append(f"[bold]🌐 Language:[/bold]     {lang_display}")
+            if session_id:
+                config_lines.append(f"[bold]🔑 Session ID:[/bold]  {session_id}")
         else:
             config_lines.append(f"[bold]📁 PDFs:[/bold]        {file_count} fichiers")
             mode_display = {
@@ -129,6 +133,8 @@ class CLI:
             config_lines.append(f"[bold]🔧 Pages/élève:[/bold]  {pages_per_student}")
             lang_display = "Auto-détection" if language == "auto" else language.upper()
             config_lines.append(f"[bold]🌐 Langue:[/bold]      {lang_display}")
+            if session_id:
+                config_lines.append(f"[bold]🔑 Session ID:[/bold]  {session_id}")
 
         # LLM info for comparison mode
         if mode == "comparison" and llm1_name and llm2_name:

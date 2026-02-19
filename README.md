@@ -532,49 +532,69 @@ mypy src/
 
 ## Améliorations Récentes
 
-### v2.2 - Précision et Simplicité
+### Analyse des Désaccords
 
-**Analyse des Désaccords Simplifiée**
-- **SequenceMatcher** (seuil 0.8) pour comparer les lectures objectivement
-- Détection "contains" si une lecture contient l'autre (partial)
-- Logique de flag:
-  - Si notes différentes → FLAG (toujours, type READING ou GRADE selon lecture)
-  - Si notes identiques + lecture similaire (ratio >= 0.8 ou partial) → PAS de flag
-  - Si notes identiques + lecture très différente → pas de flag (les LLMs sont d'accord)
-- Gestion des exposants Unicode (L¹ vs L⁻¹)
+**Logique de Flag Simplifiée**
 
-**Détection Flip-Flop Robuste**
-- Correction du bug de portée des variables
-- Détection quand les LLMs échangent leurs positions après vérification
-- Seuil relatif: 10% du barème (pas fixe)
+Le système détecte les désaccords entre les deux LLMs pour décider si une vérification est nécessaire:
 
-**Prompts de Vérification Renforcés**
-- Lecture indépendante de la copie (pas copier l'autre)
-- Identification d'abord de la bonne réponse sur l'image
-- Considération des deux lectures pour auto-raisonnement
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  DÉTECTION DES DÉSACCORDS                                        │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  1. Barème différent (max_points LLM1 ≠ max_points LLM2)        │
+│     → FLAG: SCALE_DIFFERENCE                                    │
+│                                                                  │
+│  2. Un LLM trouve la réponse, l'autre non                       │
+│     → FLAG: NOT_FOUND_CONFLICT                                  │
+│                                                                  │
+│  3. Notes différentes (différence >= 10% du barème)             │
+│     → FLAG: READING_DIFFERENCE ou GRADE_DIFFERENCE              │
+│                                                                  │
+│  Lecture considérée "similaire" si:                              │
+│  - SequenceMatcher ratio >= 0.8, OU                             │
+│  - Une lecture contient l'autre (partial)                       │
+│                                                                  │
+│  Si notes identiques ET lecture similaire → PAS de flag         │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Pourquoi ces règles?**
+- Si les notes diffèrent → les LLMs ont des jugements différents → vérification nécessaire
+- Si les notes sont identiques mais les lectures très différentes → les LLMs ont convergé, pas de flag
+- "partial" capture les cas où un LLM inclut plus de contexte (ex: "V = 100 mL m = VxCm" vs "m = VxCm")
+
+**Exemples concrets:**
+
+| Lecture LLM1 | Lecture LLM2 | Ratio | Partial | Notes | Flag? |
+|--------------|--------------|-------|---------|-------|-------|
+| "fiole jaugée" | "bécher" | 0.0 | Non | Différentes | OUI |
+| "m = VxCm" | "V = 100 mL m = VxCm" | 0.59 | Oui | Identiques | NON |
+| "m = 40g. L¹ x 10L" | "m = 40g.L⁻¹ x 10L" | 0.96 | Non | Différentes | OUI (grade) |
+
+### Détection Flip-Flop
+
+Quand les LLMs échangent leurs positions après vérification (LLM1 était plus haut, devient plus bas), le système le signale. Seuil: 10% du barème.
+
+### Prompts de Vérification
+
+- Lecture indépendante de la copie (ne pas copier l'autre correcteur)
+- Identifier d'abord la bonne réponse sur l'image, puis comparer
+- Considérer les deux lectures pour auto-raisonnement
 - Feedback sobre et professionnel
 
-**Correction Auto-Detect**
-- Validation assouplie des IDs de questions (Q1, q1, Q1a, etc.)
-- Meilleure détection des questions en mode INDIVIDUAL
-
-### v2.1 - UX et Fiabilité
+### Infrastructure
 
 **Dashboard Temps Réel**
 - Visualisation de toutes les copies pendant le traitement parallèle
 - Statut par copie: en attente / en cours / terminé / erreur
-- Progression par question et scores en temps réel
 
 **Protection Anti-Hallucination**
-- **Reading anchors**: figement des lectures en cas d'accord initial entre LLMs
-- **Détection flip-flop**: signalement quand les LLMs échangent leurs positions
-- **Prompts anti-suggestion**: règles explicites pour éviter l'influence excessive
-
-**Audit Optimisé**
-- Prompts stockés une seule fois (plus de redondance par question)
-- Harmonisation du champ `reasoning` dans tout l'audit
-
-### v2.0 - Infrastructure
+- Reading anchors: figement des lectures en cas d'accord initial
+- Détection flip-flop: signalement des échanges de position
+- Prompts anti-suggestion: règles explicites
 
 **Sécurité**
 - Protection contre path traversal
