@@ -370,8 +370,9 @@ class DisagreementAnalyzer:
             )
 
         # Check: lecture différente (AVANT la note car c'est souvent la cause racine)
+        # Only flag "substantial" differences, not "partial" (one contains the other)
         reading_diff_type = self._classify_reading_difference(reading1, reading2)
-        if reading_diff_type in ("substantial", "partial"):
+        if reading_diff_type == "substantial":
             return QuestionDisagreement(
                 question_id=qid,
                 disagreement_type=DisagreementType.READING_DIFFERENCE,
