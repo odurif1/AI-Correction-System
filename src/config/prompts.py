@@ -930,6 +930,11 @@ def build_unified_verification_prompt(
         q_text = q.get('text', '')
         q_criteria = q.get('criteria', '')
 
+        # Check for scale disagreement
+        llm1_max = llm1.get('max_points', 1)
+        llm2_max = llm2.get('max_points', 1)
+        scale_disagreement = abs(llm1_max - llm2_max) > 0.1
+
         if language == "fr":
             if q_text:
                 q_text_section = f"Texte: {q_text}\n"
@@ -939,14 +944,23 @@ def build_unified_verification_prompt(
                 q_text_section = "⚠ ANOMALIE: Question détectée automatiquement - texte non disponible\n"
                 auto_detect_warning = True
 
+            # Add scale disagreement warning if applicable
+            scale_warning = ""
+            if scale_disagreement:
+                scale_warning = f"""
+⚠ DÉSACCORD SUR LE BARÈME: Vous avez détecté {llm1_max} pts, l'autre a détecté {llm2_max} pts.
+→ CHERCHEZ le barème sur la copie et METTEZ-VOUS D'ACCORD sur le barème correct.
+→ Utilisez ce barème convenu dans votre "max_points" final.
+"""
+
             questions_section += f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ─── QUESTION {qid} ───
-{q_text_section}Barème: {llm1.get('max_points', 1)} point(s)
-
-- Votre note initiale: {llm1.get('grade', 0)}/{llm1.get('max_points', 1)}
+{q_text_section}Barème que vous avez détecté: {llm1_max} point(s)
+{scale_warning}
+- Votre note initiale: {llm1.get('grade', 0)}/{llm1_max}
 - Votre lecture initiale: "{llm1.get('reading', '')}"
-- L'autre note: {llm2.get('grade', 0)}/{llm2.get('max_points', 1)}
+- L'autre note: {llm2.get('grade', 0)}/{llm2_max}
 - Lecture de l'autre: "{llm2.get('reading', '')}"
 """
         else:
@@ -958,14 +972,23 @@ def build_unified_verification_prompt(
                 q_text_section = "⚠ ANOMALY: Auto-detected question - text not available\n"
                 auto_detect_warning = True
 
+            # Add scale disagreement warning if applicable
+            scale_warning = ""
+            if scale_disagreement:
+                scale_warning = f"""
+⚠ SCALE DISAGREEMENT: You detected {llm1_max} pts, the other detected {llm2_max} pts.
+→ SEARCH for the scale on the copy and AGREE on the correct scale.
+→ Use this agreed scale in your final "max_points".
+"""
+
             questions_section += f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ─── QUESTION {qid} ───
-{q_text_section}Scale: {llm1.get('max_points', 1)} point(s)
-
-- Your initial grade: {llm1.get('grade', 0)}/{llm1.get('max_points', 1)}
+{q_text_section}Scale you detected: {llm1_max} point(s)
+{scale_warning}
+- Your initial grade: {llm1.get('grade', 0)}/{llm1_max}
 - Your initial reading: "{llm1.get('reading', '')}"
-- Other's grade: {llm2.get('grade', 0)}/{llm2.get('max_points', 1)}
+- Other's grade: {llm2.get('grade', 0)}/{llm2_max}
 - Other's reading: "{llm2.get('reading', '')}"
 """
 
