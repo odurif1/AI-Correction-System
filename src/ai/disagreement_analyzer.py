@@ -126,7 +126,7 @@ class PositionSwap:
 
 # Seuils hardcodés (simples, pas de config)
 GRADE_DIFF_PERCENTAGE = 0.10  # 10% du barème = différence significative
-READING_SIMILARITY_THRESHOLD = 0.3  # Similarité Jaccard minimum
+READING_SIMILARITY_THRESHOLD = 0.8  # Similarité Jaccard minimum (80%)
 POSITION_SWAP_THRESHOLD = 0.5  # Minimum grade difference to detect swap
 
 
@@ -455,3 +455,55 @@ class DisagreementAnalyzer:
             return "substantial"
 
         return None
+
+
+def are_readings_substantially_different(reading1: str, reading2: str) -> bool:
+    """
+    Check if two readings are substantially different.
+    Used to detect reading disagreements even when grades agree.
+
+    Args:
+        reading1: First reading
+        reading2: Second reading
+
+    Returns:
+        True if readings are substantially different
+    """
+    if not reading1 or not reading2:
+        return bool(reading1) != bool(reading2)
+
+    r1 = reading1.lower().strip()
+    r2 = reading2.lower().strip()
+
+    if r1 == r2:
+        return False
+
+    # Check for accent-only differences
+    import unicodedata
+    def strip_accents(s):
+        return ''.join(c for c in unicodedata.normalize('NFD', s) if unicodedata.category(c) != 'Mn')
+
+    if strip_accents(r1) == strip_accents(r2):
+        return False
+
+    # Check for partial overlap
+    if r1 in r2 or r2 in r1:
+        return False
+
+    # Jaccard similarity
+    words1 = set(r1.split())
+    words2 = set(r2.split())
+
+    stop_words = {'le', 'la', 'les', 'un', 'une', 'des', 'de', 'du', 'a', 'est', 'et', 'ou',
+                  'the', 'a', 'an', 'is', 'are', 'and', 'or', 'to', 'in', 'of'}
+    words1 -= stop_words
+    words2 -= stop_words
+
+    if not words1 or not words2:
+        return True
+
+    intersection = len(words1 & words2)
+    union = len(words1 | words2)
+    similarity = intersection / union if union > 0 else 0
+
+    return similarity < READING_SIMILARITY_THRESHOLD

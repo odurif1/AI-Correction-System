@@ -979,26 +979,24 @@ def build_unified_verification_prompt(
         if language == "fr":
             questions_json += f'''
     "{qid}": {{
-      "student_answer_read": "<votre lecture - OBLIGATOIREMENT relire sur l'image>",
+      "student_answer_read": "<votre lecture de la copie>",
       "original_reading": "{original_reading}",
       "grade": <note>,
       "max_points": {llm1.get('max_points', 1)},
       "confidence": <0.0-1.0>,
-      "reasoning": "<analyse technique EN FRANÇAIS>",
-      "feedback": f"<{FEEDBACK_GUIDELINE_FR}>",
-      "changed_position": <true/false>
+      "reasoning": "<analysez les deux lectures, identifiez la correcte>",
+      "feedback": f"<{FEEDBACK_GUIDELINE_FR}>"
     }},'''
         else:
             questions_json += f'''
     "{qid}": {{
-      "student_answer_read": "<your reading - MUST re-read from image>",
+      "student_answer_read": "<your reading of the student's copy>",
       "original_reading": "{original_reading}",
       "grade": <grade>,
       "max_points": {llm1.get('max_points', 1)},
       "confidence": <0.0-1.0>,
-      "reasoning": "<technical analysis>",
-      "feedback": f"<{FEEDBACK_GUIDELINE_EN}>",
-      "changed_position": <true/false>
+      "reasoning": "<analyze both readings, identify the correct one>",
+      "feedback": f"<{FEEDBACK_GUIDELINE_EN}>"
     }},'''
 
     # Remove trailing comma
@@ -1013,20 +1011,17 @@ Certains points sont en désaccord. Veuillez réexaminer TOUS ces éléments.
 {name_section}{questions_section}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-─── RÈGLES IMPORTANTES ───
-1. RELISEZ VOUS-MÊME les réponses sur les images (ne présumez de rien)
-2. Analysez OBJECTIVEMENT ce qui est correct et ce qui ne l'est pas
-3. Ne changez votre note QUE si vous êtes CONVAINCU d'une erreur
-4. ⚠ ATTENTION: Ne changez pas simplement pour "rejoindre" l'autre correcteur
-5. Votre lecture doit rester PROCHE de votre lecture initiale (sauf erreur manifeste)
-6. Si vous changez de position, indiquez "changed_position": true
+─── RÈGLE FONDAMENTALE ───
 
-─── ANTI-SUGGESTION ───
-- Ne soyez pas trop influençable
-- Il est NORMAL de maintenir votre position si vous l'avez analysée correctement
-- Un "flip-flop" (changement radical) sans justification solide est suspect
+⚠ LISEZ LA COPIE VOUS-MÊME. NE COPIEZ PAS LA LECTURE DE L'AUTRE.
 
-⚠ LANGUE: Répondez IMPÉRATIVEMENT EN FRANÇAIS dans tous les champs texte (reasoning, feedback).
+- Regardez la copie de l'élève. Lisez la réponse avec vos propres yeux.
+- Identifiez d'abord la bonne réponse sur l'image, puis comparez avec celle de l'élève.
+- Votre "student_answer_read" = votre lecture personnelle de la copie de l'élève.
+- Dans votre raisonnement, considérez les deux lectures: la vôtre et celle de l'autre correcteur. Identifiez laquelle correspond à la copie de l'élève.
+- Ne changez pas votre note juste pour "être d'accord".
+
+⚠ LANGUE: Répondez IMPÉRATIVEMENT EN FRANÇAIS.
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1045,18 +1040,15 @@ Some points are in disagreement. Please re-examine ALL these elements.
 {name_section}{questions_section}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-─── IMPORTANT RULES ───
-1. RE-READ the answers yourself from the images (presume nothing)
-2. Analyze OBJECTIVELY what is correct and what is not
-3. Only change your grade if you are CONVINCED of an error
-4. ⚠ WARNING: Don't change just to "agree" with the other grader
-5. Your reading should remain CLOSE to your initial reading (unless obvious error)
-6. If you change position, indicate "changed_position": true
+─── FUNDAMENTAL RULE ───
 
-─── ANTI-SUGGESTION ───
-- Don't be too easily influenced
-- It is NORMAL to maintain your position if you analyzed it correctly
-- A "flip-flop" (radical change) without solid justification is suspicious
+⚠ READ THE STUDENT'S COPY YOURSELF. DO NOT COPY THE OTHER'S READING.
+
+- Look at the student's copy. Read the answer with your own eyes.
+- First identify the correct answer from the image, then compare with the student's.
+- Your "student_answer_read" = your personal reading of the student's copy.
+- In your reasoning, consider both readings: yours and the other grader's. Identify which one matches the student's copy.
+- Do not change your grade just to "agree".
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

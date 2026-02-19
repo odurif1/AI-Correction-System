@@ -94,11 +94,9 @@ class CLI:
             llm2_name: Second LLM name (for comparison mode)
             display_language: UI language
         """
-        today = datetime.now().strftime("%d %b. %Y")
-
         # Header
         header = Panel(
-            f"[bold cyan]🎓  AI Correction v2.0[/bold cyan]  [dim]{today}[/dim]",
+            "[bold cyan]🎓  AI Correction[/bold cyan]",
             border_style="cyan",
             padding=(0, 2)
         )
@@ -597,10 +595,18 @@ class CLI:
             min_score = min(scores)
             max_score = max(scores)
 
+            # Determine actual max score from first graded copy (if available)
+            # Otherwise default to 20
+            actual_max = 20
+            if top_performers and len(top_performers) > 0:
+                actual_max = top_performers[0].get('max', 20)
+
+            percentage = (avg / actual_max * 100) if actual_max > 0 else 0
+
             if language == 'fr':
-                lines.append(f"[bold]Copies:[/bold] {copies_count}  │  [bold]Moyenne:[/bold] {avg:.1f}/20 ({avg/20*100:.0f}%)  │  [bold]Étendue:[/bold] {min_score:.1f} - {max_score:.1f}")
+                lines.append(f"[bold]Copies:[/bold] {copies_count}  │  [bold]Moyenne:[/bold] {avg:.1f}/{actual_max} ({percentage:.0f}%)  │  [bold]Étendue:[/bold] {min_score:.1f} - {max_score:.1f}")
             else:
-                lines.append(f"[bold]Copies:[/bold] {copies_count}  │  [bold]Average:[/bold] {avg:.1f}/20 ({avg/20*100:.0f}%)  │  [bold]Range:[/bold] {min_score:.1f} - {max_score:.1f}")
+                lines.append(f"[bold]Copies:[/bold] {copies_count}  │  [bold]Average:[/bold] {avg:.1f}/{actual_max} ({percentage:.0f}%)  │  [bold]Range:[/bold] {min_score:.1f} - {max_score:.1f}")
 
             lines.append("")
 
@@ -610,7 +616,7 @@ class CLI:
             else:
                 lines.append("[bold cyan]Score Distribution:[/bold cyan]")
 
-            dist_str = self._render_distribution_bar(scores)
+            dist_str = self._render_distribution_bar(scores, actual_max=actual_max)
             lines.append(dist_str)
             lines.append("")
 
@@ -624,7 +630,7 @@ class CLI:
                 medals = ["🥇", "🥈", "🥉"]
                 for i, performer in enumerate(top_performers[:3]):
                     medal = medals[i] if i < 3 else "  "
-                    name = performer.get('name', '???')
+                    name = performer.get('name') or '???'
                     score = performer.get('score', 0)
                     max_score_p = performer.get('max', 20)
                     pct = (score / max_score_p * 100) if max_score_p > 0 else 0
@@ -657,37 +663,41 @@ class CLI:
         self.console.print("\n")
         self.console.print(panel)
 
-    def _render_distribution_bar(self, scores: List[float], max_bar: int = 10) -> str:
-        """Render a distribution bar chart."""
+    def _render_distribution_bar(self, scores: List[float], max_bar: int = 10, actual_max: float = 20) -> str:
+        """Render a distribution bar chart with dynamic buckets."""
         if not scores:
             return ""
 
-        # Create buckets: 0-4, 5-9, 10-14, 15-20
-        buckets = {"0-4": 0, "5-9": 0, "10-14": 0, "15-20": 0}
+        # Create 4 dynamic buckets based on actual_max
+        bucket_size = actual_max / 4
+        buckets = {}
+        for i in range(4):
+            low = i * bucket_size
+            high = (i + 1) * bucket_size
+            key = f"{low:.0f}-{high:.0f}"
+            buckets[key] = 0
+
         for score in scores:
-            if score < 5:
-                buckets["0-4"] += 1
-            elif score < 10:
-                buckets["5-9"] += 1
-            elif score < 15:
-                buckets["10-14"] += 1
-            else:
-                buckets["15-20"] += 1
+            bucket_idx = min(int(score / bucket_size), 3) if bucket_size > 0 else 0
+            low = bucket_idx * bucket_size
+            high = (bucket_idx + 1) * bucket_size
+            key = f"{low:.0f}-{high:.0f}"
+            buckets[key] = buckets.get(key, 0) + 1
 
         max_count = max(buckets.values()) if buckets else 1
         lines = []
 
-        for bucket, count in buckets.items():
+        for i, (bucket, count) in enumerate(buckets.items()):
             if max_count > 0:
                 bar_len = int((count / max_count) * max_bar)
             else:
                 bar_len = 0
             bar = "█" * bar_len + "░" * (max_bar - bar_len)
 
-            # Color based on bucket
-            if bucket in ["0-4", "5-9"]:
+            # Color: first bucket red, second yellow, rest green
+            if i == 0:
                 color = "red"
-            elif bucket == "10-14":
+            elif i == 1:
                 color = "yellow"
             else:
                 color = "green"

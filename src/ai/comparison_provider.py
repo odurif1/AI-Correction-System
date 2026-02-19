@@ -25,6 +25,8 @@ import time
 from typing import List, Dict, Any, Tuple, Optional
 from dataclasses import dataclass
 
+from ai.disagreement_analyzer import are_readings_substantially_different
+
 logger = logging.getLogger(__name__)
 
 
@@ -1090,9 +1092,15 @@ Original question: {kwargs.get('question_text', '')}"""
                     f"Scale disagreement for {qid}: LLM1={max_pts1}, LLM2={max_pts2}, using max={max_pts}"
                 )
 
-            # Check for agreement
-            if abs(grade1 - grade2) < 0.1:
-                # Agreement reached
+            # Check for agreement (relative threshold: 10% of max_points)
+            grade_threshold = max_pts * 0.10
+            grades_agree = abs(grade1 - grade2) < grade_threshold
+
+            # Check if readings are still substantially different
+            readings_differ = are_readings_substantially_different(reading1, reading2)
+
+            if grades_agree and not readings_differ:
+                # Full agreement on grade AND reading
                 verified_results[qid] = {
                     "grade": grade1,
                     "max_points": max_pts,
@@ -1101,6 +1109,24 @@ Original question: {kwargs.get('question_text', '')}"""
                     "student_feedback": q1.get("feedback", ""),
                     "reasoning": q1.get("reasoning", ""),
                     "method": "unified_consensus"
+                }
+            elif grades_agree and readings_differ:
+                # Grades agree BUT readings differ → need ultimatum to resolve reading
+                remaining_disagreements.append({
+                    "question_id": qid,
+                    "llm1": {"grade": grade1, "reading": reading1, "confidence": confidence1, "max_points": max_pts},
+                    "llm2": {"grade": grade2, "reading": reading2, "confidence": confidence2, "max_points": max_pts},
+                    "reason": "Lectures différentes malgré accord sur la note"
+                })
+                verified_results[qid] = {
+                    "grade": grade1,  # Use agreed grade
+                    "max_points": max_pts,
+                    "confidence": min(confidence1, confidence2),
+                    "student_answer_read": reading1,
+                    "student_feedback": q1.get("feedback", ""),
+                    "reasoning": q1.get("reasoning", ""),
+                    "method": "reading_disagreement_pending",
+                    "_needs_ultimatum": True
                 }
             else:
                 # Still disagreeing - store for ultimatum
@@ -1143,10 +1169,17 @@ Original question: {kwargs.get('question_text', '')}"""
 
         # Build per-question verification details for audit (responses only, prompts at top level)
         verification_details = {}
+
+        # Extract questions from verification results (defined outside loop for clarity)
+        llm1_result = results_per_provider.get(provider_names[0], {})
+        llm2_result = results_per_provider.get(provider_names[1], {})
+        llm1_questions_all = llm1_result.get("questions", {}) if isinstance(llm1_result, dict) else {}
+        llm2_questions_all = llm2_result.get("questions", {}) if isinstance(llm2_result, dict) else {}
+
         for d in disagreements:
             qid = d["question_id"]
-            llm1_q = llm1_questions.get(qid, {})
-            llm2_q = llm2_questions.get(qid, {})
+            llm1_q = llm1_questions_all.get(qid, {})
+            llm2_q = llm2_questions_all.get(qid, {})
 
             # Get initial grades (before verification) for flip-flop detection
             initial_grade1 = d["llm1"]["grade"]
@@ -1156,13 +1189,20 @@ Original question: {kwargs.get('question_text', '')}"""
             after_grade1 = llm1_q.get("grade")
             after_grade2 = llm2_q.get("grade")
 
-            # Detect flip-flop (position swap)
+            # Detect flip-flop (position swap) - positions crossed with significant difference
             initial_diff = initial_grade1 - initial_grade2
-            after_diff = (after_grade1 or initial_grade1) - (after_grade2 or initial_grade2)
+            after_diff = (after_grade1 if after_grade1 is not None else initial_grade1) - \
+                         (after_grade2 if after_grade2 is not None else initial_grade2)
+
+            # Swap detected if: both diffs are significant AND signs are opposite
+            is_swap = (
+                (initial_diff > 0 and after_diff < 0) or
+                (initial_diff < 0 and after_diff > 0)
+            )
             flip_flop = (
                 abs(initial_diff) >= 0.5 and
                 abs(after_diff) >= 0.5 and
-                (initial_diff > 0 and after_diff < 0) or (initial_diff < 0 and after_diff > 0)
+                is_swap
             )
 
             verification_details[qid] = {
