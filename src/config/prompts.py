@@ -10,6 +10,11 @@ Supports automatic language detection based on copy content.
 from typing import Dict, Any, Optional, List
 
 
+# Feedback guidelines - used in all grading prompts
+FEEDBACK_GUIDELINE_FR = "sobre et professionnel. Questions simples: bref. Questions difficiles: diagnostic."
+FEEDBACK_GUIDELINE_EN = "sober and professional. Simple questions: brief. Difficult questions: diagnosis."
+
+
 def detect_language(text: str) -> str:
     """
     Detect language from text content.
@@ -566,7 +571,7 @@ Réponds UNIQUEMENT avec un JSON valide. Tous les textes doivent être EN FRANÇ
       "grade": <note sur le barème>,
       "confidence": <0.0-1.0>,
       "reasoning": "<analyse technique EN FRANÇAIS>",
-      "feedback": "<feedback EN FRANÇAIS pour l'élève>"
+      "feedback": f"<{FEEDBACK_GUIDELINE_FR}>"
     }},
     "Q2": {{ ... }}
   }}
@@ -610,7 +615,7 @@ Respond ONLY with valid JSON:
       "grade": <score on scale>,
       "confidence": <0.0-1.0>,
       "reasoning": "<technical analysis>",
-      "feedback": "<sober feedback>"
+      "feedback": f"<{FEEDBACK_GUIDELINE_EN}>"
     }},
     "Q2": {{ ... }}
   }}
@@ -705,7 +710,7 @@ Réponds UNIQUEMENT avec un JSON valide:
       "grade": <note sur le barème>,
       "confidence": <0.0-1.0>,
       "reasoning": "<analyse technique>",
-      "feedback": "<retour sobre>"
+      "feedback": f"<{FEEDBACK_GUIDELINE_FR}>"
     },
     "Q2": { ... }
   }
@@ -755,7 +760,7 @@ Respond ONLY with valid JSON:
       "grade": <grade on scale>,
       "confidence": <0.0-1.0>,
       "reasoning": "<technical analysis>",
-      "feedback": "<sober feedback>"
+      "feedback": f"<{FEEDBACK_GUIDELINE_EN}>"
     },
     "Q2": { ... }
   }
@@ -980,7 +985,7 @@ def build_unified_verification_prompt(
       "max_points": {llm1.get('max_points', 1)},
       "confidence": <0.0-1.0>,
       "reasoning": "<analyse technique EN FRANÇAIS>",
-      "feedback": "<sobre et professionnel. Questions simples: bref. Questions difficiles: diagnostic + piste.>",
+      "feedback": f"<{FEEDBACK_GUIDELINE_FR}>",
       "changed_position": <true/false>
     }},'''
         else:
@@ -992,7 +997,7 @@ def build_unified_verification_prompt(
       "max_points": {llm1.get('max_points', 1)},
       "confidence": <0.0-1.0>,
       "reasoning": "<technical analysis>",
-      "feedback": "<sober and professional. Simple questions: brief. Difficult questions: diagnosis + path.>",
+      "feedback": f"<{FEEDBACK_GUIDELINE_EN}>",
       "changed_position": <true/false>
     }},'''
 
@@ -1196,10 +1201,7 @@ Scale: {llm1.get('max_points', 1)} point(s)
                 reading_field = '''"student_answer_read": "<your reading - RE-READ from image>",'''
 
         # Language-specific feedback placeholder
-        if language == "fr":
-            feedback_placeholder = "<sobre et professionnel. Questions simples: bref. Questions difficiles: diagnostic + piste.>"
-        else:
-            feedback_placeholder = "<sober and professional. Simple questions: brief. Difficult questions: diagnosis + path.>"
+        feedback_placeholder = FEEDBACK_GUIDELINE_FR if language == "fr" else FEEDBACK_GUIDELINE_EN
 
         questions_json += f'''
     "{qid}": {{
