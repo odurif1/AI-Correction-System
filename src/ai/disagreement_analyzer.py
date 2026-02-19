@@ -125,7 +125,7 @@ class PositionSwap:
 
 
 # Seuils hardcodés (simples, pas de config)
-GRADE_THRESHOLD = 0.5  # Différence de note pour flagger
+GRADE_DIFF_PERCENTAGE = 0.10  # 10% du barème = différence significative
 READING_SIMILARITY_THRESHOLD = 0.3  # Similarité Jaccard minimum
 POSITION_SWAP_THRESHOLD = 0.5  # Minimum grade difference to detect swap
 
@@ -269,14 +269,14 @@ class DisagreementAnalyzer:
             name2_normalized = llm2_name.strip().lower()
 
             if name1_normalized != name2_normalized:
+                # Any name difference is a disagreement - names must match exactly
                 similarity = SequenceMatcher(None, name1_normalized, name2_normalized).ratio()
-                if similarity < 0.8:  # Significant difference
-                    name_disagreement = NameDisagreement(
-                        llm1_name=llm1_name.strip(),
-                        llm2_name=llm2_name.strip(),
-                        similarity=similarity,
-                        reason=f"Noms différents: '{llm1_name}' vs '{llm2_name}'"
-                    )
+                name_disagreement = NameDisagreement(
+                    llm1_name=llm1_name.strip(),
+                    llm2_name=llm2_name.strip(),
+                    similarity=similarity,
+                    reason=f"Noms différents: '{llm1_name}' vs '{llm2_name}'"
+                )
 
         # ===== Question-level disagreements =====
         llm1_questions = llm1_results.get("questions", {})
@@ -389,7 +389,9 @@ class DisagreementAnalyzer:
             )
 
         # Check: différence de note significative (seulement si lectures identiques)
-        if grade_diff >= GRADE_THRESHOLD:
+        # Seuil = 10% du barème de la question
+        grade_threshold = max_pts1 * GRADE_DIFF_PERCENTAGE
+        if grade_diff >= grade_threshold:
             return QuestionDisagreement(
                 question_id=qid,
                 disagreement_type=DisagreementType.GRADE_DIFFERENCE,
@@ -402,7 +404,7 @@ class DisagreementAnalyzer:
                 llm2_confidence=conf2,
                 llm1_max_points=max_pts1,
                 llm2_max_points=max_pts2,
-                reason=f"Différence de note: {grade_diff:.1f} points"
+                reason=f"Différence de note: {grade_diff:.2f} pts (seuil: {grade_threshold:.2f} pts = 10% du barème)"
             )
 
         # Accord

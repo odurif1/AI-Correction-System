@@ -340,7 +340,6 @@ async def command_correct(args):
         return 1
 
     cli = CLI()
-    cli.show_header()
 
     # Get PDF paths with validation
     pdf_paths = []

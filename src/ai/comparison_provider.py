@@ -20,9 +20,12 @@ Stateless Architecture:
 
 import asyncio
 import json
+import logging
 import time
 from typing import List, Dict, Any, Tuple, Optional
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -1057,7 +1060,35 @@ Original question: {kwargs.get('question_text', '')}"""
             confidence1 = q1.get("confidence", 0.5) or (sp_llm1.confidence if sp_llm1 else 0.5)
             confidence2 = q2.get("confidence", 0.5) or (sp_llm2.confidence if sp_llm2 else 0.5)
 
-            max_pts = q1.get("max_points") or (sp_llm1.max_points if sp_llm1 else 1.0)
+            # Scale consensus: get both detected scales and use the MAX
+            # Rationale: underestimating scale hurts the student more than overestimating
+            max_pts1 = q1.get("max_points") or (sp_llm1.max_points if sp_llm1 else 1.0)
+            max_pts2 = q2.get("max_points") or (sp_llm2.max_points if sp_llm2 else 1.0)
+
+            # Ensure numeric values
+            try:
+                max_pts1 = float(max_pts1) if max_pts1 is not None else 1.0
+            except (ValueError, TypeError):
+                max_pts1 = 1.0
+            try:
+                max_pts2 = float(max_pts2) if max_pts2 is not None else 1.0
+            except (ValueError, TypeError):
+                max_pts2 = 1.0
+
+            # Scale consensus logic
+            scale_diff = abs(max_pts1 - max_pts2)
+            if scale_diff < 0.1:
+                # Agreement on scale
+                max_pts = max_pts1
+                scale_method = "consensus"
+            else:
+                # Disagreement: use MAX scale (safer for student)
+                max_pts = max(max_pts1, max_pts2)
+                scale_method = "max_of_disagreeing"
+                # Log the disagreement for audit
+                logger.warning(
+                    f"Scale disagreement for {qid}: LLM1={max_pts1}, LLM2={max_pts2}, using max={max_pts}"
+                )
 
             # Check for agreement
             if abs(grade1 - grade2) < 0.1:
@@ -1116,15 +1147,36 @@ Original question: {kwargs.get('question_text', '')}"""
             qid = d["question_id"]
             llm1_q = llm1_questions.get(qid, {})
             llm2_q = llm2_questions.get(qid, {})
+
+            # Get initial grades (before verification) for flip-flop detection
+            initial_grade1 = d["llm1"]["grade"]
+            initial_grade2 = d["llm2"]["grade"]
+
+            # Get after verification grades
+            after_grade1 = llm1_q.get("grade")
+            after_grade2 = llm2_q.get("grade")
+
+            # Detect flip-flop (position swap)
+            initial_diff = initial_grade1 - initial_grade2
+            after_diff = (after_grade1 or initial_grade1) - (after_grade2 or initial_grade2)
+            flip_flop = (
+                abs(initial_diff) >= 0.5 and
+                abs(after_diff) >= 0.5 and
+                (initial_diff > 0 and after_diff < 0) or (initial_diff < 0 and after_diff > 0)
+            )
+
             verification_details[qid] = {
+                "flip_flop_detected": flip_flop,
                 "responses": {
                     provider_names[0]: {
-                        "grade": llm1_q.get("grade"),
+                        "grade": after_grade1,
+                        "confidence": llm1_q.get("confidence"),
                         "reasoning": llm1_q.get("reasoning", ""),
                         "reading": llm1_q.get("student_answer_read", "")
                     },
                     provider_names[1]: {
-                        "grade": llm2_q.get("grade"),
+                        "grade": after_grade2,
+                        "confidence": llm2_q.get("confidence"),
                         "reasoning": llm2_q.get("reasoning", ""),
                         "reading": llm2_q.get("student_answer_read", "")
                     }
@@ -1417,11 +1469,13 @@ Original question: {kwargs.get('question_text', '')}"""
                 "responses": {
                     provider_names[0]: {
                         "grade": q1.get("grade"),
+                        "confidence": q1.get("confidence"),
                         "reasoning": q1.get("reasoning", ""),
                         "reading": q1.get("student_answer_read", "")
                     },
                     provider_names[1]: {
                         "grade": q2.get("grade"),
+                        "confidence": q2.get("confidence"),
                         "reasoning": q2.get("reasoning", ""),
                         "reading": q2.get("student_answer_read", "")
                     }
@@ -2586,8 +2640,18 @@ CONFIDENCE: [0.0 to 1.0]"""
             llm1_q = single_pass_results[provider_names[0]].questions.get(qid)
             llm2_q = single_pass_results[provider_names[1]].questions.get(qid)
 
-            # Use detected max_points (prefer LLM1's detection, or average if different)
-            detected_max_points = llm1_q.max_points if llm1_q else 1.0
+            # Scale consensus: use MAX of both detected scales
+            max_pts1 = llm1_q.max_points if llm1_q else 1.0
+            max_pts2 = llm2_q.max_points if llm2_q else 1.0
+            try:
+                max_pts1 = float(max_pts1) if max_pts1 is not None else 1.0
+            except (ValueError, TypeError):
+                max_pts1 = 1.0
+            try:
+                max_pts2 = float(max_pts2) if max_pts2 is not None else 1.0
+            except (ValueError, TypeError):
+                max_pts2 = 1.0
+            detected_max_points = max(max_pts1, max_pts2)
 
             # Use LLM1's result as base (they agreed anyway)
             final_results[qid] = {
@@ -2632,6 +2696,7 @@ CONFIDENCE: [0.0 to 1.0]"""
 
             # Store verification details for audit (per question)
             verification_details = verification_info.get("details", {})
+            verification_prompts = verification_info.get("prompts_sent", {})
 
             # Check if there are remaining disagreements needing ultimatum
             remaining = getattr(self, '_unified_remaining', [])
@@ -2663,6 +2728,7 @@ CONFIDENCE: [0.0 to 1.0]"""
 
                 # Store ultimatum details for audit (per question)
                 ultimatum_details = ultimatum_info.get("details", {})
+                ultimatum_prompts = ultimatum_info.get("prompts_sent", {})
 
                 if final_name:
                     final_student_name = final_name
@@ -2749,7 +2815,11 @@ CONFIDENCE: [0.0 to 1.0]"""
             "type": "unified",
             "questions_verified": list(verification_details.keys()),
             "name_verified": report.name_disagreement is not None,
-            "phases": 2 if ultimatum_details else (1 if verification_details else 0)
+            "phases": 2 if ultimatum_details else (1 if verification_details else 0),
+            "prompts": {
+                "verification": verification_prompts,
+                "ultimatum": ultimatum_prompts if ultimatum_details else None
+            }
         }
 
         # Build student name info for audit

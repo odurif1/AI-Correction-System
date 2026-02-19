@@ -980,7 +980,7 @@ def build_unified_verification_prompt(
       "max_points": {llm1.get('max_points', 1)},
       "confidence": <0.0-1.0>,
       "reasoning": "<analyse technique EN FRANÇAIS>",
-      "feedback": "<retour sobre EN FRANÇAIS>",
+      "feedback": "<sobre et professionnel. Questions simples: bref. Questions difficiles: diagnostic + piste.>",
       "changed_position": <true/false>
     }},'''
         else:
@@ -992,7 +992,7 @@ def build_unified_verification_prompt(
       "max_points": {llm1.get('max_points', 1)},
       "confidence": <0.0-1.0>,
       "reasoning": "<technical analysis>",
-      "feedback": "<concise feedback>",
+      "feedback": "<sober and professional. Simple questions: brief. Difficult questions: diagnosis + path.>",
       "changed_position": <true/false>
     }},'''
 
@@ -1190,7 +1190,16 @@ Scale: {llm1.get('max_points', 1)} point(s)
             reading_field = f'"student_answer_read": "{anchored_reading}",'
         else:
             # Reading not anchored - can re-read but must justify
-            reading_field = '''"student_answer_read": "<votre lecture - RELISEZ sur l'image>",'''
+            if language == "fr":
+                reading_field = '''"student_answer_read": "<votre lecture - RELISEZ sur l'image>",'''
+            else:
+                reading_field = '''"student_answer_read": "<your reading - RE-READ from image>",'''
+
+        # Language-specific feedback placeholder
+        if language == "fr":
+            feedback_placeholder = "<sobre et professionnel. Questions simples: bref. Questions difficiles: diagnostic + piste.>"
+        else:
+            feedback_placeholder = "<sober and professional. Simple questions: brief. Difficult questions: diagnosis + path.>"
 
         questions_json += f'''
     "{qid}": {{
@@ -1199,7 +1208,7 @@ Scale: {llm1.get('max_points', 1)} point(s)
       "max_points": {llm1.get('max_points', 1)},
       "confidence": <0.0-1.0>,
       "reasoning": "<justification finale>",
-      "feedback": "<feedback>"
+      "feedback": "{feedback_placeholder}"
     }},'''
 
     # Remove trailing comma
