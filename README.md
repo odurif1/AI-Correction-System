@@ -4,15 +4,14 @@
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Code Quality](https://img.shields.io/badge/code%20quality-audit%20complet-green.svg)]()
 
 ### Caractéristiques
 
 - **Dual LLM**: Deux IA notent en parallèle avec vérification croisée
-- **Architecture Unifiée**: 60-80% d'appels API en moins grâce à la vérification unifiée
+- **Architecture Unifiée**: 60-80% d'appels API en moins
+- **Dashboard Temps Réel**: Visualisation du traitement parallèle
+- **Protection Anti-Hallucination**: Figement des lectures, détection des flip-flops
 - **Infrastructure Robuste**: Circuit breaker, rate limiting, retry automatique
-- **Traçabilité Complète**: Audit détaillé de chaque décision
-- **Mode Auto**: Correction automatique sans interaction
 
 ---
 
@@ -406,7 +405,7 @@ src/
 │   ├── comparison_provider.py  # DUAL LLM avec vérification unifiée
 │   ├── single_pass_grader.py   # Notation toutes questions en 1 appel
 │   ├── provider_factory.py     # Factory pour providers
-│   └── disagreement_analyzer.py
+│   └── disagreement_analyzer.py  # Détection désaccords + position swaps + reading anchors
 ├── core/                  # Modèles et orchestration
 │   ├── __init__.py             # Exports publics
 │   ├── models.py               # Dataclasses (GradingSession, GradedCopy...)
@@ -451,7 +450,8 @@ src/
 │   └── consistency.py          # Détection incohérences
 ├── interaction/           # Interface utilisateur
 │   ├── __init__.py
-│   └── cli.py                  # CLI interactive
+│   ├── cli.py                  # CLI interactive
+│   └── live_progress.py        # Dashboard temps réel
 ├── api/                   # API REST (optionnel)
 │   ├── __init__.py
 │   └── app.py                  # FastAPI application
@@ -530,36 +530,47 @@ mypy src/
 
 ---
 
-## Améliorations Récentes (v2.0)
+## Améliorations Récentes
 
-### Sécurité
-- ✅ Protection contre path traversal dans les uploads
-- ✅ Limite de taille des fichiers (50 MB max)
-- ✅ Sanitisation des clés API dans les logs
+### v2.1 - UX et Fiabilité
 
-### Performance
-- ✅ Cache LRU pour conversion base64 des images
-- ✅ Embeddings batchés pour l'API Gemini
-- ✅ I/O non-bloquant avec `asyncio.to_thread`
+**Dashboard Temps Réel**
+- Visualisation de toutes les copies pendant le traitement parallèle
+- Statut par copie: en attente / en cours / terminé / erreur
+- Progression par question et scores en temps réel
 
-### Robustesse
-- ✅ Circuit breaker pour protéger contre les APIs défaillantes
-- ✅ Rate limiting avec token bucket
-- ✅ Retry avec backoff exponentiel et jitter
-- ✅ Timeouts configurables pour tous les appels API
-- ✅ File locking atomique pour les opérations concurrentes
+**Protection Anti-Hallucination**
+- **Reading anchors**: figement des lectures en cas d'accord initial entre LLMs
+- **Détection flip-flop**: signalement quand les LLMs échangent leurs positions
+- **Prompts anti-suggestion**: règles explicites pour éviter l'influence excessive
 
-### Architecture
-- ✅ Hiérarchie d'exceptions custom (`AICorrectionError`, `ProviderError`...)
-- ✅ État de workflow immutable (`CorrectionState`)
-- ✅ Module exports dans tous les `__init__.py`
-- ✅ Type guards pour validation runtime
+**Audit Optimisé**
+- Prompts stockés une seule fois (plus de redondance par question)
+- Harmonisation du champ `reasoning` dans tout l'audit
 
-### Qualité Code
-- ✅ Centralisation des constantes (magic numbers)
-- ✅ Suppression du code dupliqué (`natural_sort_key`)
-- ✅ Context managers pour ressources (PDF, fichiers)
-- ✅ Logging centralisé avec configuration flexible
+### v2.0 - Infrastructure
+
+**Sécurité**
+- Protection contre path traversal
+- Limite de taille des fichiers (50 MB)
+- Sanitisation des clés API dans les logs
+
+**Performance**
+- Cache LRU pour conversion base64
+- Embeddings batchés
+- I/O non-bloquant avec `asyncio.to_thread`
+
+**Robustesse**
+- Circuit breaker pour APIs défaillantes
+- Rate limiting (token bucket)
+- Retry avec backoff exponentiel
+- File locking atomique
+
+**Architecture**
+- Hiérarchie d'exceptions custom
+- État de workflow immutable (`CorrectionState`)
+- Module exports centralisés
+- Type guards pour validation runtime
 
 ---
 

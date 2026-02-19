@@ -39,7 +39,15 @@ class AnalyticsGenerator:
             AnalyticsReport object
         """
         if not self.session.graded_copies:
-            return AnalyticsReport(session_id=self.session.session_id)
+            # Return report with default values when no copies were graded
+            return AnalyticsReport(
+                session_id=self.session.session_id,
+                mean_score=0.0,
+                median_score=0.0,
+                std_dev=0.0,
+                min_score=0.0,
+                max_score=0.0
+            )
 
         scores = [g.total_score for g in self.session.graded_copies]
 

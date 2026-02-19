@@ -278,17 +278,18 @@ class CLI:
         reasoning = graded.internal_reasoning.get(question_id, "")
 
         # Create panel with doubt details
+        conf_display = (confidence or 0.5) * 100  # Handle None
         if language == 'fr':
             panel_content = f"""[bold]Copie:[/bold] {copy.id}
 [bold]Question:[/bold] {question_id}
 [bold]Note proposée:[/bold] {current_grade} points
-[bold]Confiance:[/bold] {confidence:.0%}
+[bold]Confiance:[/bold] {conf_display:.0f}%
 [bold]Justification:[/bold] {reasoning[:200]}..."""
         else:
             panel_content = f"""[bold]Copy:[/bold] {copy.id}
 [bold]Question:[/bold] {question_id}
 [bold]Proposed grade:[/bold] {current_grade} points
-[bold]Confidence:[/bold] {confidence:.0%}
+[bold]Confidence:[/bold] {conf_display:.0f}%
 [bold]Reasoning:[/bold] {reasoning[:200]}..."""
 
         self.console.print(Panel(
@@ -740,12 +741,12 @@ class CLI:
 
 [cyan bold]{llm1_name.upper()}:[/cyan bold]
   Note: [bold]{llm1_result.get('grade')}/{llm1_result.get('max_points', '?')}[/bold]
-  Confiance: {llm1_result.get('confidence', 0):.0%}
+  Confiance: {(llm1_result.get('confidence') or 0):.0%}
   Raisonnement: [dim]{reasoning1}[/dim]
 
 [magenta bold]{llm2_name.upper()}:[/magenta bold]
   Note: [bold]{llm2_result.get('grade')}/{llm2_result.get('max_points', '?')}[/bold]
-  Confiance: {llm2_result.get('confidence', 0):.0%}
+  Confiance: {(llm2_result.get('confidence') or 0):.0%}
   Raisonnement: [dim]{reasoning2}[/dim]"""
 
             self.console.print(Panel(
@@ -760,7 +761,7 @@ class CLI:
             self.console.print(f"  Ou entrez directement une note")
 
             avg_grade = (llm1_result.get('grade', 0) + llm2_result.get('grade', 0)) / 2
-            choice = Prompt.ask(f"Note (Entrée = moyenne {avg_grade:.2f})", default="")
+            choice = Prompt.ask(f"[bold]Note[/bold] [dim](Entrée = moyenne {avg_grade:.2f})[/dim]")
             self.console.print("")  # Add newline after input
 
         else:
@@ -772,12 +773,12 @@ class CLI:
 
 [cyan bold]{llm1_name.upper()}:[/cyan bold]
   Grade: [bold]{llm1_result.get('grade')}/{llm1_result.get('max_points', '?')}[/bold]
-  Confidence: {llm1_result.get('confidence', 0):.0%}
+  Confidence: {(llm1_result.get('confidence') or 0):.0%}
   Reasoning: [dim]{reasoning1}[/dim]
 
 [magenta bold]{llm2_name.upper()}:[/magenta bold]
   Grade: [bold]{llm2_result.get('grade')}/{llm2_result.get('max_points', '?')}[/bold]
-  Confidence: {llm2_result.get('confidence', 0):.0%}
+  Confidence: {(llm2_result.get('confidence') or 0):.0%}
   Reasoning: [dim]{reasoning2}[/dim]"""
 
             self.console.print(Panel(
@@ -792,7 +793,7 @@ class CLI:
             self.console.print(f"  Or enter a grade directly")
 
             avg_grade = (llm1_result.get('grade', 0) + llm2_result.get('grade', 0)) / 2
-            choice = Prompt.ask(f"Grade (Enter = average {avg_grade:.2f})", default="")
+            choice = Prompt.ask(f"[bold]Grade[/bold] [dim](Enter = average {avg_grade:.2f})[/dim]")
             self.console.print("")  # Add newline after input
 
         # Process choice - return (grade, feedback_source)
@@ -854,13 +855,13 @@ class CLI:
             # LLM1 results
             self.console.print(f"\n[cyan]{llm1_name.upper()}:[/cyan]")
             self.console.print(f"  Nom: [bold]{name1}[/bold]")
-            self.console.print(f"  Confiance: {llm1_result.get('confidence', 0):.0%}")
+            self.console.print(f"  Confiance: {(llm1_result.get('confidence') or 0):.0%}")
             self.console.print(f"  [dim]Raisonnement: {llm1_result.get('reasoning', '')}[/dim]")
 
             # LLM2 results
             self.console.print(f"\n[magenta]{llm2_name.upper()}:[/magenta]")
             self.console.print(f"  Nom: [bold]{name2}[/bold]")
-            self.console.print(f"  Confiance: {llm2_result.get('confidence', 0):.0%}")
+            self.console.print(f"  Confiance: {(llm2_result.get('confidence') or 0):.0%}")
             self.console.print(f"  [dim]Raisonnement: {llm2_result.get('reasoning', '')}[/dim]")
 
             self.console.print(f"\n[bold]Options:[/bold]")
@@ -878,13 +879,13 @@ class CLI:
             # LLM1 results
             self.console.print(f"\n[cyan]{llm1_name.upper()}:[/cyan]")
             self.console.print(f"  Name: [bold]{name1}[/bold]")
-            self.console.print(f"  Confidence: {llm1_result.get('confidence', 0):.0%}")
+            self.console.print(f"  Confidence: {(llm1_result.get('confidence') or 0):.0%}")
             self.console.print(f"  [dim]Reasoning: {llm1_result.get('reasoning', '')}[/dim]")
 
             # LLM2 results
             self.console.print(f"\n[magenta]{llm2_name.upper()}:[/magenta]")
             self.console.print(f"  Name: [bold]{name2}[/bold]")
-            self.console.print(f"  Confidence: {llm2_result.get('confidence', 0):.0%}")
+            self.console.print(f"  Confidence: {(llm2_result.get('confidence') or 0):.0%}")
             self.console.print(f"  [dim]Reasoning: {llm2_result.get('reasoning', '')}[/dim]")
 
             self.console.print(f"\n[bold]Options:[/bold]")
@@ -899,7 +900,7 @@ class CLI:
         # Process choice
         if not choice or choice.strip() == "":
             # Use highest confidence
-            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+            if (llm1_result.get('confidence') or 0) >= (llm2_result.get('confidence') or 0):
                 return name1
             else:
                 return name2
@@ -936,8 +937,8 @@ class CLI:
 
         reading1 = llm1_result.get('reading', '')
         reading2 = llm2_result.get('reading', '')
-        conf1 = llm1_result.get('confidence', 0)
-        conf2 = llm2_result.get('confidence', 0)
+        conf1 = llm1_result.get('confidence') or 0
+        conf2 = llm2_result.get('confidence') or 0
         llm1_name = llm1_result.get('provider', 'LLM1')
         llm2_name = llm2_result.get('provider', 'LLM2')
 

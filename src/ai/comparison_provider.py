@@ -19,9 +19,10 @@ Stateless Architecture:
 """
 
 import asyncio
+import json
 import time
 from typing import List, Dict, Any, Tuple, Optional
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass
@@ -95,7 +96,7 @@ def build_llm_audit_info(
         "provider": provider_name,
         "grade": result.get("grade"),
         "confidence": result.get("confidence"),
-        "internal_reasoning": result.get("internal_reasoning", ""),
+        "reasoning": result.get("reasoning", "") or result.get("internal_reasoning", ""),
         "student_feedback": result.get("student_feedback", ""),
         "student_answer_read": result.get("student_answer_read", "")
     }
@@ -893,6 +894,20 @@ Original question: {kwargs.get('question_text', '')}"""
 
         provider_names = [name for name, _ in self.providers]
 
+        # Build questions list from single-pass results (for auto-detect mode)
+        # Use LLM1's detected questions as reference
+        detected_questions = []
+        if not questions:
+            sp_llm1_questions = single_pass_results[provider_names[0]].questions
+            for qid, q_result in sp_llm1_questions.items():
+                detected_questions.append({
+                    "id": qid,
+                    "text": q_result.question_text,
+                    "criteria": "",
+                    "max_points": q_result.max_points
+                })
+        questions_for_prompt = detected_questions if detected_questions else questions
+
         # Build disagreements list for prompt
         disagreements = []
         for d in flagged_questions:
@@ -905,12 +920,14 @@ Original question: {kwargs.get('question_text', '')}"""
                 "llm1": {
                     "grade": sp_llm1.grade if sp_llm1 else 0,
                     "reading": sp_llm1.student_answer_read if sp_llm1 else "",
+                    "reasoning": sp_llm1.reasoning if sp_llm1 else "",
                     "confidence": sp_llm1.confidence if sp_llm1 else 0.5,
                     "max_points": sp_llm1.max_points if sp_llm1 else 1.0
                 },
                 "llm2": {
                     "grade": sp_llm2.grade if sp_llm2 else 0,
                     "reading": sp_llm2.student_answer_read if sp_llm2 else "",
+                    "reasoning": sp_llm2.reasoning if sp_llm2 else "",
                     "confidence": sp_llm2.confidence if sp_llm2 else 0.5,
                     "max_points": sp_llm2.max_points if sp_llm2 else 1.0
                 },
@@ -927,34 +944,80 @@ Original question: {kwargs.get('question_text', '')}"""
                 "similarity": name_disagreement.similarity
             }
 
-        # Build unified prompt
-        unified_prompt = build_unified_verification_prompt(
-            questions=questions,
-            disagreements=disagreements,
-            name_disagreement=name_dis_dict,
-            language=language
-        )
+        # Build PROVIDER-SPECIFIC prompts (swap "you" vs "other" for each LLM)
+        def swap_disagreements_for_provider(disagreements_list: List, provider_idx: int) -> List:
+            """Swap llm1/llm2 positions so each LLM sees its own grade as "you"."""
+            swapped = []
+            for d in disagreements_list:
+                if provider_idx == 0:
+                    # LLM1 sees llm1 as "you", llm2 as "other" (original order)
+                    swapped.append(d)
+                else:
+                    # LLM2 sees llm2 as "you", llm1 as "other" (swap)
+                    swapped.append({
+                        "question_id": d["question_id"],
+                        "llm1": d["llm2"],  # LLM2's data now in "llm1" position (treated as "you")
+                        "llm2": d["llm1"],  # LLM1's data now in "llm2" position (treated as "other")
+                        "type": d["type"],
+                        "reason": d["reason"]
+                    })
+            return swapped
 
-        # Call both providers in parallel
+        def swap_name_for_provider(name_dict: Optional[Dict], provider_idx: int) -> Optional[Dict]:
+            """Swap name positions so each LLM sees its own reading as "you"."""
+            if not name_dict:
+                return None
+            if provider_idx == 0:
+                return name_dict
+            return {
+                "llm1_name": name_dict["llm2_name"],
+                "llm2_name": name_dict["llm1_name"],
+                "similarity": name_dict.get("similarity")
+            }
+
+        # Build prompts for each provider
+        prompts_by_provider = {}
+        for idx, name in enumerate(provider_names):
+            provider_disagreements = swap_disagreements_for_provider(disagreements, idx)
+            provider_name_dis = swap_name_for_provider(name_dis_dict, idx)
+            prompts_by_provider[name] = build_unified_verification_prompt(
+                questions=questions_for_prompt,
+                disagreements=provider_disagreements,
+                name_disagreement=provider_name_dis,
+                language=language
+            )
+
+        # Call both providers in parallel with their specific prompts
+        # Use call_vision directly to get raw JSON response (not grade_with_vision which is for single questions)
         results_per_provider = {}
         prompts_sent = {}
 
         async def call_provider(idx: int, name: str, provider):
             try:
-                # Use the provider's grade_with_vision method with the unified prompt
-                result = provider.grade_with_vision(
-                    question_text="Vérification unifiée de tous les désaccords",
-                    criteria=unified_prompt,
-                    image_path=image_paths,
-                    max_points=10,  # Not used for unified prompt
-                    language=language
+                # Use call_vision directly to get raw response, then parse JSON
+                response = provider.call_vision(
+                    prompt=prompts_by_provider[name],
+                    image_path=image_paths
                 )
-                if asyncio.iscoroutine(result):
-                    result = await result
+                if asyncio.iscoroutine(response):
+                    response = await response
+
+                # Parse JSON response
+                try:
+                    result = json.loads(response.strip())
+                except json.JSONDecodeError:
+                    # Try to extract JSON from markdown code block
+                    import re
+                    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response)
+                    if json_match:
+                        result = json.loads(json_match.group(1))
+                    else:
+                        result = {"raw_response": response, "parse_error": True}
+
                 return (idx, name, result)
             except Exception as e:
                 logging.error(f"Unified verification failed for {name}: {e}")
-                return (idx, name, None)
+                return (idx, name, {"error": str(e)})
 
         # Run both providers in parallel
         tasks = [call_provider(i, name, provider) for i, (name, provider) in enumerate(self.providers)]
@@ -962,7 +1025,7 @@ Original question: {kwargs.get('question_text', '')}"""
 
         for idx, name, result in provider_results:
             results_per_provider[name] = result
-            prompts_sent[f"llm{idx+1}"] = unified_prompt
+            prompts_sent[f"llm{idx+1}"] = prompts_by_provider[name]
 
         # Parse JSON responses
         verified_results = {}
@@ -1005,7 +1068,7 @@ Original question: {kwargs.get('question_text', '')}"""
                     "confidence": (confidence1 + confidence2) / 2,
                     "student_answer_read": reading1,
                     "student_feedback": q1.get("feedback", ""),
-                    "internal_reasoning": q1.get("reasoning", ""),
+                    "reasoning": q1.get("reasoning", ""),
                     "method": "unified_consensus"
                 }
             else:
@@ -1022,7 +1085,7 @@ Original question: {kwargs.get('question_text', '')}"""
                     "confidence": min(confidence1, confidence2),
                     "student_answer_read": reading1,
                     "student_feedback": q1.get("feedback", ""),
-                    "internal_reasoning": q1.get("reasoning", ""),
+                    "reasoning": q1.get("reasoning", ""),
                     "method": "unified_averaged",
                     "_needs_ultimatum": True
                 }
@@ -1047,6 +1110,27 @@ Original question: {kwargs.get('question_text', '')}"""
             else:
                 consensus_name = name_disagreement.llm1_name
 
+        # Build per-question verification details for audit (responses only, prompts at top level)
+        verification_details = {}
+        for d in disagreements:
+            qid = d["question_id"]
+            llm1_q = llm1_questions.get(qid, {})
+            llm2_q = llm2_questions.get(qid, {})
+            verification_details[qid] = {
+                "responses": {
+                    provider_names[0]: {
+                        "grade": llm1_q.get("grade"),
+                        "reasoning": llm1_q.get("reasoning", ""),
+                        "reading": llm1_q.get("student_answer_read", "")
+                    },
+                    provider_names[1]: {
+                        "grade": llm2_q.get("grade"),
+                        "reasoning": llm2_q.get("reasoning", ""),
+                        "reading": llm2_q.get("student_answer_read", "")
+                    }
+                }
+            }
+
         # Build audit info
         audit_info = {
             "type": "unified",
@@ -1054,13 +1138,15 @@ Original question: {kwargs.get('question_text', '')}"""
             "questions_verified": list(verified_results.keys()),
             "name_verified": name_disagreement is not None,
             "remaining_disagreements": [d["question_id"] for d in remaining_disagreements],
-            "phases": 1
+            "phases": 1,
+            "details": verification_details
         }
 
         # Store remaining disagreements for ultimatum
         self._unified_remaining = remaining_disagreements
         self._unified_results = results_per_provider
         self._unified_evolution = {d["question_id"]: [(d["llm1"]["grade"], d["llm2"]["grade"])] for d in disagreements}
+        self._unified_questions = questions_for_prompt  # Store for ultimatum
 
         return verified_results, consensus_name, audit_info
 
@@ -1072,7 +1158,9 @@ Original question: {kwargs.get('question_text', '')}"""
         name_disagreement: Optional[Any],
         verification_results: Dict[str, Dict],
         image_paths: List[str],
-        language: str
+        language: str,
+        provider_names: List[str] = None,
+        single_pass_results: Dict[str, Any] = None
     ) -> Tuple[Dict[str, Dict], Optional[str], Dict[str, Any]]:
         """
         Run unified ultimatum for remaining disagreements after verification.
@@ -1087,6 +1175,8 @@ Original question: {kwargs.get('question_text', '')}"""
             verification_results: Results from unified verification phase
             image_paths: List of image paths to RE-SEND
             language: Language for prompts
+            provider_names: List of provider names (for reading anchors)
+            single_pass_results: Original single-pass results (for reading anchors)
 
         Returns:
             Tuple of:
@@ -1096,8 +1186,39 @@ Original question: {kwargs.get('question_text', '')}"""
         """
         import logging
         from config.prompts import build_unified_ultimatum_prompt
+        from ai.disagreement_analyzer import compute_reading_anchors, detect_position_swaps
 
-        provider_names = [name for name, _ in self.providers]
+        if provider_names is None:
+            provider_names = [name for name, _ in self.providers]
+
+        # Compute reading anchors from single-pass results (for questions where readings agreed)
+        reading_anchors = {}
+        if single_pass_results:
+            disagreement_qids = [d["question_id"] for d in remaining_disagreements]
+            llm1_results = single_pass_results.get(provider_names[0], {})
+            llm2_results = single_pass_results.get(provider_names[1], {})
+            reading_anchors = compute_reading_anchors(
+                llm1_results.to_dict() if hasattr(llm1_results, 'to_dict') else llm1_results,
+                llm2_results.to_dict() if hasattr(llm2_results, 'to_dict') else llm2_results,
+                disagreement_qids
+            )
+            if reading_anchors:
+                logging.info(f"Reading anchors computed for ultimatum: {list(reading_anchors.keys())}")
+
+        # Detect position swaps (flip-flops) - this is a red flag
+        initial_grades = {}
+        after_verification_grades = {}
+        for d in remaining_disagreements:
+            qid = d["question_id"]
+            evo = evolution.get(qid, [])
+            if len(evo) >= 1:
+                initial_grades[qid] = {"llm1": evo[0][0], "llm2": evo[0][1]}
+            if len(evo) >= 2:
+                after_verification_grades[qid] = {"llm1": evo[1][0], "llm2": evo[1][1]}
+
+        position_swaps = detect_position_swaps(initial_grades, after_verification_grades)
+        if position_swaps:
+            logging.warning(f"Position swaps detected in ultimatum: {[s.question_id for s in position_swaps]}")
 
         # Build disagreements list for ultimatum prompt
         disagreements = []
@@ -1142,41 +1263,84 @@ Original question: {kwargs.get('question_text', '')}"""
             evo = evolution.get(qid, [])
             evolution_dict[qid] = evo
 
-        # Build unified ultimatum prompt
-        ultimatum_prompt = build_unified_ultimatum_prompt(
-            questions=questions,
-            disagreements=disagreements,
-            evolution=evolution_dict,
-            name_disagreement=name_dis_dict,
-            language=language
-        )
+        # Build PROVIDER-SPECIFIC ultimatum prompts (swap "you" vs "other" for each LLM)
+        def swap_disagreements_for_ultimatum(disagreements_list: List, provider_idx: int) -> List:
+            """Swap llm1/llm2 positions so each LLM sees its own grade as "you"."""
+            swapped = []
+            for d in disagreements_list:
+                if provider_idx == 0:
+                    swapped.append(d)
+                else:
+                    swapped.append({
+                        "question_id": d["question_id"],
+                        "llm1": d["llm2"],
+                        "llm2": d["llm1"],
+                        "type": d.get("type"),
+                        "reason": d.get("reason")
+                    })
+            return swapped
 
-        # Call both providers in parallel
+        def swap_evolution_for_ultimatum(evolution_dict: Dict, provider_idx: int) -> Dict:
+            """Swap evolution grades so each LLM sees its own grades first."""
+            if provider_idx == 0:
+                return evolution_dict
+            swapped = {}
+            for qid, grades in evolution_dict.items():
+                swapped[qid] = [(g2, g1) for g1, g2 in grades]
+            return swapped
+
+        # Build prompts for each provider
+        prompts_by_provider = {}
+        for idx, name in enumerate(provider_names):
+            provider_disagreements = swap_disagreements_for_ultimatum(disagreements, idx)
+            provider_evolution = swap_evolution_for_ultimatum(evolution_dict, idx)
+            provider_name_dis = name_dis_dict  # Name doesn't need swapping in ultimatum
+            prompts_by_provider[name] = build_unified_ultimatum_prompt(
+                questions=questions,
+                disagreements=provider_disagreements,
+                evolution=provider_evolution,
+                name_disagreement=provider_name_dis,
+                language=language,
+                reading_anchors=reading_anchors  # Pass reading anchors
+            )
+
+        # Call both providers in parallel with their specific prompts
         results_per_provider = {}
         prompts_sent = {}
 
         async def call_provider(idx: int, name: str, provider):
             try:
-                result = provider.grade_with_vision(
-                    question_text="Ultimatum unifié - décision finale",
-                    criteria=ultimatum_prompt,
-                    image_path=image_paths,
-                    max_points=10,
-                    language=language
+                # Use call_vision directly to get raw response, then parse JSON
+                response = provider.call_vision(
+                    prompt=prompts_by_provider[name],
+                    image_path=image_paths
                 )
-                if asyncio.iscoroutine(result):
-                    result = await result
+                if asyncio.iscoroutine(response):
+                    response = await response
+
+                # Parse JSON response
+                try:
+                    result = json.loads(response.strip())
+                except json.JSONDecodeError:
+                    # Try to extract JSON from markdown code block
+                    import re
+                    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response)
+                    if json_match:
+                        result = json.loads(json_match.group(1))
+                    else:
+                        result = {"raw_response": response, "parse_error": True}
+
                 return (idx, name, result)
             except Exception as e:
                 logging.error(f"Unified ultimatum failed for {name}: {e}")
-                return (idx, name, None)
+                return (idx, name, {"error": str(e)})
 
         tasks = [call_provider(i, name, provider) for i, (name, provider) in enumerate(self.providers)]
         provider_results = await asyncio.gather(*tasks)
 
         for idx, name, result in provider_results:
             results_per_provider[name] = result
-            prompts_sent[f"llm{idx+1}"] = ultimatum_prompt
+            prompts_sent[f"llm{idx+1}"] = prompts_by_provider[name]
 
         # Parse results and determine final outcomes
         final_results = {}
@@ -1209,7 +1373,7 @@ Original question: {kwargs.get('question_text', '')}"""
                     "confidence": (confidence1 + confidence2) / 2,
                     "student_answer_read": q1.get("student_answer_read", d["llm1"]["reading"]),
                     "student_feedback": q1.get("feedback", ""),
-                    "internal_reasoning": q1.get("reasoning", ""),
+                    "reasoning": q1.get("reasoning", ""),
                     "method": "ultimatum_consensus"
                 }
             else:
@@ -1220,7 +1384,7 @@ Original question: {kwargs.get('question_text', '')}"""
                     "confidence": min(confidence1, confidence2),
                     "student_answer_read": q1.get("student_answer_read", d["llm1"]["reading"]),
                     "student_feedback": q1.get("feedback", ""),
-                    "internal_reasoning": q1.get("reasoning", ""),
+                    "reasoning": q1.get("reasoning", ""),
                     "method": "ultimatum_averaged"
                 }
 
@@ -1238,11 +1402,38 @@ Original question: {kwargs.get('question_text', '')}"""
                 # Keep original disagreement name
                 final_name = name_disagreement.llm1_name
 
+        # Build per-question ultimatum details for audit
+        ultimatum_details = {}
+        for d in remaining_disagreements:
+            qid = d["question_id"]
+            llm1_result = results_per_provider.get(provider_names[0], {})
+            llm2_result = results_per_provider.get(provider_names[1], {})
+            llm1_questions = llm1_result.get("questions", {}) if isinstance(llm1_result, dict) else {}
+            llm2_questions = llm2_result.get("questions", {}) if isinstance(llm2_result, dict) else {}
+            q1 = llm1_questions.get(qid, {})
+            q2 = llm2_questions.get(qid, {})
+
+            ultimatum_details[qid] = {
+                "responses": {
+                    provider_names[0]: {
+                        "grade": q1.get("grade"),
+                        "reasoning": q1.get("reasoning", ""),
+                        "reading": q1.get("student_answer_read", "")
+                    },
+                    provider_names[1]: {
+                        "grade": q2.get("grade"),
+                        "reasoning": q2.get("reasoning", ""),
+                        "reading": q2.get("student_answer_read", "")
+                    }
+                }
+            }
+
         audit_info = {
             "type": "unified_ultimatum",
             "prompts_sent": prompts_sent,
             "questions_verified": list(final_results.keys()),
-            "phases": 2
+            "phases": 2,
+            "details": ultimatum_details
         }
 
         return final_results, final_name, audit_info
@@ -2405,7 +2596,7 @@ CONFIDENCE: [0.0 to 1.0]"""
                 "confidence": (llm1_q.confidence + llm2_q.confidence) / 2,
                 "student_answer_read": llm1_q.student_answer_read,
                 "student_feedback": llm1_q.feedback,
-                "internal_reasoning": llm1_q.reasoning,
+                "reasoning": llm1_q.reasoning,
                 "method": "single_pass_consensus"
             }
             # Simplified audit - no need to repeat llm1/llm2 data (already in single_pass)
@@ -2439,61 +2630,42 @@ CONFIDENCE: [0.0 to 1.0]"""
             # Merge verified results into final_results
             final_results.update(verified_results)
 
-            # Build audit for verified questions
-            for d in report.flagged_questions:
-                qid = d.question_id
-                sp_llm1_q = single_pass_results[provider_names[0]].questions.get(qid)
-                sp_llm2_q = single_pass_results[provider_names[1]].questions.get(qid)
-
-                verification_audit[qid] = {
-                    "method": verified_results[qid].get("method", "unified"),
-                    "agreement": not verified_results[qid].get("_needs_ultimatum", False),
-                    "reason": d.reason,
-                    "evolution": {
-                        "initial": [
-                            sp_llm1_q.grade if sp_llm1_q else 0,
-                            sp_llm2_q.grade if sp_llm2_q else 0
-                        ],
-                        "final": verified_results[qid].get("grade")
-                    }
-                }
+            # Store verification details for audit (per question)
+            verification_details = verification_info.get("details", {})
 
             # Check if there are remaining disagreements needing ultimatum
             remaining = getattr(self, '_unified_remaining', [])
+            ultimatum_details = {}
+            ultimatum_info = {}
+
             if remaining:
                 await self._notify_progress('grading_phase_start', {
                     'phase': 'unified_ultimatum',
                     'num_remaining': len(remaining)
                 })
 
-                # Run unified ultimatum
+                # Run unified ultimatum with reading anchors
                 ultimatum_results, final_name, ultimatum_info = await self._run_unified_ultimatum(
-                    questions=questions,
+                    questions=getattr(self, '_unified_questions', questions),
                     remaining_disagreements=remaining,
                     evolution=getattr(self, '_unified_evolution', {}),
                     name_disagreement=report.name_disagreement if name_needs_verification else None,
                     verification_results=verified_results,
                     image_paths=image_paths,
-                    language=language
+                    language=language,
+                    provider_names=provider_names,
+                    single_pass_results=single_pass_results
                 )
 
                 # Update with ultimatum results
                 for qid, result in ultimatum_results.items():
                     final_results[qid] = result
-                    verification_audit[qid] = {
-                        "method": result.get("method", "ultimatum"),
-                        "agreement": "consensus" in result.get("method", ""),
-                        "evolution": {
-                            **verification_audit[qid].get("evolution", {}),
-                            "after_ultimatum": result.get("grade")
-                        }
-                    }
+
+                # Store ultimatum details for audit (per question)
+                ultimatum_details = ultimatum_info.get("details", {})
 
                 if final_name:
                     final_student_name = final_name
-
-            # Store verification info in audit
-            verification_audit["_unified"] = verification_info
 
         # ===== PHASE 4: Assemble Final Results =====
         total_duration = (time.time() - total_start) * 1000
@@ -2520,7 +2692,7 @@ CONFIDENCE: [0.0 to 1.0]"""
             sp_llm1_q = single_pass_results[provider_names[0]].questions.get(qid)
             sp_llm2_q = single_pass_results[provider_names[1]].questions.get(qid)
 
-            questions_audit[qid] = {
+            question_entry = {
                 # Single pass results for each LLM
                 provider_names[0]: {
                     "grade": sp_llm1_q.grade if sp_llm1_q else None,
@@ -2537,17 +2709,27 @@ CONFIDENCE: [0.0 to 1.0]"""
                     "reasoning": sp_llm2_q.reasoning if sp_llm2_q else "",
                     "feedback": sp_llm2_q.feedback if sp_llm2_q else "",
                     "confidence": sp_llm2_q.confidence if sp_llm2_q else 0.5
-                },
-                # Verification (null if agreed in single pass)
-                "verification": verification_audit.get(qid),
-                # Final result
-                "final": {
-                    "grade": final_results[qid].get("grade"),
-                    "max_points": final_results[qid].get("max_points"),
-                    "confidence": final_results[qid].get("confidence"),
-                    "feedback": final_results[qid].get("student_feedback")
                 }
             }
+
+            # Add verification round if present
+            if qid in verification_details:
+                question_entry["verification"] = verification_details[qid]
+
+            # Add ultimatum round if present
+            if qid in ultimatum_details:
+                question_entry["ultimatum"] = ultimatum_details[qid]
+
+            # Add final result
+            question_entry["final"] = {
+                "grade": final_results[qid].get("grade"),
+                "max_points": final_results[qid].get("max_points"),
+                "confidence": final_results[qid].get("confidence"),
+                "feedback": final_results[qid].get("student_feedback"),
+                "method": final_results[qid].get("method", "single_pass")
+            }
+
+            questions_audit[qid] = question_entry
 
         # Build final_results in natural order too
         sorted_final_results = {qid: final_results[qid] for qid in sorted(final_results.keys(), key=natural_sort_key)}
@@ -2565,17 +2747,23 @@ CONFIDENCE: [0.0 to 1.0]"""
         # Build verification summary
         verification_summary = {
             "type": "unified",
-            "questions_verified": list(verification_audit.keys()),
-            "name_verified": report.name_disagreement is not None
+            "questions_verified": list(verification_details.keys()),
+            "name_verified": report.name_disagreement is not None,
+            "phases": 2 if ultimatum_details else (1 if verification_details else 0)
         }
-        if "_unified" in verification_audit:
-            verification_summary["phases"] = verification_audit["_unified"].get("phases", 1)
-            del verification_audit["_unified"]
+
+        # Build student name info for audit
+        student_name_info = {
+            "final_name": final_student_name,
+            "llm1_name": report.llm1_name,
+            "llm2_name": report.llm2_name,
+            "disagreement": report.name_disagreement.to_dict() if report.name_disagreement else None
+        }
 
         return {
             "results": results,
             "student_name": final_student_name,
-            "student_name_disagreement": report.name_disagreement.to_dict() if report.name_disagreement else None,
+            "student_name_info": student_name_info,
             "options": {
                 "mode": "dual_llm",
                 "providers": provider_names,

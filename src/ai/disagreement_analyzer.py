@@ -4,7 +4,7 @@ Disagreement Analyzer for conversation-based grading.
 Analyzes results from two LLMs and flags questions that need verification.
 """
 
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 from difflib import SequenceMatcher
@@ -105,9 +105,142 @@ class DisagreementReport:
         return len(self.flagged_questions) > 0 or self.name_disagreement is not None
 
 
+@dataclass
+class PositionSwap:
+    """Record of a position swap (flip-flop) between two LLMs."""
+    question_id: str
+    initial_grades: Tuple[float, float]  # (llm1_initial, llm2_initial)
+    after_verification: Tuple[float, float]  # (llm1_after, llm2_after)
+    is_swap: bool  # True if positions were swapped
+    confidence_dropped: bool  # True if either LLM dropped confidence
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "question_id": self.question_id,
+            "initial_grades": list(self.initial_grades),
+            "after_verification": list(self.after_verification),
+            "is_swap": self.is_swap,
+            "confidence_dropped": self.confidence_dropped
+        }
+
+
 # Seuils hardcodés (simples, pas de config)
 GRADE_THRESHOLD = 0.5  # Différence de note pour flagger
 READING_SIMILARITY_THRESHOLD = 0.3  # Similarité Jaccard minimum
+POSITION_SWAP_THRESHOLD = 0.5  # Minimum grade difference to detect swap
+
+
+def detect_position_swaps(
+    initial_results: Dict[str, Dict[str, float]],
+    after_verification: Dict[str, Dict[str, float]],
+    confidence_initial: Dict[str, Tuple[float, float]] = None,
+    confidence_after: Dict[str, Tuple[float, float]] = None
+) -> List[PositionSwap]:
+    """
+    Detect position swaps (flip-flops) after verification.
+
+    A swap occurs when:
+    - LLM1 was higher than LLM2 initially
+    - After verification, LLM1 is lower than LLM2 (or vice versa)
+
+    This is a red flag suggesting suggestibility rather than independent re-analysis.
+
+    Args:
+        initial_results: Dict mapping qid -> {"llm1": grade, "llm2": grade}
+        after_verification: Dict mapping qid -> {"llm1": grade, "llm2": grade}
+        confidence_initial: Optional dict mapping qid -> (conf1, conf2)
+        confidence_after: Optional dict mapping qid -> (conf1, conf2)
+
+    Returns:
+        List of PositionSwap objects for questions where a swap was detected
+    """
+    swaps = []
+    confidence_initial = confidence_initial or {}
+    confidence_after = confidence_after or {}
+
+    for qid in initial_results:
+        init = initial_results[qid]
+        after = after_verification.get(qid, init)
+
+        llm1_init = init.get("llm1", 0)
+        llm2_init = init.get("llm2", 0)
+        llm1_after = after.get("llm1", 0)
+        llm2_after = after.get("llm2", 0)
+
+        # Check for swap (positions crossed)
+        init_diff = llm1_init - llm2_init
+        after_diff = llm1_after - llm2_after
+
+        # Swap detected if signs are opposite and difference is significant
+        is_swap = (
+            abs(init_diff) >= POSITION_SWAP_THRESHOLD and
+            abs(after_diff) >= POSITION_SWAP_THRESHOLD and
+            (init_diff > 0 and after_diff < 0) or (init_diff < 0 and after_diff > 0)
+        )
+
+        # Check if confidence dropped
+        conf_init = confidence_initial.get(qid, (1.0, 1.0))
+        conf_after = confidence_after.get(qid, (1.0, 1.0))
+        confidence_dropped = (
+            conf_after[0] < conf_init[0] - 0.2 or
+            conf_after[1] < conf_init[1] - 0.2
+        )
+
+        if is_swap:
+            swaps.append(PositionSwap(
+                question_id=qid,
+                initial_grades=(llm1_init, llm2_init),
+                after_verification=(llm1_after, llm2_after),
+                is_swap=is_swap,
+                confidence_dropped=confidence_dropped
+            ))
+
+    return swaps
+
+
+def compute_reading_anchors(
+    llm1_results: Dict[str, Any],
+    llm2_results: Dict[str, Any],
+    disagreement_qids: List[str]
+) -> Dict[str, str]:
+    """
+    Compute reading anchors for questions where both LLMs initially agreed on reading.
+
+    These anchors should be used in ultimatum to prevent hallucination.
+
+    Args:
+        llm1_results: Full results from LLM1
+        llm2_results: Full results from LLM2
+        disagreement_qids: List of question IDs that are in disagreement (about grade)
+
+    Returns:
+        Dict mapping question_id -> anchored reading (only for questions with reading agreement)
+    """
+    anchors = {}
+    llm1_questions = llm1_results.get("questions", {})
+    llm2_questions = llm2_results.get("questions", {})
+
+    for qid in disagreement_qids:
+        q1 = llm1_questions.get(qid, {})
+        q2 = llm2_questions.get(qid, {})
+
+        reading1 = (q1.get("student_answer_read") or "").strip().lower()
+        reading2 = (q2.get("student_answer_read") or "").strip().lower()
+
+        # Check if readings are similar (agreed)
+        if not reading1 or not reading2:
+            continue
+
+        # Use SequenceMatcher for fuzzy comparison
+        similarity = SequenceMatcher(None, reading1, reading2).ratio()
+
+        if similarity >= 0.8:  # High similarity = reading agreement
+            # Use the longer reading as anchor (usually more complete)
+            anchor = q1.get("student_answer_read") if len(reading1) >= len(reading2) else q2.get("student_answer_read")
+            if anchor:
+                anchors[qid] = anchor.strip()
+
+    return anchors
 
 
 class DisagreementAnalyzer:
@@ -236,7 +369,26 @@ class DisagreementAnalyzer:
                 reason="Un LLM a trouvé la réponse, l'autre non"
             )
 
-        # Check: différence de note significative
+        # Check: lecture différente (AVANT la note car c'est souvent la cause racine)
+        reading_diff_type = self._classify_reading_difference(reading1, reading2)
+        if reading_diff_type in ("substantial", "partial"):
+            return QuestionDisagreement(
+                question_id=qid,
+                disagreement_type=DisagreementType.READING_DIFFERENCE,
+                llm1_grade=grade1,
+                llm2_grade=grade2,
+                grade_difference=grade_diff,
+                llm1_reading=reading1,
+                llm2_reading=reading2,
+                llm1_confidence=conf1,
+                llm2_confidence=conf2,
+                llm1_max_points=max_pts1,
+                llm2_max_points=max_pts2,
+                reading_difference_type=reading_diff_type,
+                reason=f"Lectures différentes ({reading_diff_type}): '{reading1}' vs '{reading2}'"
+            )
+
+        # Check: différence de note significative (seulement si lectures identiques)
         if grade_diff >= GRADE_THRESHOLD:
             return QuestionDisagreement(
                 question_id=qid,
@@ -251,25 +403,6 @@ class DisagreementAnalyzer:
                 llm1_max_points=max_pts1,
                 llm2_max_points=max_pts2,
                 reason=f"Différence de note: {grade_diff:.1f} points"
-            )
-
-        # Check: lecture substantiellement différente
-        reading_diff_type = self._classify_reading_difference(reading1, reading2)
-        if reading_diff_type == "substantial":
-            return QuestionDisagreement(
-                question_id=qid,
-                disagreement_type=DisagreementType.READING_DIFFERENCE,
-                llm1_grade=grade1,
-                llm2_grade=grade2,
-                grade_difference=grade_diff,
-                llm1_reading=reading1,
-                llm2_reading=reading2,
-                llm1_confidence=conf1,
-                llm2_confidence=conf2,
-                llm1_max_points=max_pts1,
-                llm2_max_points=max_pts2,
-                reading_difference_type=reading_diff_type,
-                reason="Lectures substantiellement différentes"
             )
 
         # Accord

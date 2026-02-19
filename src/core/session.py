@@ -138,6 +138,7 @@ class GradingSessionOrchestrator:
         # Analysis results (available after analyze_only)
         self._analysis_complete = False
         self._grading_complete = False
+        self._scale_confirmed = False
 
     @property
     def workflow_state(self) -> CorrectionState:
@@ -196,11 +197,15 @@ class GradingSessionOrchestrator:
         Loads PDFs, extracts content, detects questions.
         Scale is NOT detected here - it will be detected during grading.
 
+        In INDIVIDUAL mode (--pages-per-student), questions are NOT detected
+        here - they will be detected during the grading phase by the LLM.
+
         Returns:
             Dict with:
             - 'questions': Dict of {question_id: question_text}
             - 'copies_count': Number of copies analyzed
             - 'language': Detected language
+            - 'questions_detected_during_grading': True if in individual mode
         """
         # Load copies
         await self._load_copies_phase()
@@ -230,6 +235,13 @@ class GradingSessionOrchestrator:
                 # This is a valid question key
                 detected_questions[key] = f"Question {key}"
 
+        # In INDIVIDUAL mode, questions will be detected during grading
+        questions_detected_during_grading = False
+        if not detected_questions and self._pages_per_student:
+            questions_detected_during_grading = True
+            # No placeholder - LLM will detect questions dynamically
+            detected_questions = {}
+
         # Default scale of 1.0 for each question (will be detected during grading)
         detected_scale = {q: 1.0 for q in detected_questions.keys()}
 
@@ -244,7 +256,8 @@ class GradingSessionOrchestrator:
             'scale': detected_scale,  # Default scale, will be updated during grading
             'scale_detected': False,  # Scale detected during grading, not analysis
             'copies_count': len(self.session.copies),
-            'language': detected_language
+            'language': detected_language,
+            'questions_detected_during_grading': questions_detected_during_grading
         }
 
     async def re_analyze_low_confidence(self) -> Dict[str, any]:
@@ -294,11 +307,13 @@ class GradingSessionOrchestrator:
 
         Args:
             scale: Dict of {question_id: max_points}
+                   Can be empty {} if scale will be detected during grading
         """
         if not self._analysis_complete:
             raise RuntimeError("Must call analyze_only() before confirm_scale()")
 
         self.question_scales = scale
+        self._scale_confirmed = True
 
         # Update policy with scale
         self.session.policy.question_weights = scale
@@ -347,7 +362,7 @@ class GradingSessionOrchestrator:
         if not self._analysis_complete:
             raise RuntimeError("Must call analyze_only() before grade_all()")
 
-        if not self.question_scales:
+        if not getattr(self, '_scale_confirmed', False):
             raise RuntimeError("Must call confirm_scale() before grade_all()")
 
         if self._comparison_mode:
@@ -456,6 +471,7 @@ class GradingSessionOrchestrator:
                 for q_id in sorted(graded.grades.keys(), key=question_sort_key):
                     if progress_callback:
                         await self._call_callback(progress_callback, 'question_done', {
+                            'copy_index': i + 1,
                             'question_id': q_id,
                             'grade': graded.grades[q_id],
                             'max_points': graded.max_points_by_question.get(q_id, 1.0),
@@ -490,11 +506,21 @@ class GradingSessionOrchestrator:
         # Execute all tasks in parallel (limited by semaphore)
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Collect successful results
-        for result in results:
+        # Collect successful results and emit error events
+        for i, result in enumerate(results):
             if isinstance(result, Exception):
                 import logging
-                logging.error(f"Error grading copy: {result}")
+                logging.error(f"Error grading copy {i+1}: {result}")
+                # Emit copy_error event for live display
+                if progress_callback:
+                    copy = self.session.copies[i] if i < len(self.session.copies) else None
+                    await self._call_callback(progress_callback, 'copy_error', {
+                        'copy_index': i + 1,
+                        'total_copies': total_copies,
+                        'copy_id': copy.id if copy else None,
+                        'student_name': copy.student_name if copy else None,
+                        'error': str(result)
+                    })
             elif result is not None:
                 self.session.graded_copies.append(result)
                 self._save_sync()
@@ -617,6 +643,7 @@ class GradingSessionOrchestrator:
 
                     if progress_callback:
                         await self._call_callback(progress_callback, 'question_done', {
+                            'copy_index': i + 1,
                             'question_id': q_id,
                             'grade': q_result.get("grade", 0),
                             'max_points': detected_max_points,
@@ -665,6 +692,7 @@ class GradingSessionOrchestrator:
                 graded.llm_comparison = {
                     "options": result.get("options", {}),
                     "llm_comparison": llm_comparison,
+                    "student_name_info": result.get("student_name_info", {}),
                     "summary": result.get("summary", {}),
                     "timing": result.get("timing", {})
                 }
@@ -698,11 +726,21 @@ class GradingSessionOrchestrator:
         # Execute all tasks in parallel (limited by semaphore)
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Collect successful results
-        for result in results:
+        # Collect successful results and emit error events
+        for i, result in enumerate(results):
             if isinstance(result, Exception):
                 import logging
-                logging.error(f"Error grading copy: {result}")
+                logging.error(f"Error grading copy {i+1}: {result}")
+                # Emit copy_error event for live display
+                if progress_callback:
+                    copy = self.session.copies[i] if i < len(self.session.copies) else None
+                    await self._call_callback(progress_callback, 'copy_error', {
+                        'copy_index': i + 1,
+                        'total_copies': total_copies,
+                        'copy_id': copy.id if copy else None,
+                        'student_name': copy.student_name if copy else None,
+                        'error': str(result)
+                    })
             elif result is not None:
                 self.session.graded_copies.append(result)
                 self._save_sync()

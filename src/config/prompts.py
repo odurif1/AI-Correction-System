@@ -551,8 +551,10 @@ CRITÈRES: {q['criteria']}
 - 0 = réponse fausse ou absente
 - Max = réponse complète et correcte
 
+⚠ LANGUE: Répondez IMPÉRATIVEMENT EN FRANÇAIS dans tous les champs texte (reasoning, feedback).
+
 ━━━ FORMAT DE RÉPONSE (JSON) ━━━
-Réponds UNIQUEMENT avec un JSON valide:
+Réponds UNIQUEMENT avec un JSON valide. Tous les textes doivent être EN FRANÇAIS:
 
 {{
   "student_name": "<nom détecté ou null>",
@@ -563,8 +565,8 @@ Réponds UNIQUEMENT avec un JSON valide:
       "max_points": <barème détecté sur la copie>,
       "grade": <note sur le barème>,
       "confidence": <0.0-1.0>,
-      "reasoning": "<analyse technique>",
-      "feedback": "<retour sobre>"
+      "reasoning": "<analyse technique EN FRANÇAIS>",
+      "feedback": "<feedback EN FRANÇAIS pour l'élève>"
     }},
     "Q2": {{ ... }}
   }}
@@ -613,6 +615,151 @@ Respond ONLY with valid JSON:
     "Q2": {{ ... }}
   }}
 }}"""
+
+    # Add second reading instruction if enabled
+    if second_reading:
+        if language == "fr":
+            base_prompt += """
+
+━━━ DEUXIÈME LECTURE (IMPORTANT) ━━━
+Après ta première correction:
+1. RELIS ta correction en entier
+2. Vérifie que chaque note correspond au barème détecté
+3. Vérifie que tes lectures des réponses sont exactes
+4. Ajuste si nécessaire
+
+Tu dois faire ce travail de vérification DANS CETTE MÊME RÉPONSE."""
+        else:
+            base_prompt += """
+
+━━━ SECOND READING (IMPORTANT) ━━━
+After your first grading pass:
+1. RE-READ your corrections entirely
+2. Verify each grade matches the detected scale
+3. Verify your readings of answers are accurate
+4. Adjust if necessary
+
+You must do this verification IN THIS SAME RESPONSE."""
+
+    return base_prompt
+
+
+def build_auto_detect_grading_prompt(
+    language: str = "fr",
+    second_reading: bool = False
+) -> str:
+    """
+    Build prompt for detecting and grading questions when none are pre-defined.
+
+    Used in INDIVIDUAL mode where questions are not known ahead of time.
+
+    Args:
+        language: Language for prompt
+        second_reading: If True, add second reading instruction
+
+    Returns:
+        Formatted prompt for auto-detect grading
+    """
+    if language == "fr":
+        base_prompt = """Tu es un correcteur expérimenté. Analyse cette copie d'élève.
+
+━━━ TA MISSION ━━━
+1. IDENTIFIE le nom de l'élève (si visible)
+2. DÉTECTE toutes les questions présentes sur la copie
+3. CORRIGE chaque question détectée
+
+━━━ COMMENT DÉTECTER LES QUESTIONS ━━━
+- Cherche les numéros de questions: Q1, Q2, 1., 2., Question 1, etc.
+- Chaque question a généralement une zone de réponse associée
+- Numérote-les Q1, Q2, Q3... dans l'ordre d'apparition
+
+━━━ BARÈME ━━━
+- CHERCHE le barème sur le document (souvent indiqué comme "(1pt)", "/2", etc.)
+- Si tu ne trouves pas le barème, utilise 1 point par défaut
+
+━━━ POUR CHAQUE QUESTION DÉTECTÉE ━━━
+- Localise la réponse de l'élève
+- Lis EXACTEMENT ce qu'il a écrit
+- Note sur le barème détecté (0 à max)
+- Évalue ta certitude (0-1)
+- Génère un feedback sobre et professionnel
+
+━━━ NOTATION NUANCÉE ━━━
+Accorde des POINTS PARTIELS pour les réponses partiellement correctes:
+- Formule/méthode correcte mais exécution erronée: 50% des points
+- Démarche correcte avec erreurs mineures: 75% des points
+- Seules les erreurs conceptuelles majeures méritent 0 point
+NE JAMAIS mettre 0 si une partie de la démarche est correcte.
+
+━━━ FORMAT DE RÉPONSE (JSON) ━━━
+Réponds UNIQUEMENT avec un JSON valide:
+
+{
+  "student_name": "<nom détecté ou null>",
+  "questions": {
+    "Q1": {
+      "question_text": "<texte de la question détectée>",
+      "location": "<page X, zone Y>",
+      "student_answer_read": "<texte exact écrit par l'élève>",
+      "max_points": <barème détecté>,
+      "grade": <note sur le barème>,
+      "confidence": <0.0-1.0>,
+      "reasoning": "<analyse technique>",
+      "feedback": "<retour sobre>"
+    },
+    "Q2": { ... }
+  }
+}"""
+    else:
+        base_prompt = """You are an experienced grader. Analyze this student copy.
+
+━━━ YOUR MISSION ━━━
+1. IDENTIFY the student name (if visible)
+2. DETECT all questions present on the copy
+3. GRADE each detected question
+
+━━━ HOW TO DETECT QUESTIONS ━━━
+- Look for question numbers: Q1, Q2, 1., 2., Question 1, etc.
+- Each question usually has an associated answer area
+- Number them Q1, Q2, Q3... in order of appearance
+
+━━━ SCALE ━━━
+- FIND the scale on the document (often indicated as "(1pt)", "/2", etc.)
+- If you can't find the scale, use 1 point as default
+
+━━━ FOR EACH DETECTED QUESTION ━━━
+- Locate the student's answer
+- Read EXACTLY what they wrote
+- Grade on the detected scale (0 to max)
+- Evaluate your certainty (0-1)
+- Generate sober, professional feedback
+
+━━━ NUANCED GRADING ━━━
+Give PARTIAL CREDIT for partially correct answers:
+- Correct formula/method but wrong execution: 50% of points
+- Correct approach with minor errors: 75% of points
+- Only major conceptual errors deserve 0 points
+NEVER give 0 if part of the approach is correct.
+
+━━━ RESPONSE FORMAT (JSON) ━━━
+Respond ONLY with valid JSON:
+
+{
+  "student_name": "<detected name or null>",
+  "questions": {
+    "Q1": {
+      "question_text": "<detected question text>",
+      "location": "<page X, zone Y>",
+      "student_answer_read": "<exact text written by student>",
+      "max_points": <detected scale>,
+      "grade": <grade on scale>,
+      "confidence": <0.0-1.0>,
+      "reasoning": "<technical analysis>",
+      "feedback": "<sober feedback>"
+    },
+    "Q2": { ... }
+  }
+}"""
 
     # Add second reading instruction if enabled
     if second_reading:
@@ -766,48 +913,87 @@ def build_unified_verification_prompt(
 
     # Build questions section
     questions_section = ""
+    auto_detect_warning = False
     for d in disagreements:
         qid = d["question_id"]
         q = question_lookup.get(qid, {})
         llm1 = d.get("llm1", {})
         llm2 = d.get("llm2", {})
 
+        # Build question text section (only if we have the text)
+        q_text_section = ""
+        q_text = q.get('text', '')
+        q_criteria = q.get('criteria', '')
+
         if language == "fr":
+            if q_text:
+                q_text_section = f"Texte: {q_text}\n"
+            if q_criteria:
+                q_text_section += f"Critères: {q_criteria}\n"
+            if not q_text and not q_criteria:
+                q_text_section = "⚠ ANOMALIE: Question détectée automatiquement - texte non disponible\n"
+                auto_detect_warning = True
+
             questions_section += f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ─── QUESTION {qid} ───
-Texte: {q.get('text', 'N/A')}
-Critères: {q.get('criteria', 'Non spécifiés')}
-Barème: {llm1.get('max_points', 1)} point(s)
+{q_text_section}Barème: {llm1.get('max_points', 1)} point(s)
 
-- Vous avez noté: {llm1.get('grade', 0)}/{llm1.get('max_points', 1)} (lecture: "{llm1.get('reading', '')}")
-- L'autre a noté: {llm2.get('grade', 0)}/{llm2.get('max_points', 1)} (lecture: "{llm2.get('reading', '')}")
+- Votre note initiale: {llm1.get('grade', 0)}/{llm1.get('max_points', 1)}
+- Votre lecture initiale: "{llm1.get('reading', '')}"
+- L'autre note: {llm2.get('grade', 0)}/{llm2.get('max_points', 1)}
+- Lecture de l'autre: "{llm2.get('reading', '')}"
 """
         else:
+            if q_text:
+                q_text_section = f"Text: {q_text}\n"
+            if q_criteria:
+                q_text_section += f"Criteria: {q_criteria}\n"
+            if not q_text and not q_criteria:
+                q_text_section = "⚠ ANOMALY: Auto-detected question - text not available\n"
+                auto_detect_warning = True
+
             questions_section += f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ─── QUESTION {qid} ───
-Text: {q.get('text', 'N/A')}
-Criteria: {q.get('criteria', 'Not specified')}
-Scale: {llm1.get('max_points', 1)} point(s)
+{q_text_section}Scale: {llm1.get('max_points', 1)} point(s)
 
-- You graded: {llm1.get('grade', 0)}/{llm1.get('max_points', 1)} (reading: "{llm1.get('reading', '')}")
-- The other graded: {llm2.get('grade', 0)}/{llm2.get('max_points', 1)} (reading: "{llm2.get('reading', '')}")
+- Your initial grade: {llm1.get('grade', 0)}/{llm1.get('max_points', 1)}
+- Your initial reading: "{llm1.get('reading', '')}"
+- Other's grade: {llm2.get('grade', 0)}/{llm2.get('max_points', 1)}
+- Other's reading: "{llm2.get('reading', '')}"
 """
 
-    # Build questions JSON format
+    # Build questions JSON format with reading anchors
     questions_json = ""
     for d in disagreements:
         qid = d["question_id"]
         llm1 = d.get("llm1", {})
-        questions_json += f'''
+        original_reading = llm1.get('reading', '').replace('"', "'")  # Escape quotes
+        # Use language-specific placeholders
+        if language == "fr":
+            questions_json += f'''
     "{qid}": {{
-      "student_answer_read": "<votre lecture>",
+      "student_answer_read": "<votre lecture - OBLIGATOIREMENT relire sur l'image>",
+      "original_reading": "{original_reading}",
       "grade": <note>,
       "max_points": {llm1.get('max_points', 1)},
       "confidence": <0.0-1.0>,
-      "reasoning": "<analyse>",
-      "feedback": "<feedback>"
+      "reasoning": "<analyse technique EN FRANÇAIS>",
+      "feedback": "<retour sobre EN FRANÇAIS>",
+      "changed_position": <true/false>
+    }},'''
+        else:
+            questions_json += f'''
+    "{qid}": {{
+      "student_answer_read": "<your reading - MUST re-read from image>",
+      "original_reading": "{original_reading}",
+      "grade": <grade>,
+      "max_points": {llm1.get('max_points', 1)},
+      "confidence": <0.0-1.0>,
+      "reasoning": "<technical analysis>",
+      "feedback": "<concise feedback>",
+      "changed_position": <true/false>
     }},'''
 
     # Remove trailing comma
@@ -825,12 +1011,17 @@ Certains points sont en désaccord. Veuillez réexaminer TOUS ces éléments.
 ─── RÈGLES IMPORTANTES ───
 1. RELISEZ VOUS-MÊME les réponses sur les images (ne présumez de rien)
 2. Analysez OBJECTIVEMENT ce qui est correct et ce qui ne l'est pas
-3. Les erreurs de lecture manuscrite sont courantes - restez ouvert
-4. Ne changez que si vous êtes convaincu que l'autre analyse est meilleure
-5. Vous pouvez proposer une troisième lecture si les deux sont incorrectes
-6. Si incertain: abaissez votre confiance (< 0.5)
+3. Ne changez votre note QUE si vous êtes CONVAINCU d'une erreur
+4. ⚠ ATTENTION: Ne changez pas simplement pour "rejoindre" l'autre correcteur
+5. Votre lecture doit rester PROCHE de votre lecture initiale (sauf erreur manifeste)
+6. Si vous changez de position, indiquez "changed_position": true
 
-⚠ INTERDICTION: Ne choisissez pas au hasard. Chaque décision doit être justifiée.
+─── ANTI-SUGGESTION ───
+- Ne soyez pas trop influençable
+- Il est NORMAL de maintenir votre position si vous l'avez analysée correctement
+- Un "flip-flop" (changement radical) sans justification solide est suspect
+
+⚠ LANGUE: Répondez IMPÉRATIVEMENT EN FRANÇAIS dans tous les champs texte (reasoning, feedback).
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -852,12 +1043,15 @@ Some points are in disagreement. Please re-examine ALL these elements.
 ─── IMPORTANT RULES ───
 1. RE-READ the answers yourself from the images (presume nothing)
 2. Analyze OBJECTIVELY what is correct and what is not
-3. Handwriting reading errors are common - stay open-minded
-4. Only change if you are convinced the other analysis is better
-5. You can propose a third reading if both are incorrect
-6. If uncertain: lower your confidence (< 0.5)
+3. Only change your grade if you are CONVINCED of an error
+4. ⚠ WARNING: Don't change just to "agree" with the other grader
+5. Your reading should remain CLOSE to your initial reading (unless obvious error)
+6. If you change position, indicate "changed_position": true
 
-⚠ FORBIDDEN: Don't choose randomly. Every decision must be justified.
+─── ANTI-SUGGESTION ───
+- Don't be too easily influenced
+- It is NORMAL to maintain your position if you analyzed it correctly
+- A "flip-flop" (radical change) without solid justification is suspicious
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -876,7 +1070,8 @@ def build_unified_ultimatum_prompt(
     evolution: Dict[str, List[float]],
     name_disagreement: Optional[Dict[str, Any]] = None,
     name_evolution: Optional[List[str]] = None,
-    language: str = "fr"
+    language: str = "fr",
+    reading_anchors: Optional[Dict[str, str]] = None
 ) -> str:
     """
     Build unified ultimatum prompt for remaining disagreements after verification.
@@ -888,12 +1083,14 @@ def build_unified_ultimatum_prompt(
         name_disagreement: Optional dict with original name disagreement
         name_evolution: Optional list of name tuples [(llm1_initial, llm2_initial), (llm1_after, llm2_after)]
         language: Language for prompt
+        reading_anchors: Dict mapping question_id -> agreed reading to anchor (only if initial reading agreed)
 
     Returns:
         Formatted prompt for unified ultimatum
     """
     # Build question lookup
     question_lookup = {q["id"]: q for q in questions}
+    reading_anchors = reading_anchors or {}
 
     # Build name section if there's a name disagreement
     name_section = ""
@@ -902,20 +1099,20 @@ def build_unified_ultimatum_prompt(
             name_section = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ─── NOM DE L'ÉLÈVE (TOUJOURS EN DÉSACCORD) ───
-- Vous avez lu initialement: "{name_disagreement.get('llm1_name', '')}"
-- L'autre a lu initialement: "{name_disagreement.get('llm2_name', '')}"
+- Votre lecture initiale: "{name_disagreement.get('llm1_name', '')}"
+- Lecture de l'autre: "{name_disagreement.get('llm2_name', '')}"
 → DÉCISION FINALE requise.
 """
         else:
             name_section = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ─── STUDENT NAME (STILL IN DISAGREEMENT) ───
-- You initially read: "{name_disagreement.get('llm1_name', '')}"
-- The other initially read: "{name_disagreement.get('llm2_name', '')}"
+- Your initial reading: "{name_disagreement.get('llm1_name', '')}"
+- Other's reading: "{name_disagreement.get('llm2_name', '')}"
 → FINAL DECISION required.
 """
 
-    # Build questions section with evolution
+    # Build questions section with evolution and reading anchors
     questions_section = ""
     for d in disagreements:
         qid = d["question_id"]
@@ -923,6 +1120,21 @@ def build_unified_ultimatum_prompt(
         q_evolution = evolution.get(qid, [])
         llm1 = d.get("llm1", {})
         llm2 = d.get("llm2", {})
+
+        # Check if reading is anchored (agreed initially)
+        anchored_reading = reading_anchors.get(qid)
+        anchor_warning = ""
+        if anchored_reading:
+            if language == "fr":
+                anchor_warning = f'''
+⚠ LECTURE FIGÉE: "{anchored_reading}"
+Cette lecture était en ACCORD INITIAL entre les deux correcteurs.
+Vous DEVEZ utiliser cette lecture. N'en inventez pas une autre.'''
+            else:
+                anchor_warning = f'''
+⚠ ANCHORED READING: "{anchored_reading}"
+This reading was in INITIAL AGREEMENT between both graders.
+You MUST use this reading. Do not invent another one.'''
 
         # Format evolution
         if len(q_evolution) >= 2:
@@ -946,34 +1158,43 @@ def build_unified_ultimatum_prompt(
 
 ─── QUESTION {qid} (TOUJOURS EN DÉSACCORD) ───
 Texte: {q.get('text', 'N/A')}
-Critères: {q.get('criteria', 'Non spécifiés')}
 Barème: {llm1.get('max_points', 1)} point(s)
 
 - Votre note actuelle: {llm1.get('grade', 0)}/{llm1.get('max_points', 1)}
 - Note de l'autre: {llm2.get('grade', 0)}/{llm2.get('max_points', 1)}
 - {evolution_text}
+{anchor_warning}
 """
         else:
             questions_section += f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ─── QUESTION {qid} (STILL IN DISAGREEMENT) ───
 Text: {q.get('text', 'N/A')}
-Criteria: {q.get('criteria', 'Not specified')}
 Scale: {llm1.get('max_points', 1)} point(s)
 
 - Your current grade: {llm1.get('grade', 0)}/{llm1.get('max_points', 1)}
 - Other's grade: {llm2.get('grade', 0)}/{llm2.get('max_points', 1)}
 - {evolution_text}
+{anchor_warning}
 """
 
-    # Build questions JSON format
+    # Build questions JSON format with reading constraints
     questions_json = ""
     for d in disagreements:
         qid = d["question_id"]
         llm1 = d.get("llm1", {})
+        anchored_reading = reading_anchors.get(qid)
+
+        if anchored_reading:
+            # Reading is anchored - must use it
+            reading_field = f'"student_answer_read": "{anchored_reading}",'
+        else:
+            # Reading not anchored - can re-read but must justify
+            reading_field = '''"student_answer_read": "<votre lecture - RELISEZ sur l'image>",'''
+
         questions_json += f'''
     "{qid}": {{
-      "student_answer_read": "<votre lecture finale>",
+      {reading_field}
       "grade": <note finale>,
       "max_points": {llm1.get('max_points', 1)},
       "confidence": <0.0-1.0>,
@@ -992,13 +1213,17 @@ Le désaccord PERSISTE après vérification. Vous devez prendre une DÉCISION FI
 {name_section}{questions_section}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-─── VOS OPTIONS ───
-Pour CHAQUE point en désaccord, vous devez choisir:
-- Option A: Accepter l'autre note/nom → expliquez pourquoi cette analyse est meilleure
-- Option B: Maintenir votre note/nom → arguments précis qui justifient votre position
-- SI INCERTAIN: abaissez votre CONFIANCE (< 0.5)
+─── RÈGLES CRITIQUES ───
+1. Ne changez votre note QUE si vous êtes CONVAINCU d'une erreur
+2. ⚠ INTERDICTION D'INVENTER une nouvelle lecture
+3. Si une lecture est figée (en accord initial), vous DEVEZ l'utiliser
+4. Si vous changez de position, justifiez pourquoi votre analyse initiale était erronée
 
-⚠ INTERDICTION: Ne choisissez pas au hasard. Chaque décision doit être justifiée.
+─── VOS OPTIONS ───
+- Option A: Accepter l'autre note → expliquez pourquoi leur analyse est meilleure
+- Option B: Maintenir votre note → arguments précis justifiant votre position
+
+⚠ LANGUE: Répondez IMPÉRATIVEMENT EN FRANÇAIS dans tous les champs texte (reasoning, feedback).
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1016,13 +1241,15 @@ Disagreement PERSISTS after verification. You must make a FINAL DECISION.
 {name_section}{questions_section}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-─── YOUR OPTIONS ───
-For EACH point in disagreement, you must choose:
-- Option A: Accept the other grade/name → explain why this analysis is better
-- Option B: Maintain your grade/name → precise arguments supporting your position
-- IF UNCERTAIN: lower your CONFIDENCE (< 0.5)
+─── CRITICAL RULES ───
+1. Only change your grade if you are CONVINCED of an error
+2. ⚠ FORBIDDEN TO INVENT a new reading
+3. If a reading is anchored (initially agreed), you MUST use it
+4. If you change position, justify why your initial analysis was wrong
 
-⚠ FORBIDDEN: Don't choose randomly. Every decision must be justified.
+─── YOUR OPTIONS ───
+- Option A: Accept the other grade → explain why their analysis is better
+- Option B: Maintain your grade → precise arguments supporting your position
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

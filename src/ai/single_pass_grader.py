@@ -19,6 +19,7 @@ from dataclasses import dataclass
 class QuestionResult:
     """Result for a single question from single-pass grading."""
     question_id: str
+    question_text: str  # Detected question text (for auto-detect mode)
     location: str
     student_answer_read: str
     grade: float
@@ -29,6 +30,7 @@ class QuestionResult:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
+            "question_text": self.question_text,
             "location": self.location,
             "student_answer_read": self.student_answer_read,
             "grade": self.grade,
@@ -106,12 +108,15 @@ class SinglePassGrader:
         Returns:
             SinglePassResult with all question grades
         """
-        from config.prompts import build_multi_question_grading_prompt
+        from config.prompts import build_multi_question_grading_prompt, build_auto_detect_grading_prompt
 
         start_time = time.time()
 
-        # Build the prompt with second_reading option
-        prompt = build_multi_question_grading_prompt(questions, language, second_reading=second_reading)
+        # Build the prompt - use auto-detect if no questions provided
+        if not questions:
+            prompt = build_auto_detect_grading_prompt(language, second_reading=second_reading)
+        else:
+            prompt = build_multi_question_grading_prompt(questions, language, second_reading=second_reading)
 
         # Add multi-page context
         num_pages = len(image_paths)
@@ -270,37 +275,74 @@ class SinglePassGrader:
         duration_ms: float,
         parse_errors: List[str]
     ) -> SinglePassResult:
-        """Build SinglePassResult from parsed data."""
+        """Build SinglePassResult from parsed data.
+
+        If questions list is empty (auto-detect mode), uses all questions
+        returned by the LLM. Otherwise, only processes questions from the list.
+        """
         questions_result = {}
+        llm_questions = data.get("questions", {})
 
-        for q in questions:
-            qid = q["id"]
-            q_data = data.get("questions", {}).get(qid, {})
+        # Auto-detect mode: use all questions returned by LLM
+        if not questions:
+            for qid, q_data in llm_questions.items():
+                # Skip non-question keys
+                if not (qid.startswith('Q') and qid[1:].replace('_', '').isdigit()):
+                    continue
 
-            # Get max_points from LLM response (detected) or fallback to question default
-            max_points = float(q_data.get("max_points", q.get("max_points", 1.0)))
+                max_points = float(q_data.get("max_points", 1.0))
+                grade = float(q_data.get("grade", 0))
+                grade = max(0, min(grade, max_points))
 
-            # Validate grade is within bounds
-            grade = float(q_data.get("grade", 0))
-            grade = max(0, min(grade, max_points))
+                questions_result[qid] = QuestionResult(
+                    question_id=qid,
+                    question_text=q_data.get("question_text", ""),
+                    location=q_data.get("location", ""),
+                    student_answer_read=q_data.get("student_answer_read", ""),
+                    grade=grade,
+                    max_points=max_points,
+                    confidence=float(q_data.get("confidence", 0.5)),
+                    reasoning=q_data.get("reasoning", ""),
+                    feedback=q_data.get("feedback", "")
+                )
+        else:
+            # Normal mode: process only questions from the list
+            for q in questions:
+                qid = q["id"]
+                q_data = llm_questions.get(qid, {})
 
-            questions_result[qid] = QuestionResult(
-                question_id=qid,
-                location=q_data.get("location", ""),
-                student_answer_read=q_data.get("student_answer_read", ""),
-                grade=grade,
-                max_points=max_points,
-                confidence=float(q_data.get("confidence", 0.5)),
-                reasoning=q_data.get("reasoning", ""),
-                feedback=q_data.get("feedback", "")
-            )
+                # Get max_points from LLM response (detected) or fallback to question default
+                max_points = float(q_data.get("max_points", q.get("max_points", 1.0)))
+
+                # Validate grade is within bounds
+                grade = float(q_data.get("grade", 0))
+                grade = max(0, min(grade, max_points))
+
+                questions_result[qid] = QuestionResult(
+                    question_id=qid,
+                    question_text=q_data.get("question_text", q.get("text", "")),
+                    location=q_data.get("location", ""),
+                    student_answer_read=q_data.get("student_answer_read", ""),
+                    grade=grade,
+                    max_points=max_points,
+                    confidence=float(q_data.get("confidence", 0.5)),
+                    reasoning=q_data.get("reasoning", ""),
+                    feedback=q_data.get("feedback", "")
+                )
+
+        # In auto-detect mode, success means we detected at least one question
+        # In normal mode, success means we got all expected questions
+        if not questions:
+            parse_success = len(questions_result) > 0
+        else:
+            parse_success = len(questions_result) == len(questions)
 
         return SinglePassResult(
             student_name=data.get("student_name"),
             questions=questions_result,
             overall_comments=data.get("overall_comments", ""),
             raw_response=raw_response,
-            parse_success=len(questions_result) == len(questions),
+            parse_success=parse_success,
             parse_errors=parse_errors,
             duration_ms=duration_ms
         )

@@ -18,24 +18,23 @@ Options:
 """
 
 import asyncio
-import re
 import sys
 import argparse
 from pathlib import Path
-from typing import List, Dict
+from typing import Dict
 
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.table import Table
 from rich.panel import Panel
 
 from core.session import GradingSessionOrchestrator
-from core.workflow import CorrectionWorkflow, WorkflowConfig, WorkflowCallbacks
+from core.workflow import WorkflowCallbacks
+from core.workflow_state import CorrectionState, WorkflowPhase
 from utils.sorting import natural_sort_key
 from config.settings import get_settings
 from config.constants import DEFAULT_PARALLEL_COPIES
-from ai import create_ai_provider
 from interaction.cli import CLI
+from interaction.live_progress import LiveProgressDisplay
 
 
 def check_api_key() -> bool:
@@ -190,6 +189,151 @@ def create_workflow_callbacks(
     )
 
 
+# ==============================================================================
+# Helper functions for command_correct
+# ==============================================================================
+
+def create_disagreement_callback(
+    cli: CLI,
+    state: CorrectionState,
+    orchestrator,
+    jurisprudence: Dict
+):
+    """
+    Create disagreement callback for grading conflicts.
+
+    Args:
+        cli: CLI instance
+        state: CorrectionState for language/mode
+        orchestrator: GradingSessionOrchestrator
+        jurisprudence: Mutable dict for storing decisions
+    """
+    async def callback(
+        question_id: str,
+        question_text: str,
+        llm1_name: str,
+        llm1_result: dict,
+        llm2_name: str,
+        llm2_result: dict,
+        max_points: float
+    ) -> tuple:
+        grade1 = llm1_result.get('grade', 0) or 0
+        grade2 = llm2_result.get('grade', 0) or 0
+        average_grade = (grade1 + grade2) / 2
+
+        # Check jurisprudence
+        if question_id in jurisprudence:
+            past = jurisprudence[question_id]
+            cli.console.print(f"    [dim]📜 Jurisprudence: décision passée = {past['decision']:.1f}/{max_points}[/dim]")
+
+        # Auto mode: use average
+        if state.auto_mode:
+            cli.console.print(f"    [yellow]⚠ {llm1_name}: {grade1} vs {llm2_name}: {grade2} → moyenne: {average_grade:.2f}[/yellow]")
+            jurisprudence[question_id] = {
+                'question_text': question_text,
+                'decision': average_grade,
+                'llm1_grade': grade1,
+                'llm2_grade': grade2,
+                'max_points': max_points,
+                'auto': True
+            }
+            if hasattr(orchestrator.ai, 'set_jurisprudence'):
+                orchestrator.ai.set_jurisprudence(jurisprudence)
+            return average_grade, "merge"
+
+        # Interactive mode
+        llm1_result['max_points'] = max_points
+        llm2_result['max_points'] = max_points
+        try:
+            chosen_grade, feedback_source = cli.show_disagreement(
+                question_id=question_id or "Question",
+                question_text=question_text,
+                llm1_name=llm1_name,
+                llm1_result=llm1_result,
+                llm2_name=llm2_name,
+                llm2_result=llm2_result,
+                language=state.language
+            )
+            jurisprudence[question_id] = {
+                'question_text': question_text,
+                'decision': chosen_grade,
+                'llm1_grade': grade1,
+                'llm2_grade': grade2,
+                'max_points': max_points,
+                'auto': False,
+                'feedback_source': feedback_source
+            }
+            if hasattr(orchestrator.ai, 'set_jurisprudence'):
+                orchestrator.ai.set_jurisprudence(jurisprudence)
+            return chosen_grade, feedback_source
+        except (EOFError, KeyboardInterrupt):
+            cli.console.print(f"    [dim]Utilisation de la moyenne: {average_grade:.2f}[/dim]")
+            jurisprudence[question_id] = {
+                'question_text': question_text,
+                'decision': average_grade,
+                'llm1_grade': grade1,
+                'llm2_grade': grade2,
+                'max_points': max_points,
+                'auto': True
+            }
+            if hasattr(orchestrator.ai, 'set_jurisprudence'):
+                orchestrator.ai.set_jurisprudence(jurisprudence)
+            return average_grade, "merge"
+
+    return callback
+
+
+def create_name_disagreement_callback(cli: CLI, state: CorrectionState):
+    """Create callback for name detection conflicts."""
+    async def callback(llm1_result: Dict, llm2_result: Dict) -> str:
+        if state.auto_mode:
+            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+                return llm1_result.get('name') or "Inconnu"
+            return llm2_result.get('name') or "Inconnu"
+
+        try:
+            return cli.show_name_disagreement(
+                llm1_result=llm1_result,
+                llm2_result=llm2_result,
+                language=state.language
+            )
+        except (EOFError, KeyboardInterrupt):
+            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+                return llm1_result.get('name') or "Inconnu"
+            return llm2_result.get('name') or "Inconnu"
+
+    return callback
+
+
+def create_reading_disagreement_callback(cli: CLI, state: CorrectionState):
+    """Create callback for reading (transcription) conflicts."""
+    async def callback(
+        llm1_result: Dict,
+        llm2_result: Dict,
+        question_text: str,
+        image_path
+    ) -> str:
+        if state.auto_mode:
+            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+                return llm1_result.get('reading', '')
+            return llm2_result.get('reading', '')
+
+        try:
+            return cli.show_reading_disagreement(
+                llm1_result=llm1_result,
+                llm2_result=llm2_result,
+                question_text=question_text,
+                image_path=image_path,
+                language=state.language
+            )
+        except (EOFError, KeyboardInterrupt):
+            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
+                return llm1_result.get('reading', '')
+            return llm2_result.get('reading', '')
+
+    return callback
+
+
 async def command_correct(args):
     """Run correction on PDF files with interactive workflow."""
     if not check_api_key():
@@ -226,160 +370,16 @@ async def command_correct(args):
 
     cli.show_info(f"Found {len(pdf_paths)} PDF file(s) to process")
 
-    # Container for language and auto mode (will be updated after analysis)
-    lang_container = {'language': 'fr', 'auto_mode': args.auto}
+    # Initialize workflow state (replaces mutable dicts)
+    state = CorrectionState(
+        language='fr',
+        auto_mode=args.auto,
+        phase=WorkflowPhase.INITIALIZATION
+    )
 
     # Jurisprudence: store user decisions to inform future grading
-    # Format: {question_id: {'decision': grade, 'reasoning': str, 'llm1_grade': x, 'llm2_grade': y}}
-    jurisprudence = {}
-
-    # Create disagreement callback for comparison mode
-    async def disagreement_callback(
-        question_id: str,
-        question_text: str,
-        llm1_name: str,
-        llm1_result: dict,
-        llm2_name: str,
-        llm2_result: dict,
-        max_points: float
-    ) -> float:
-        """Callback for when LLMs disagree - ask user for decision."""
-        nonlocal jurisprudence
-
-        # Calculate average as fallback
-        grade1 = llm1_result.get('grade', 0) or 0
-        grade2 = llm2_result.get('grade', 0) or 0
-        average_grade = (grade1 + grade2) / 2
-
-        # Check if we have jurisprudence for this question
-        if question_id in jurisprudence:
-            past = jurisprudence[question_id]
-            # Use past decision as reference
-            cli.console.print(f"    [dim]📜 Jurisprudence: décision passée = {past['decision']:.1f}/{max_points}[/dim]")
-
-        # In auto mode, return average without prompting
-        if lang_container.get('auto_mode', False):
-            cli.console.print(f"    [yellow]⚠ {llm1_name}: {grade1} vs {llm2_name}: {grade2} → moyenne: {average_grade:.2f}[/yellow]")
-            # Store in jurisprudence (only for this specific question)
-            jurisprudence[question_id] = {
-                'question_text': question_text,  # Store for comparison
-                'decision': average_grade,
-                'llm1_grade': grade1,
-                'llm2_grade': grade2,
-                'max_points': max_points,
-                'auto': True,
-                'reasoning_llm1': llm1_result.get('internal_reasoning', '')[:200],
-                'reasoning_llm2': llm2_result.get('internal_reasoning', '')[:200]
-            }
-            # Update AI provider's jurisprudence
-            if hasattr(orchestrator.ai, 'set_jurisprudence'):
-                orchestrator.ai.set_jurisprudence(jurisprudence)
-            return average_grade, "merge"  # Return tuple for consistency
-
-        # Add max_points to results for display
-        llm1_result['max_points'] = max_points
-        llm2_result['max_points'] = max_points
-
-        try:
-            chosen_grade, feedback_source = cli.show_disagreement(
-                question_id=question_id or "Question",
-                question_text=question_text,
-                llm1_name=llm1_name,
-                llm1_result=llm1_result,
-                llm2_name=llm2_name,
-                llm2_result=llm2_result,
-                language=lang_container['language']
-            )
-            # Store in jurisprudence for future reference (only for this specific question)
-            jurisprudence[question_id] = {
-                'question_text': question_text,  # Store for comparison
-                'decision': chosen_grade,
-                'llm1_grade': grade1,
-                'llm2_grade': grade2,
-                'max_points': max_points,
-                'auto': False,
-                'feedback_source': feedback_source,  # Track which feedback was chosen
-                'reasoning_llm1': llm1_result.get('internal_reasoning', '')[:200],
-                'reasoning_llm2': llm2_result.get('internal_reasoning', '')[:200]
-            }
-            # Update AI provider's jurisprudence
-            if hasattr(orchestrator.ai, 'set_jurisprudence'):
-                orchestrator.ai.set_jurisprudence(jurisprudence)
-            return chosen_grade, feedback_source
-        except (EOFError, KeyboardInterrupt):
-            # No interactive input available - use average
-            cli.console.print(f"    [dim]Utilisation de la moyenne: {average_grade:.2f}[/dim]")
-            jurisprudence[question_id] = {
-                'question_text': question_text,  # Store for comparison
-                'decision': average_grade,
-                'llm1_grade': grade1,
-                'llm2_grade': grade2,
-                'max_points': max_points,
-                'auto': True,
-                'reasoning_llm1': llm1_result.get('internal_reasoning', '')[:200],
-                'reasoning_llm2': llm2_result.get('internal_reasoning', '')[:200]
-            }
-            # Update AI provider's jurisprudence
-            if hasattr(orchestrator.ai, 'set_jurisprudence'):
-                orchestrator.ai.set_jurisprudence(jurisprudence)
-            return average_grade, "merge"
-
-    # Name disagreement callback
-    async def name_disagreement_callback(llm1_result: Dict, llm2_result: Dict) -> str:
-        """Handle name disagreements by asking user."""
-        # In auto mode, use the name with higher confidence
-        if lang_container.get('auto_mode', False):
-            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
-                return llm1_result.get('name') or "Inconnu"
-            else:
-                return llm2_result.get('name') or "Inconnu"
-
-        # Interactive mode - ask user
-        try:
-            chosen_name = cli.show_name_disagreement(
-                llm1_result=llm1_result,
-                llm2_result=llm2_result,
-                language=lang_container['language']
-            )
-            return chosen_name
-        except (EOFError, KeyboardInterrupt):
-            # No interactive input - use higher confidence
-            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
-                return llm1_result.get('name') or "Inconnu"
-            else:
-                return llm2_result.get('name') or "Inconnu"
-
-    # Reading disagreement callback (for Consensus de Lecture)
-    async def reading_disagreement_callback(
-        llm1_result: Dict,
-        llm2_result: Dict,
-        question_text: str,
-        image_path
-    ) -> str:
-        """Handle reading disagreements by asking user."""
-        # In auto mode, use the reading with higher confidence
-        if lang_container.get('auto_mode', False):
-            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
-                return llm1_result.get('reading', '')
-            else:
-                return llm2_result.get('reading', '')
-
-        # Interactive mode - ask user
-        try:
-            chosen_reading = cli.show_reading_disagreement(
-                llm1_result=llm1_result,
-                llm2_result=llm2_result,
-                question_text=question_text,
-                image_path=image_path,
-                language=lang_container['language']
-            )
-            return chosen_reading
-        except (EOFError, KeyboardInterrupt):
-            # No interactive input - use higher confidence
-            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
-                return llm1_result.get('reading', '')
-            else:
-                return llm2_result.get('reading', '')
+    # (kept as mutable dict for compatibility with orchestrator.ai.set_jurisprudence)
+    jurisprudence: Dict = {}
 
     # Validate required options
     if not args.pages_per_student:
@@ -388,12 +388,12 @@ async def command_correct(args):
         cli.console.print("[dim]Utilisez --help pour plus d'informations[/dim]")
         return 1
 
-    # Create orchestrator with callbacks
+    # Create orchestrator with callbacks (using helper functions)
     orchestrator = GradingSessionOrchestrator(
         pdf_paths,
-        disagreement_callback=disagreement_callback,
-        name_disagreement_callback=name_disagreement_callback,
-        reading_disagreement_callback=reading_disagreement_callback,
+        disagreement_callback=None,  # Will be set after orchestrator is created
+        name_disagreement_callback=None,
+        reading_disagreement_callback=None,
         skip_reading_consensus=args.skip_reading,
         force_single_llm=args.single,
         pages_per_student=args.pages_per_student,
@@ -401,14 +401,23 @@ async def command_correct(args):
         parallel=args.parallel
     )
 
-    # Show which LLMs are being used (for verification)
+    # Create callbacks with access to orchestrator
+    disagreement_callback = create_disagreement_callback(cli, state, orchestrator, jurisprudence)
+    name_disagreement_callback = create_name_disagreement_callback(cli, state)
+    reading_disagreement_callback = create_reading_disagreement_callback(cli, state)
+
+    # Set callbacks on orchestrator
+    orchestrator.disagreement_callback = disagreement_callback
+    orchestrator.name_disagreement_callback = name_disagreement_callback
+    orchestrator.reading_disagreement_callback = reading_disagreement_callback
+
+    # Show which LLMs are being used
     if hasattr(orchestrator.ai, 'providers'):
         cli.console.print(f"\n[bold cyan]🤖 Modèles utilisés (mode comparaison):[/bold cyan]")
         for i, (name, provider) in enumerate(orchestrator.ai.providers):
             cli.console.print(f"  LLM{i+1}: [yellow]{name}[/yellow]")
         cli.console.print("")
     else:
-        # Single LLM mode
         model_name = getattr(orchestrator.ai, 'model', None) or get_settings().gemini_model
         cli.console.print(f"\n[bold cyan]🤖 Modèle utilisé (mode simple):[/bold cyan]")
         cli.console.print(f"  [yellow]{model_name}[/yellow]")
@@ -417,6 +426,7 @@ async def command_correct(args):
     # ============================================================
     # Phase 1: Analyze
     # ============================================================
+    state = state.with_phase(WorkflowPhase.ANALYSIS)
     cli.show_info("Analyzing copies...")
     cli.show_info("This may take a few minutes depending on API response time...")
 
@@ -426,9 +436,9 @@ async def command_correct(args):
         cli.show_error(f"Analysis failed: {e}")
         return 1
 
-    # Get detected language and update callback container
+    # Get detected language and update state
     language = analysis.get('language', 'fr')
-    lang_container['language'] = language
+    state = state.with_language(language)
 
     # Show analysis result in detected language
     if language == 'fr':
@@ -440,22 +450,31 @@ async def command_correct(args):
     # Phase 2: Setup Scale (will be detected during grading)
     # ============================================================
 
-    # Check if we have any questions detected
-    if not analysis['questions']:
+    # Check if questions were detected or will be detected during grading
+    questions_detected_during_grading = analysis.get('questions_detected_during_grading', False)
+
+    if not analysis['questions'] and not questions_detected_during_grading:
         cli.show_error("Aucune question détectée. L'analyse a peut-être échoué.")
         return 1
 
-    # Use default scale of 1.0 for each question
-    # The actual scale will be detected by the LLM during grading
-    scale = {q: 1.0 for q in analysis['questions'].keys()}
+    if questions_detected_during_grading:
+        # In individual mode, questions will be detected during grading
+        cli.show_info("Questions et barème seront détectés automatiquement pendant la correction.")
+        # Use empty scale - will be populated during grading
+        scale = {}
+    else:
+        # Use default scale of 1.0 for each question
+        # The actual scale will be detected by the LLM during grading
+        scale = {q: 1.0 for q in analysis['questions'].keys()}
+        cli.show_info(f"Questions détectées: {list(analysis['questions'].keys())}")
+        cli.show_info("Le barème sera détecté automatiquement pendant la correction.")
 
     orchestrator.confirm_scale(scale)
-    cli.show_info(f"Questions détectées: {list(analysis['questions'].keys())}")
-    cli.show_info("Le barème sera détecté automatiquement pendant la correction.")
 
     # ============================================================
     # Phase 3: Grade All Copies (with live display)
     # ============================================================
+    state = state.with_phase(WorkflowPhase.GRADING)
     console = cli.console
     is_comparison_mode = orchestrator._comparison_mode
 
@@ -716,26 +735,48 @@ async def command_correct(args):
             providers_info.append(f"[cyan]{name}[/cyan]")
         console.print(f"\n[bold magenta]🤖 Double correction: {' vs '.join(providers_info)}[/bold magenta]")
 
-    # Animated spinner during grading
-    with console.status("[bold cyan]⠋ Correction en cours...[/bold cyan]", spinner="dots") as status:
-        # Update status with copy count as copies are processed
-        copies_completed = [0]  # Use list to allow mutation in nested function
+    # Create live progress display for parallel processing visibility
+    total_copies = len(orchestrator.session.copies)
+    live_display = LiveProgressDisplay(console, total_copies=total_copies, language=language)
 
-        async def status_callback(event_type: str, data: dict):
-            """Wrapper callback that updates status spinner."""
-            # Update spinner text with progress
-            if event_type == 'copy_done':
-                copies_completed[0] += 1
-                total = data.get('total_copies', 0)
-                status.update(f"[bold cyan]⠋ Correction: {copies_completed[0]}/{total} copies[/bold cyan]")
-            # Call original callback
+    with live_display:
+        async def live_callback(event_type: str, data: dict):
+            """Callback that updates live display and shows detailed progress."""
+            # Update live display
+            if event_type == 'copy_start':
+                copy_idx = data.get('copy_index', 0)
+                student = data.get('student_name', '???')
+                questions = data.get('questions', [])
+                live_display.mark_processing(
+                    copy_idx,
+                    student_name=student,
+                    questions_total=len(questions) if questions else 0
+                )
+
+            elif event_type == 'question_done':
+                copy_idx = data.get('copy_index', 0)
+                if copy_idx:
+                    live_display.mark_question_done(copy_idx)
+
+            elif event_type == 'copy_done':
+                copy_idx = data.get('copy_index', 0)
+                score = data.get('total_score', 0) or 0
+                max_score = data.get('max_score', 20) or 20
+                live_display.mark_done(copy_idx, score, max_score)
+
+            elif event_type == 'copy_error':
+                copy_idx = data.get('copy_index', 0)
+                error = data.get('error', 'Erreur')
+                live_display.mark_error(copy_idx, error)
+
+            # Also call original progress callback for detailed display
             await progress_callback(event_type, data)
 
         # Use dual-LLM grading when in comparison mode, otherwise use per-question
         if is_comparison_mode and hasattr(orchestrator.ai, 'grade_copy'):
-            graded = await orchestrator.grade_all(progress_callback=status_callback)
+            graded = await orchestrator.grade_all(progress_callback=live_callback)
         else:
-            graded = await orchestrator.grade_all(progress_callback=status_callback)
+            graded = await orchestrator.grade_all(progress_callback=live_callback)
 
     # Show final summary table
     console.print(f"\n[bold green]✓ {len(graded)} copie(s) corrigée(s)[/bold green]")
@@ -762,6 +803,7 @@ async def command_correct(args):
     # ============================================================
     # Phase 4: Review Doubts (if not auto mode)
     # ============================================================
+    state = state.with_phase(WorkflowPhase.VERIFICATION)
     if not args.auto:
         doubts = orchestrator.get_doubts(threshold=0.7)
         if doubts:
@@ -773,12 +815,14 @@ async def command_correct(args):
     # ============================================================
     # Phase 5: Calibration (internal consistency check)
     # ============================================================
+    state = state.with_phase(WorkflowPhase.CALIBRATION)
     # Run calibration phase silently
     await orchestrator._calibration_phase()
 
     # ============================================================
     # Phase 6: Export
     # ============================================================
+    state = state.with_phase(WorkflowPhase.EXPORT)
     cli.show_info("Exporting results...")
 
     exports = await orchestrator.export()
@@ -791,6 +835,7 @@ async def command_correct(args):
     # ============================================================
     # Show Summary
     # ============================================================
+    state = state.with_phase(WorkflowPhase.COMPLETE)
     scores = [g.total_score for g in graded]
 
     # Compact summary of all copies

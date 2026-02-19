@@ -130,7 +130,11 @@ class PDFReader:
         if page_num is not None:
             return self.doc[page_num].get_text()
 
-        return self.doc.get_text()
+        # Extract text from all pages
+        text_parts = []
+        for page in self.doc:
+            text_parts.append(page.get_text())
+        return "\n".join(text_parts)
 
     def get_page_text_blocks(self, page_num: int) -> List[Dict]:
         """
