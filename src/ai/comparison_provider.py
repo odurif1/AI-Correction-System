@@ -684,7 +684,21 @@ This information is provided as a reference to help you. You remain free in your
                     "llm2": final_results[1].get("confidence")
                 }
 
+                # Detect flip-flop in ultimatum (compare verification vs ultimatum grades)
+                verification_diff = verified_grades[0] - verified_grades[1]
+                ultimatum_diff = final_grades[0] - final_grades[1]
+                is_ultimatum_swap = (
+                    (verification_diff > 0 and ultimatum_diff < 0) or
+                    (verification_diff < 0 and ultimatum_diff > 0)
+                )
+                ultimatum_flip_flop = (
+                    abs(verification_diff) >= 0.5 and
+                    abs(ultimatum_diff) >= 0.5 and
+                    is_ultimatum_swap
+                )
+
                 comparison_info["after_ultimatum"] = {
+                    "flip_flop_detected": ultimatum_flip_flop,
                     "llm1": build_llm_audit_info(final_results[0], self.providers[0][0],
                                                  prompt_sent=ultimatum_prompts.get("llm1")),
                     "llm2": build_llm_audit_info(final_results[1], self.providers[1][0],
@@ -1223,6 +1237,14 @@ Original question: {kwargs.get('question_text', '')}"""
                 }
             }
 
+        # Get token usage from providers (for this unified call)
+        tokens_used = {}
+        for idx, (name, provider) in enumerate(self.providers):
+            if hasattr(provider, 'get_last_call_tokens'):
+                last_tokens = provider.get_last_call_tokens()
+                if last_tokens:
+                    tokens_used[f"llm{idx+1}"] = last_tokens
+
         # Build audit info
         audit_info = {
             "type": "unified",
@@ -1231,6 +1253,7 @@ Original question: {kwargs.get('question_text', '')}"""
             "name_verified": name_disagreement is not None,
             "remaining_disagreements": [d["question_id"] for d in remaining_disagreements],
             "phases": 1,
+            "tokens": tokens_used if tokens_used else None,
             "details": verification_details
         }
 
@@ -1505,16 +1528,35 @@ Original question: {kwargs.get('question_text', '')}"""
             q1 = llm1_questions.get(qid, {})
             q2 = llm2_questions.get(qid, {})
 
+            # Detect flip-flop in ultimatum (compare verification vs ultimatum grades)
+            verification_grade1 = d["llm1"]["grade"]
+            verification_grade2 = d["llm2"]["grade"]
+            ultimatum_grade1 = q1.get("grade", verification_grade1) or verification_grade1
+            ultimatum_grade2 = q2.get("grade", verification_grade2) or verification_grade2
+
+            verification_diff = verification_grade1 - verification_grade2
+            ultimatum_diff = ultimatum_grade1 - ultimatum_grade2
+            is_ultimatum_swap = (
+                (verification_diff > 0 and ultimatum_diff < 0) or
+                (verification_diff < 0 and ultimatum_diff > 0)
+            )
+            ultimatum_flip_flop = (
+                abs(verification_diff) >= 0.5 and
+                abs(ultimatum_diff) >= 0.5 and
+                is_ultimatum_swap
+            )
+
             ultimatum_details[qid] = {
+                "flip_flop_detected": ultimatum_flip_flop,
                 "responses": {
                     provider_names[0]: {
-                        "grade": q1.get("grade"),
+                        "grade": ultimatum_grade1,
                         "confidence": q1.get("confidence"),
                         "reasoning": q1.get("reasoning", ""),
                         "reading": q1.get("student_answer_read", "")
                     },
                     provider_names[1]: {
-                        "grade": q2.get("grade"),
+                        "grade": ultimatum_grade2,
                         "confidence": q2.get("confidence"),
                         "reasoning": q2.get("reasoning", ""),
                         "reading": q2.get("student_answer_read", "")
@@ -1522,11 +1564,20 @@ Original question: {kwargs.get('question_text', '')}"""
                 }
             }
 
+        # Get token usage from providers (for this ultimatum call)
+        tokens_used = {}
+        for idx, (name, provider) in enumerate(self.providers):
+            if hasattr(provider, 'get_last_call_tokens'):
+                last_tokens = provider.get_last_call_tokens()
+                if last_tokens:
+                    tokens_used[f"llm{idx+1}"] = last_tokens
+
         audit_info = {
             "type": "unified_ultimatum",
             "prompts_sent": prompts_sent,
             "questions_verified": list(final_results.keys()),
             "phases": 2,
+            "tokens": tokens_used if tokens_used else None,
             "details": ultimatum_details
         }
 

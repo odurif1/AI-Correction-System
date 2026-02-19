@@ -237,6 +237,19 @@ class BaseProvider(ABC):
             "calls": len(self.call_history)
         }
 
+    def get_last_call_tokens(self) -> Optional[Dict[str, int]]:
+        """Get token usage from the most recent call."""
+        if not self.call_history:
+            return None
+        last = self.call_history[-1]
+        if last.prompt_tokens is None and last.completion_tokens is None:
+            return None
+        return {
+            "prompt": last.prompt_tokens,
+            "completion": last.completion_tokens,
+            "total": (last.prompt_tokens or 0) + (last.completion_tokens or 0)
+        }
+
     # ==================== ABSTRACT METHODS ====================
 
     @abstractmethod
