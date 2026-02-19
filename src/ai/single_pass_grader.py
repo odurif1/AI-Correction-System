@@ -286,8 +286,13 @@ class SinglePassGrader:
         # Auto-detect mode: use all questions returned by LLM
         if not questions:
             for qid, q_data in llm_questions.items():
-                # Skip non-question keys
-                if not (qid.startswith('Q') and qid[1:].replace('_', '').isdigit()):
+                # Skip non-question keys - accept Q1, q1, Q_1, Q1a, etc.
+                qid_upper = qid.upper()
+                if not (qid_upper.startswith('Q') and len(qid) > 1):
+                    continue
+                # Must have at least one digit after Q
+                rest = qid_upper[1:].replace('_', '').replace('.', '')
+                if not rest or not any(c.isdigit() for c in rest):
                     continue
 
                 max_points = float(q_data.get("max_points", 1.0))
