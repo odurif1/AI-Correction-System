@@ -963,8 +963,6 @@ class GradingSessionOrchestrator:
         console = Console()
         pages_per_student = self._pages_per_student
 
-        console.print(f"[bold cyan]📚 Mode Lecture Individuelle[/bold cyan] ({pages_per_student} pages/élève)")
-
         copy_index = 0
 
         for pdf_path in self.pdf_paths:
@@ -979,7 +977,6 @@ class GradingSessionOrchestrator:
                 ranges.append((start, end))
 
             num_students = len(ranges)
-            console.print(f"  [SPLIT] {Path(pdf_path).name}: {total_pages} pages → {num_students} copies")
 
             # Create temporary directory for split PDFs
             split_dir = Path(self.store.session_dir) / "splits"
@@ -991,7 +988,6 @@ class GradingSessionOrchestrator:
             # Analyze each split PDF
             for i, split_path in enumerate(split_paths):
                 copy_index += 1
-                console.print(f"\n  [bold]📄 Copie {copy_index}/{num_students}[/bold] (pages {ranges[i][0]+1}-{ranges[i][1]+1})")
 
                 # Analyze this single copy
                 copy = await self._analyze_single_copy(

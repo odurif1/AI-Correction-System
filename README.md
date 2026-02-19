@@ -532,6 +532,32 @@ mypy src/
 
 ## Améliorations Récentes
 
+### v2.2 - Précision et Simplicité
+
+**Analyse des Désaccords Simplifiée**
+- **SequenceMatcher** (seuil 0.8) pour comparer les lectures objectivement
+- Détection "contains" si une lecture contient l'autre (partial)
+- Logique de flag:
+  - Si notes différentes → FLAG (toujours, type READING ou GRADE selon lecture)
+  - Si notes identiques + lecture similaire (ratio >= 0.8 ou partial) → PAS de flag
+  - Si notes identiques + lecture très différente → pas de flag (les LLMs sont d'accord)
+- Gestion des exposants Unicode (L¹ vs L⁻¹)
+
+**Détection Flip-Flop Robuste**
+- Correction du bug de portée des variables
+- Détection quand les LLMs échangent leurs positions après vérification
+- Seuil relatif: 10% du barème (pas fixe)
+
+**Prompts de Vérification Renforcés**
+- Lecture indépendante de la copie (pas copier l'autre)
+- Identification d'abord de la bonne réponse sur l'image
+- Considération des deux lectures pour auto-raisonnement
+- Feedback sobre et professionnel
+
+**Correction Auto-Detect**
+- Validation assouplie des IDs de questions (Q1, q1, Q1a, etc.)
+- Meilleure détection des questions en mode INDIVIDUAL
+
 ### v2.1 - UX et Fiabilité
 
 **Dashboard Temps Réel**

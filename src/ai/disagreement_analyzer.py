@@ -332,11 +332,12 @@ class DisagreementAnalyzer:
         grade_threshold = max_pts1 * GRADE_DIFF_PERCENTAGE
         grades_differ = grade_diff >= grade_threshold
 
-        # Compute reading similarity with SequenceMatcher
+        # Compute reading similarity (only matters if grades are identical)
         r1 = reading1.lower().strip()
         r2 = reading2.lower().strip()
-        reading_similar = (r1 == r2) or (r1 in r2) or (r2 in r1) or \
-                         (SequenceMatcher(None, r1, r2).ratio() >= READING_SIMILARITY_THRESHOLD)
+        ratio = SequenceMatcher(None, r1, r2).ratio()
+        partial = (r1 in r2) or (r2 in r1)
+        reading_similar = (ratio >= READING_SIMILARITY_THRESHOLD) or partial
 
         # Check FIRST: barème différent (scale difference)
         if scale_diff > 0.1:

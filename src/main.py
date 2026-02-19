@@ -367,8 +367,6 @@ async def command_correct(args):
         cli.show_error("No PDF files found to process.")
         return 1
 
-    cli.show_info(f"Found {len(pdf_paths)} PDF file(s) to process")
-
     # Initialize workflow state (replaces mutable dicts)
     state = CorrectionState(
         language='fr',
@@ -410,24 +408,34 @@ async def command_correct(args):
     orchestrator.name_disagreement_callback = name_disagreement_callback
     orchestrator.reading_disagreement_callback = reading_disagreement_callback
 
-    # Show which LLMs are being used
-    if hasattr(orchestrator.ai, 'providers'):
-        cli.console.print(f"\n[bold cyan]🤖 Modèles utilisés (mode comparaison):[/bold cyan]")
-        for i, (name, provider) in enumerate(orchestrator.ai.providers):
-            cli.console.print(f"  LLM{i+1}: [yellow]{name}[/yellow]")
-        cli.console.print("")
+    # Determine mode and LLM names for startup display
+    is_comparison_mode = hasattr(orchestrator.ai, 'providers')
+    if is_comparison_mode:
+        mode = "comparison"
+        llm_names = [name for name, _ in orchestrator.ai.providers]
+        llm1_name = llm_names[0] if len(llm_names) > 0 else None
+        llm2_name = llm_names[1] if len(llm_names) > 1 else None
     else:
+        mode = "single"
         model_name = getattr(orchestrator.ai, 'model', None) or get_settings().gemini_model
-        cli.console.print(f"\n[bold cyan]🤖 Modèle utilisé (mode simple):[/bold cyan]")
-        cli.console.print(f"  [yellow]{model_name}[/yellow]")
-        cli.console.print("")
+        llm1_name = model_name
+        llm2_name = None
+
+    # Show startup banner with configuration
+    cli.show_startup(
+        pdf_files=pdf_paths,
+        mode=mode,
+        pages_per_student=args.pages_per_student,
+        language='auto',
+        llm1_name=llm1_name,
+        llm2_name=llm2_name,
+        display_language='fr'
+    )
 
     # ============================================================
     # Phase 1: Analyze
     # ============================================================
     state = state.with_phase(WorkflowPhase.ANALYSIS)
-    cli.show_info("Analyzing copies...")
-    cli.show_info("This may take a few minutes depending on API response time...")
 
     try:
         analysis = await orchestrator.analyze_only()
@@ -439,11 +447,12 @@ async def command_correct(args):
     language = analysis.get('language', 'fr')
     state = state.with_language(language)
 
-    # Show analysis result in detected language
+    # Show analysis result
+    copies_count = analysis['copies_count']
     if language == 'fr':
-        cli.show_success(f"{analysis['copies_count']} copie(s) analysée(s)")
+        cli.console.print(f"[bold cyan]▶[/bold cyan] Analyse... [green]✓ {copies_count} copie(s) détectée(s)[/green]")
     else:
-        cli.show_success(f"Analyzed {analysis['copies_count']} copies")
+        cli.console.print(f"[bold cyan]▶[/bold cyan] Analyzing... [green]✓ {copies_count} copy/copies detected[/green]")
 
     # ============================================================
     # Phase 2: Setup Scale (will be detected during grading)
@@ -458,15 +467,11 @@ async def command_correct(args):
 
     if questions_detected_during_grading:
         # In individual mode, questions will be detected during grading
-        cli.show_info("Questions et barème seront détectés automatiquement pendant la correction.")
-        # Use empty scale - will be populated during grading
         scale = {}
     else:
         # Use default scale of 1.0 for each question
         # The actual scale will be detected by the LLM during grading
         scale = {q: 1.0 for q in analysis['questions'].keys()}
-        cli.show_info(f"Questions détectées: {list(analysis['questions'].keys())}")
-        cli.show_info("Le barème sera détecté automatiquement pendant la correction.")
 
     orchestrator.confirm_scale(scale)
 
@@ -475,11 +480,10 @@ async def command_correct(args):
     # ============================================================
     state = state.with_phase(WorkflowPhase.GRADING)
     console = cli.console
-    is_comparison_mode = orchestrator._comparison_mode
+    is_comparison_mode = hasattr(orchestrator.ai, 'providers')
 
     # Track LLM completion status for ordered display
     llm_status = {'results': {}, 'total': 2}
-    provider_names = [name for name, _ in orchestrator.ai.providers] if is_comparison_mode else []
 
     # Track token usage per copy
     prev_tokens = {'total': 0}
@@ -497,14 +501,15 @@ async def command_correct(args):
             name = data.get('student_name') or '???'
             llm_status['results'] = {}
             current_copy_questions.clear()  # Reset for new copy
-            console.print(f"\n[bold cyan]━━━ Copie {copy_idx}/{total} ━━━[/bold cyan] [yellow]{name}[/yellow]")
+            # Update live display instead of printing (handled by LiveProgressDisplay)
 
         elif event_type == 'question_start':
             q_id = data['question_id']
             q_idx = data['question_index']
             total_q = data['total_questions']
             llm_status['results'] = {}  # Reset for new question
-            console.print(f"  [dim]{q_id} ({q_idx}/{total_q})[/dim]", end="")
+            # Update live display via mark_current_activity
+            live_display.mark_current_activity(copy_idx, q_idx, total_q)
 
         elif event_type == 'llm_parallel_start':
             # Skip - too repetitive
@@ -616,11 +621,8 @@ async def command_correct(args):
 
         # ===== CONVERSATION MODE EVENTS =====
         elif event_type == 'single_pass_start':
-            num_q = data.get('num_questions', 0)
-            providers = data.get('providers', [])
-            # Shorten provider names for display
-            short_names = [p.replace("gemini-", "g-").replace("-preview", "") for p in providers]
-            console.print(f"  [dim]📤 Correction initiale: {len(providers)} LLM × {num_q} questions ({' vs '.join(short_names)})[/dim]")
+            # Skip verbose output - live display shows progress
+            pass
 
         elif event_type == 'single_pass_complete':
             providers = data.get('providers', [])
@@ -727,12 +729,6 @@ async def command_correct(args):
             }
 
     # Run grading with progress updates
-    if is_comparison_mode:
-        # Show models being used
-        providers_info = []
-        for name, _ in orchestrator.ai.providers:
-            providers_info.append(f"[cyan]{name}[/cyan]")
-        console.print(f"\n[bold magenta]🤖 Double correction: {' vs '.join(providers_info)}[/bold magenta]")
 
     # Create live progress display for parallel processing visibility
     total_copies = len(orchestrator.session.copies)
@@ -777,28 +773,6 @@ async def command_correct(args):
         else:
             graded = await orchestrator.grade_all(progress_callback=live_callback)
 
-    # Show final summary table
-    console.print(f"\n[bold green]✓ {len(graded)} copie(s) corrigée(s)[/bold green]")
-
-    # Build summary data with feedback
-    copies_data = []
-    for i, graded_copy in enumerate(graded, 1):
-        copy = next(
-            (c for c in orchestrator.session.copies if c.id == graded_copy.copy_id),
-            None
-        )
-        if copy:
-            copies_data.append({
-                'copy_number': i,
-                'student_name': copy.student_name,
-                'total': graded_copy.total_score,
-                'max': graded_copy.max_score,
-                'confidence': graded_copy.confidence,
-                'feedback': graded_copy.feedback
-            })
-
-    cli.show_all_copies_summary(copies_data, language=language)
-
     # ============================================================
     # Phase 4: Review Doubts (if not auto mode)
     # ============================================================
@@ -822,7 +796,6 @@ async def command_correct(args):
     # Phase 6: Export
     # ============================================================
     state = state.with_phase(WorkflowPhase.EXPORT)
-    cli.show_info("Exporting results...")
 
     exports = await orchestrator.export()
 
@@ -835,34 +808,61 @@ async def command_correct(args):
     # Show Summary
     # ============================================================
     state = state.with_phase(WorkflowPhase.COMPLETE)
+
+    # Gather stats for summary
     scores = [g.total_score for g in graded]
+    max_scores = [g.max_score for g in graded]
+    actual_max = max_scores[0] if max_scores and max_scores[0] > 0 else 20
+
+    # Calculate duration
+    duration = None
+    if hasattr(orchestrator.session, 'created_at'):
+        from datetime import datetime
+        if isinstance(orchestrator.session.created_at, datetime):
+            duration = (datetime.now() - orchestrator.session.created_at).total_seconds()
+
+    # Build top performers
+    top_performers = []
+    for i, g in enumerate(sorted(graded, key=lambda x: x.total_score, reverse=True)[:3], 1):
+        copy = next((c for c in orchestrator.session.copies if c.id == g.copy_id), None)
+        top_performers.append({
+            'name': copy.student_name if copy else f"Élève {i}",
+            'score': g.total_score,
+            'max': g.max_score
+        })
+
+    # Determine mode string for summary
+    if is_comparison_mode:
+        summary_mode = "comparison"  # Will be displayed as "Double LLM" or "Dual LLM"
+    else:
+        summary_mode = "single"  # Will be displayed as "LLM Simple" or "Single LLM"
 
     # Compact summary of all copies
     copies_data = []
     for i, g in enumerate(graded, 1):
-        # Find the copy to get student name
-        copy = next(
-            (c for c in orchestrator.session.copies if c.id == g.copy_id),
-            None
-        )
+        copy = next((c for c in orchestrator.session.copies if c.id == g.copy_id), None)
         student_name = copy.student_name if copy else None
-
         copies_data.append({
             'copy_number': i,
             'student_name': student_name,
             'total': g.total_score,
             'max': g.max_score,
-            'confidence': g.confidence
+            'confidence': g.confidence,
+            'feedback': g.feedback
         })
 
     cli.show_all_copies_summary(copies_data, language=language)
 
-    # Final summary
+    # Final summary panel
     cli.show_summary(
         session_id=orchestrator.session_id,
         copies_count=len(orchestrator.session.copies),
         graded_count=len(graded),
         scores=scores,
+        duration=duration,
+        mode=summary_mode,
+        exports=exports,
+        top_performers=top_performers,
         language=language
     )
 
