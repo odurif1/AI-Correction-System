@@ -5,6 +5,7 @@ Handles user interactions with rich console prompts:
 - Scale confirmation
 - Doubts review
 - Results display
+- Live progress dashboard
 
 UX Principles:
 - Progressive disclosure: Show info when needed
@@ -15,6 +16,7 @@ UX Principles:
 
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime
+from time import time
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
@@ -22,6 +24,8 @@ from rich.panel import Panel
 from rich.columns import Columns
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.text import Text
+from rich.live import Live
+from rich.layout import Layout
 
 from core.models import CopyDocument, GradedCopy, TeacherDecision, ConfidenceLevel
 

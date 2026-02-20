@@ -688,6 +688,13 @@ class GradingSessionOrchestrator:
                 graded.max_score = sum(graded.max_points_by_question.values()) if graded.max_points_by_question else sum(self.question_scales.values())
                 graded.confidence = sum(c or 0.5 for c in graded.confidence_by_question.values()) / len(graded.confidence_by_question) if graded.confidence_by_question else 0.5
 
+                # Generate overall feedback from per-question feedbacks
+                all_feedbacks = [fb for fb in graded.student_feedback.values() if fb]
+                if all_feedbacks:
+                    graded.feedback = " | ".join(all_feedbacks[:3])  # First 3 feedbacks
+                    if len(all_feedbacks) > 3:
+                        graded.feedback += "..."
+
                 # Store full audit data with new structure
                 graded.llm_comparison = {
                     "options": result.get("options", {}),

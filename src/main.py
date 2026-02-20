@@ -451,9 +451,9 @@ async def command_correct(args):
     # Show analysis result
     copies_count = analysis['copies_count']
     if language == 'fr':
-        cli.console.print(f"[bold cyan]▶[/bold cyan] Analyse... [green]✓ {copies_count} copie(s) détectée(s)[/green]")
+        cli.console.print(f"[green]✓ {copies_count} copie(s) détectée(s)[/green]\n")
     else:
-        cli.console.print(f"[bold cyan]▶[/bold cyan] Analyzing... [green]✓ {copies_count} copy/copies detected[/green]")
+        cli.console.print(f"[green]✓ {copies_count} copy/copies detected[/green]\n")
 
     # ============================================================
     # Phase 2: Setup Scale (will be detected during grading)

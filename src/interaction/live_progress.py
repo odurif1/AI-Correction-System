@@ -405,7 +405,8 @@ class LiveProgressDisplay:
             refresh_per_second=4,
             transient=False  # Keep the final table visible
         )
-        return self._live.__enter__()
+        self._live.__enter__()  # Start the live display
+        return self  # Return self so methods like mark_processing() work
 
     def __exit__(self, *args):
         """Stop the live display."""
