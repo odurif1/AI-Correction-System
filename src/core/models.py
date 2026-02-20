@@ -152,7 +152,7 @@ class GradedCopy(BaseModel):
     """
     Represents a corrected student copy.
 
-    Contains grades, confidence scores, internal_reasoning and student_feedback for each question.
+    Contains grades, confidence scores, reasoning and student_feedback for each question.
     """
     copy_id: str
     graded_at: datetime = Field(default_factory=datetime.now)
@@ -171,7 +171,7 @@ class GradedCopy(BaseModel):
     confidence_by_question: Dict[str, float] = Field(default_factory=dict)
 
     # Feedback fields
-    internal_reasoning: Dict[str, str] = Field(default_factory=dict)
+    reasoning: Dict[str, str] = Field(default_factory=dict)
     # {question_id: technical analysis for teachers}
     student_feedback: Dict[str, str] = Field(default_factory=dict)
     # {question_id: pedagogical feedback for students}
@@ -379,7 +379,7 @@ class ExportOptions(BaseModel):
     """Options for exporting graded copies."""
     format: Literal["pdf", "json", "csv", "all"] = "pdf"
     include_feedback: bool = True
-    include_internal_reasoning: bool = False
+    include_reasoning: bool = False
     include_analytics: bool = True
 
 

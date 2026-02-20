@@ -422,7 +422,7 @@ class CLI:
             Decision or None if skipped
         """
         current_grade = graded.grades.get(question_id, 0)
-        reasoning = graded.internal_reasoning.get(question_id, "")
+        reasoning = graded.reasoning.get(question_id, "")
 
         # Compact panel with doubt details
         conf_display = (confidence or 0.5) * 100
@@ -969,8 +969,8 @@ class CLI:
             - "merge": merge both feedbacks (for average/manual cases)
             - None: if user skipped
         """
-        reasoning1 = llm1_result.get('internal_reasoning', '')[:100]
-        reasoning2 = llm2_result.get('internal_reasoning', '')[:100]
+        reasoning1 = llm1_result.get('reasoning', '')[:100]
+        reasoning2 = llm2_result.get('reasoning', '')[:100]
         grade1 = llm1_result.get('grade', 0) or 0
         grade2 = llm2_result.get('grade', 0) or 0
         conf1 = (llm1_result.get('confidence') or 0) * 100
@@ -981,12 +981,12 @@ class CLI:
             panel1_content = (
                 f"[bold]Note:[/bold] {grade1:.1f}\n"
                 f"[bold]Confiance:[/bold] {conf1:.0f}%\n"
-                f"[dim]{reasoning1}{'...' if len(llm1_result.get('internal_reasoning', '')) > 100 else ''}[/dim]"
+                f"[dim]{reasoning1}{'...' if len(llm1_result.get('reasoning', '')) > 100 else ''}[/dim]"
             )
             panel2_content = (
                 f"[bold]Note:[/bold] {grade2:.1f}\n"
                 f"[bold]Confiance:[/bold] {conf2:.0f}%\n"
-                f"[dim]{reasoning2}{'...' if len(llm2_result.get('internal_reasoning', '')) > 100 else ''}[/dim]"
+                f"[dim]{reasoning2}{'...' if len(llm2_result.get('reasoning', '')) > 100 else ''}[/dim]"
             )
 
             panel1 = Panel(panel1_content, title=f"[cyan]{llm1_name}[/cyan]", border_style="cyan", padding=(0, 1))
@@ -1010,12 +1010,12 @@ class CLI:
             panel1_content = (
                 f"[bold]Grade:[/bold] {grade1:.1f}\n"
                 f"[bold]Confidence:[/bold] {conf1:.0f}%\n"
-                f"[dim]{reasoning1}{'...' if len(llm1_result.get('internal_reasoning', '')) > 100 else ''}[/dim]"
+                f"[dim]{reasoning1}{'...' if len(llm1_result.get('reasoning', '')) > 100 else ''}[/dim]"
             )
             panel2_content = (
                 f"[bold]Grade:[/bold] {grade2:.1f}\n"
                 f"[bold]Confidence:[/bold] {conf2:.0f}%\n"
-                f"[dim]{reasoning2}{'...' if len(llm2_result.get('internal_reasoning', '')) > 100 else ''}[/dim]"
+                f"[dim]{reasoning2}{'...' if len(llm2_result.get('reasoning', '')) > 100 else ''}[/dim]"
             )
 
             panel1 = Panel(panel1_content, title=f"[cyan]{llm1_name}[/cyan]", border_style="cyan", padding=(0, 1))

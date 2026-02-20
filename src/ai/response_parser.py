@@ -10,7 +10,7 @@ from typing import Dict, Any, List
 
 # Fields that can span multiple lines (until next field starts)
 MULTILINE_FIELDS = {
-    "INTERNAL_REASONING": "internal_reasoning",
+    "INTERNAL_REASONING": "reasoning",
     "STUDENT_FEEDBACK": "student_feedback",
     "STUDENT_ANSWER_READ": "student_answer_read",
     "IF_UNCERTAIN": "if_uncertain"
@@ -50,7 +50,7 @@ def parse_grading_response(response: str) -> Dict[str, Any]:
         "uncertainty_type": "other",
         "if_uncertain": "",
         "student_answer_read": "",
-        "internal_reasoning": "",
+        "reasoning": "",
         "student_feedback": ""
     }
 

@@ -134,7 +134,7 @@ class IntelligentGrader:
 
             graded.grades[question_id] = result.get("grade") or 0
             graded.confidence_by_question[question_id] = result.get("confidence") or 0
-            graded.internal_reasoning[question_id] = result.get("internal_reasoning", "")
+            graded.reasoning[question_id] = result.get("reasoning", "")
             graded.student_feedback[question_id] = result.get("student_feedback", "")
 
             # Store comparison data if available (dual-LLM mode)
@@ -297,7 +297,7 @@ Reply ONLY with the comment, no quotation marks or pleasantries."""
             question_scales: Optional dict of question_id -> max_points
 
         Returns:
-            Dict with grade, confidence, internal_reasoning, student_feedback
+            Dict with grade, confidence, reasoning, student_feedback
         """
         # Get max points from scales - MUST be provided
         if question_scales and question_id in question_scales:
@@ -368,7 +368,7 @@ Reply ONLY with the comment, no quotation marks or pleasantries."""
         return {
             "grade": result.get("grade", 0),
             "confidence": confidence,
-            "internal_reasoning": result.get("internal_reasoning", ""),
+            "reasoning": result.get("reasoning", ""),
             "student_feedback": result.get("student_feedback", ""),
             "uncertainty_type": result.get("uncertainty_type", "none"),
             "comparison": result.get("comparison")  # Dual-LLM comparison data

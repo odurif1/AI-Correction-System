@@ -101,7 +101,7 @@ def build_llm_audit_info(
         "provider": provider_name,
         "grade": result.get("grade"),
         "confidence": result.get("confidence"),
-        "reasoning": result.get("reasoning", "") or result.get("internal_reasoning", ""),
+        "reasoning": result.get("reasoning", "") or result.get("reasoning", ""),
         "student_feedback": result.get("student_feedback", ""),
         "student_answer_read": result.get("student_answer_read", "")
     }
@@ -325,7 +325,7 @@ This information is provided as a reference to help you. You remain free in your
                 error_result = {
                     "grade": None,
                     "confidence": 0.0,
-                    "internal_reasoning": f"Error: {str(e)}",
+                    "reasoning": f"Error: {str(e)}",
                     "student_feedback": "",
                     "error": str(e)
                 }
@@ -807,7 +807,7 @@ This information is provided as a reference to help you. You remain free in your
 
         for i, (name, provider) in enumerate(self.providers):
             other_result = results[1 - i]
-            other_reasoning = other_result.get("internal_reasoning", "")
+            other_reasoning = other_result.get("reasoning", "")
             other_grade = other_result.get("grade", 0)
             other_answer_read = other_result.get("student_answer_read", "")
             my_grade = results[i].get("grade", 0)
@@ -1610,7 +1610,7 @@ Original question: {kwargs.get('question_text', '')}"""
 
         for i, (name, provider) in enumerate(self.providers):
             other_result = round1_results[1 - i]
-            other_reasoning = other_result.get("internal_reasoning", "")
+            other_reasoning = other_result.get("reasoning", "")
             other_grade = other_result.get("grade", 0)
             my_grade = round1_results[i].get("grade", 0)
 
@@ -1722,8 +1722,8 @@ STUDENT_FEEDBACK: [feedback]
                 "student_feedback": ""
             }
 
-        # Use first result as base, but exclude internal_reasoning (kept per-LLM in comparison)
-        merged = {k: v for k, v in results[0].items() if k != "internal_reasoning"}
+        # Use first result as base, but exclude reasoning (kept per-LLM in comparison)
+        merged = {k: v for k, v in results[0].items() if k != "reasoning"}
 
         # Add comparison info
         if comparison_info:
@@ -1769,12 +1769,12 @@ STUDENT_FEEDBACK: [feedback]
                 "student_feedback": ""
             }
 
-        # Choose base result based on feedback source, excluding internal_reasoning
+        # Choose base result based on feedback source, excluding reasoning
         if feedback_source == "llm2" and len(results) > 1:
-            merged = {k: v for k, v in results[1].items() if k != "internal_reasoning"}
+            merged = {k: v for k, v in results[1].items() if k != "reasoning"}
         elif feedback_source == "merge" and len(results) > 1:
             # Merge: use LLM1 as base but combine feedbacks
-            merged = {k: v for k, v in results[0].items() if k != "internal_reasoning"}
+            merged = {k: v for k, v in results[0].items() if k != "reasoning"}
             fb1 = results[0].get("student_feedback", "")
             fb2 = results[1].get("student_feedback", "")
             if fb1 and fb2:
@@ -1783,7 +1783,7 @@ STUDENT_FEEDBACK: [feedback]
                 merged["student_feedback"] = fb2
         else:
             # Default: use LLM1
-            merged = {k: v for k, v in results[0].items() if k != "internal_reasoning"}
+            merged = {k: v for k, v in results[0].items() if k != "reasoning"}
 
         # Override with user's chosen grade
         merged["grade"] = chosen_grade

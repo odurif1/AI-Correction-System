@@ -72,7 +72,7 @@ Résultats des deux LLMs **avant** toute discussion.
     "provider": "gemini-2.5-flash",
     "grade": 0.0,
     "confidence": 1.0,
-    "internal_reasoning": "Note: 0.0/1.0. L'image montre...",
+    "reasoning": "Note: 0.0/1.0. L'image montre...",
     "student_feedback": "Ta réponse est incorrecte...",
     "student_answer_read": "Fiole jaugé",
     "duration_ms": 3500.0
@@ -81,7 +81,7 @@ Résultats des deux LLMs **avant** toute discussion.
     "provider": "gemini-flash-latest",
     "grade": 1.0,
     "confidence": 1.0,
-    "internal_reasoning": "Note: 1.0/1.0. L'élève a correctement...",
+    "reasoning": "Note: 1.0/1.0. L'élève a correctement...",
     "student_feedback": "Votre réponse est parfaitement correcte...",
     "student_answer_read": "Fiole jaugée",
     "duration_ms": 3200.0
@@ -95,7 +95,7 @@ Résultats des deux LLMs **avant** toute discussion.
 | `provider` | Nom du modèle utilisé |
 | `grade` | Note attribuée |
 | `confidence` | Confiance (0.0 - 1.0) |
-| `internal_reasoning` | Raisonnement technique |
+| `reasoning` | Raisonnement technique |
 | `student_feedback` | Feedback pédagogique |
 | `student_answer_read` | Ce que le LLM a lu de la réponse |
 | `duration_ms` | Durée de l'appel API |
@@ -193,7 +193,7 @@ Contient les résultats **après** que chaque LLM a vu le raisonnement de l'autr
     "provider": "gemini-2.5-flash",
     "grade": 0.75,
     "confidence": 0.8,
-    "internal_reasoning": "L'autre correcteur a mal interprété...",
+    "reasoning": "L'autre correcteur a mal interprété...",
     "student_feedback": "...",
     "student_answer_read": "Fiole jaugé",
     "prompt_sent": "─── AUTRE CORRECTEUR ───\nNote: 1.0/1.0\nRaisonnement: ..."
@@ -239,7 +239,7 @@ Ou si accord:
         "provider": "gemini-2.5-flash",
         "grade": 0.0,
         "confidence": 1.0,
-        "internal_reasoning": "Note: 0.0/1.0. L'image montre un ballon...",
+        "reasoning": "Note: 0.0/1.0. L'image montre un ballon...",
         "student_feedback": "L'identification est incorrecte...",
         "student_answer_read": "Fiole jaugé",
         "duration_ms": 3500.0
@@ -248,7 +248,7 @@ Ou si accord:
         "provider": "gemini-flash-latest",
         "grade": 1.0,
         "confidence": 1.0,
-        "internal_reasoning": "Note: 1.0/1.0. L'élève a correctement identifié...",
+        "reasoning": "Note: 1.0/1.0. L'élève a correctement identifié...",
         "student_feedback": "Votre réponse est correcte...",
         "student_answer_read": "Fiole jaugée",
         "duration_ms": 3200.0
@@ -292,14 +292,14 @@ Ou si accord:
         "provider": "gemini-2.5-flash",
         "grade": 0.75,
         "confidence": 0.8,
-        "internal_reasoning": "Je reconnais que l'autre lecture est correcte...",
+        "reasoning": "Je reconnais que l'autre lecture est correcte...",
         "prompt_sent": "─── AUTRE CORRECTEUR ───\nNote: 1.0/1.0\n..."
       },
       "llm2": {
         "provider": "gemini-flash-latest",
         "grade": 0.0,
         "confidence": 1.0,
-        "internal_reasoning": "Je maintiens ma note car...",
+        "reasoning": "Je maintiens ma note car...",
         "prompt_sent": "─── AUTRE CORRECTEUR ───\nNote: 0.0/1.0\n..."
       },
       "difference": 0.75
@@ -324,7 +324,7 @@ Ou si accord:
 
 1. Regarder `initial.llm1.grade` → `after_cross_verification.llm1.grade`
 2. Lire `after_cross_verification.llm1.prompt_sent` pour voir ce qui a influencé
-3. Lire `after_cross_verification.llm1.internal_reasoning` pour comprendre le changement
+3. Lire `after_cross_verification.llm1.reasoning` pour comprendre le changement
 
 ### Pourquoi y a-t-il un désaccord?
 
