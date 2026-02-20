@@ -2,6 +2,7 @@
 OpenAI API provider for vision and text interactions.
 
 Handles communication with OpenAI's GPT-4o and embedding models.
+Also compatible with OpenRouter (OpenAI-compatible API).
 """
 
 import base64
@@ -24,16 +25,29 @@ class OpenAIProvider(BaseProvider):
 
     Inherits from BaseProvider for shared functionality.
     Implements OpenAI-specific API calls.
+
+    Also works with OpenRouter by setting base_url to https://openrouter.ai/api/v1
     """
 
-    def __init__(self, api_key: str = None, base_url: str = None, mock_mode: bool = False):
+    def __init__(
+        self,
+        api_key: str = None,
+        base_url: str = None,
+        model: str = None,
+        vision_model: str = None,
+        mock_mode: bool = False,
+        extra_headers: Dict[str, str] = None
+    ):
         """
         Initialize the OpenAI provider.
 
         Args:
-            api_key: OpenAI API key (default: from settings)
-            base_url: Custom base URL (default: from settings)
+            api_key: API key (default: from settings)
+            base_url: Custom base URL (for OpenRouter: https://openrouter.ai/api/v1)
+            model: Text model name (for OpenRouter: e.g., "anthropic/claude-3.5-sonnet")
+            vision_model: Vision model name (for OpenRouter: e.g., "anthropic/claude-3.5-sonnet")
             mock_mode: If True, skip API key check for testing
+            extra_headers: Additional headers (for OpenRouter: {"HTTP-Referer": "...", "X-Title": "..."})
         """
         super().__init__(mock_mode=mock_mode)
 
@@ -41,7 +55,12 @@ class OpenAIProvider(BaseProvider):
         self.api_key = api_key or settings.openai_api_key
 
         if not self.api_key and not mock_mode:
-            raise ValueError("OpenAI API key is required. Set AI_CORRECTION_OPENAI_API_KEY.")
+            raise ValueError("API key is required. Set AI_CORRECTION_OPENAI_API_KEY or pass api_key.")
+
+        # Store model names
+        self.model = model or settings.model
+        self.vision_model = vision_model or settings.vision_model or self.model
+        self.embedding_model = settings.embedding_model
 
         if not mock_mode:
             # Configure timeout for API calls
@@ -51,15 +70,66 @@ class OpenAIProvider(BaseProvider):
                 write=API_CONNECT_TIMEOUT,
                 pool=API_CONNECT_TIMEOUT
             )
-            self.client = OpenAI(
-                api_key=self.api_key,
-                base_url=base_url or settings.openai_organization,
-                timeout=timeout
-            )
 
-        self.model = settings.model
-        self.vision_model = settings.vision_model
-        self.embedding_model = settings.embedding_model
+            # Build client with optional extra headers
+            client_kwargs = {
+                "api_key": self.api_key,
+                "timeout": timeout
+            }
+
+            # Set base_url if provided
+            if base_url:
+                client_kwargs["base_url"] = base_url
+            elif settings.openai_organization:
+                client_kwargs["base_url"] = settings.openai_organization
+
+            # Add extra headers (for OpenRouter)
+            if extra_headers:
+                client_kwargs["default_headers"] = extra_headers
+
+            self.client = OpenAI(**client_kwargs)
+
+    @classmethod
+    def create_openrouter(
+        cls,
+        api_key: str = None,
+        model: str = "anthropic/claude-3.5-sonnet",
+        vision_model: str = None,
+        app_name: str = "AI-Correction",
+        app_url: str = "https://github.com/odurif1/AI-Correction-System"
+    ) -> "OpenAIProvider":
+        """
+        Create a provider configured for OpenRouter.
+
+        OpenRouter is an OpenAI-compatible API that provides access to
+        multiple LLM providers through a unified interface.
+
+        Args:
+            api_key: OpenRouter API key (get from https://openrouter.ai/keys)
+            model: Model name (e.g., "anthropic/claude-3.5-sonnet", "openai/gpt-4o")
+            vision_model: Vision model name (defaults to same as model)
+            app_name: Your app name (for OpenRouter rankings)
+            app_url: Your app URL (for OpenRouter rankings)
+
+        Returns:
+            Configured OpenAIProvider instance
+
+        Example:
+            provider = OpenAIProvider.create_openrouter(
+                api_key="sk-or-...",
+                model="anthropic/claude-3.5-sonnet"
+            )
+        """
+        return cls(
+            api_key=api_key,
+            base_url="https://openrouter.ai/api/v1",
+            model=model,
+            vision_model=vision_model or model,
+            extra_headers={
+                "HTTP-Referer": app_url,
+                "X-Title": app_name
+            }
+        )
 
     @retry(
         stop=stop_after_attempt(MAX_RETRIES),
