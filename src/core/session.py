@@ -51,9 +51,11 @@ class GradingSessionOrchestrator:
         reading_disagreement_callback: callable = None,
         skip_reading_consensus: bool = False,
         force_single_llm: bool = False,
-        pages_per_student: int = None,
+        pages_per_copy: int = None,
         second_reading: bool = False,
         parallel: int = 6,
+        grading_mode: str = None,  # "individual", "batch", or "hybrid" (required)
+        batch_verify: str = None,  # "per-question" or "grouped" (required for batch dual)
         workflow_state: CorrectionState = None
     ):
         """
@@ -74,9 +76,11 @@ class GradingSessionOrchestrator:
                                                                          question_text, image_path) -> str
             skip_reading_consensus: If True, skip the reading consensus phase (default: False, enabled by default)
             force_single_llm: If True, use single LLM mode even if comparison_mode is enabled in config
-            pages_per_student: If set, activates individual reading mode (PDF pre-split by page count)
+            pages_per_copy: If set, activates individual reading mode (PDF pre-split by page count)
             second_reading: If True, enables second reading (2 passes for Single LLM, re-reading instruction for Dual LLM)
             parallel: Number of copies to process in parallel (default: 6)
+            grading_mode: "individual" (each copy separately) or "batch" (all copies in one call)
+            batch_size: Number of copies per batch in batch mode (default: 5)
             workflow_state: Optional CorrectionState for tracking workflow state
         """
         from config.constants import DATA_DIR
@@ -88,9 +92,11 @@ class GradingSessionOrchestrator:
         self._reading_disagreement_callback = reading_disagreement_callback
         self._skip_reading_consensus = skip_reading_consensus
         self._force_single_llm = force_single_llm
-        self._pages_per_student = pages_per_student
+        self._pages_per_copy = pages_per_copy
         self._second_reading = second_reading
         self._parallel = parallel
+        self._grading_mode = grading_mode
+        self._batch_verify = batch_verify
 
         # Workflow state tracking
         self._workflow_state = workflow_state
@@ -108,7 +114,7 @@ class GradingSessionOrchestrator:
                 session_id=self.session_id,
                 created_at=datetime.now(),
                 status=SessionStatus.ANALYZING,
-                pages_per_student=pages_per_student
+                pages_per_copy=pages_per_copy
             )
             self.store = SessionStore(self.session_id)
 
@@ -126,19 +132,22 @@ class GradingSessionOrchestrator:
         # Initialize components
         self.analyzer = CrossCopyAnalyzer(self.ai)
 
-        # Store grading scales per question (will be filled by user or detected)
-        self.question_scales: Dict[str, float] = {}
+        # Grading scale: max_points per question
+        # Filled from LLM detection or user confirmation
+        self.grading_scale: Dict[str, float] = {}
 
-        # Store detected questions
+        # Store detected questions (text content)
         self.detected_questions: Dict[str, str] = {}
 
-        # Track if scale was detected
-        self.scale_detected = False
+        # Track if scale was confirmed by user
+        self._scale_confirmed_by_user = False
 
         # Analysis results (available after analyze_only)
         self._analysis_complete = False
         self._grading_complete = False
-        self._scale_confirmed = False
+
+        # Callback to ask user for scale (set by main.py)
+        self.scale_callback: Optional[callable] = None
 
     @property
     def workflow_state(self) -> CorrectionState:
@@ -237,7 +246,7 @@ class GradingSessionOrchestrator:
 
         # In INDIVIDUAL mode, questions will be detected during grading
         questions_detected_during_grading = False
-        if not detected_questions and self._pages_per_student:
+        if not detected_questions and self._pages_per_copy:
             questions_detected_during_grading = True
             # No placeholder - LLM will detect questions dynamically
             detected_questions = {}
@@ -245,7 +254,7 @@ class GradingSessionOrchestrator:
         # Default scale of 1.0 for each question (will be detected during grading)
         detected_scale = {q: 1.0 for q in detected_questions.keys()}
 
-        self.question_scales = detected_scale
+        self.grading_scale = detected_scale
         self.detected_questions = detected_questions
         self.scale_detected = False  # Scale will be detected during grading
 
@@ -284,7 +293,7 @@ class GradingSessionOrchestrator:
                 if points_key in parsed:
                     try:
                         points = float(parsed[points_key])
-                        self.question_scales[q_id] = points
+                        self.grading_scale[q_id] = points
                         updated[q_id] = {
                             'points': points,
                             'confidence': parsed.get(f"{q_id}_confidence", "moyen")
@@ -312,14 +321,64 @@ class GradingSessionOrchestrator:
         if not self._analysis_complete:
             raise RuntimeError("Must call analyze_only() before confirm_scale()")
 
-        self.question_scales = scale
-        self._scale_confirmed = True
+        self.grading_scale = scale
+        self._scale_confirmed_by_user = bool(scale)  # True if user provided scale
 
         # Update policy with scale
         self.session.policy.question_weights = scale
 
         # Save
         self._save_sync()
+
+    def update_scale_from_detection(self, detected_scale: Dict[str, float]):
+        """
+        Update grading scale from LLM detection.
+
+        Only updates questions that weren't already confirmed by user.
+
+        Args:
+            detected_scale: Dict of {question_id: max_points} detected by LLM
+        """
+        for qid, max_pts in detected_scale.items():
+            if max_pts and max_pts > 0:
+                # Only update if not already confirmed by user
+                if not self._scale_confirmed_by_user or qid not in self.grading_scale:
+                    self.grading_scale[qid] = max_pts
+
+        self._save_sync()
+
+    def get_max_points(self, question_id: str) -> float:
+        """
+        Get max points for a question.
+
+        Returns:
+            Max points from grading_scale, or 1.0 as default
+        """
+        return self.grading_scale.get(question_id, 1.0)
+
+    def get_total_max_points(self) -> float:
+        """
+        Get total max points for all known questions.
+
+        Returns:
+            Sum of all max points in grading_scale
+        """
+        return sum(self.grading_scale.values()) if self.grading_scale else 0.0
+
+    def has_complete_scale(self, question_ids: List[str]) -> bool:
+        """
+        Check if all questions have a scale defined.
+
+        Args:
+            question_ids: List of question IDs to check
+
+        Returns:
+            True if all questions have max_points > 0
+        """
+        for qid in question_ids:
+            if self.grading_scale.get(qid, 0) <= 0:
+                return False
+        return True
 
     def get_unknown_scale_questions(self) -> List[str]:
         """
@@ -351,6 +410,8 @@ class GradingSessionOrchestrator:
 
         For single LLM mode with second_reading: runs 2 passes for self-verification.
 
+        For batch mode: all copies graded in one API call.
+
         Must be called after confirm_scale().
 
         Args:
@@ -362,8 +423,20 @@ class GradingSessionOrchestrator:
         if not self._analysis_complete:
             raise RuntimeError("Must call analyze_only() before grade_all()")
 
-        if not getattr(self, '_scale_confirmed', False):
+        # confirm_scale() should have been called (can be with empty scale)
+        # We track this via _scale_confirmed_by_user being set
+        if not hasattr(self, '_scale_confirmed_by_user'):
             raise RuntimeError("Must call confirm_scale() before grade_all()")
+
+        # Check for batch mode
+        if self._grading_mode == "batch":
+            return await self._grade_all_batch(progress_callback)
+
+        # Check for hybrid mode (only works with dual LLM)
+        if self._grading_mode == "hybrid":
+            if not self._comparison_mode:
+                raise RuntimeError("Hybrid mode requires dual LLM (remove --single)")
+            return await self._grade_all_hybrid(progress_callback)
 
         if self._comparison_mode:
             return await self._grade_all_dual_llm(progress_callback)
@@ -393,7 +466,7 @@ class GradingSessionOrchestrator:
                 "id": q_id,
                 "text": q_text,
                 "criteria": "",
-                "max_points": self.question_scales.get(q_id, 1.0)
+                "max_points": self.grading_scale.get(q_id, 1.0)
             })
 
         # Semaphore to limit concurrent grading
@@ -408,7 +481,7 @@ class GradingSessionOrchestrator:
                         'total_copies': total_copies,
                         'copy_id': copy.id,
                         'student_name': copy.student_name,
-                        'questions': list(self.question_scales.keys())
+                        'questions': list(self.grading_scale.keys())
                     })
 
                 image_paths = [str(p) for p in copy.page_images] if copy.page_images else []
@@ -448,6 +521,8 @@ class GradingSessionOrchestrator:
                     graded.student_feedback[q_id] = q_result.feedback
                     graded.readings[q_id] = q_result.student_answer_read
                     graded.max_points_by_question[q_id] = q_result.max_points
+                    if q_result.reasoning:
+                        graded.reasoning[q_id] = q_result.reasoning
 
                 # Update student name from grading result (more accurate than analysis phase)
                 if result.student_name:
@@ -528,6 +603,700 @@ class GradingSessionOrchestrator:
         self._grading_complete = True
         return self.session.graded_copies
 
+    async def _grade_all_batch(
+        self,
+        progress_callback: callable = None
+    ) -> List[GradedCopy]:
+        """
+        Grade all copies in batch mode - one API call for all copies.
+
+        Benefits:
+        - Consistency: same answer = same grade (LLM sees all copies)
+        - Pattern detection: LLM can identify common answers and outliers
+        - Efficiency: 1 API call instead of N (or 2 with dual LLM)
+
+        This is the recommended mode for:
+        - Small classes (< 20 copies)
+        - When consistency across copies is critical
+        """
+        from ai.batch_grader import grade_all_copies_in_batches, BatchResult
+        import logging
+
+        logger = logging.getLogger(__name__)
+        total_copies = len(self.session.copies)
+
+        # Notify start
+        if progress_callback:
+            await self._call_callback(progress_callback, 'batch_start', {
+                'total_copies': total_copies,
+                'mode': 'batch'
+            })
+
+        # Prepare copies data for batch grading
+        copies_data = []
+        for i, copy in enumerate(self.session.copies):
+            # Get image paths for this copy
+            image_paths = []
+            if copy.page_images:
+                image_paths = copy.page_images
+            elif copy.pdf_path:
+                # Generate images from PDF
+                from vision.pdf_reader import PDFReader
+                reader = PDFReader(copy.pdf_path)
+                temp_dir = Path(self.store.session_dir) / "temp"
+                temp_dir.mkdir(exist_ok=True)
+
+                for page_num in range(copy.page_count):
+                    image_path = str(temp_dir / f"batch_copy_{i+1}_page_{page_num}.png")
+                    image_bytes = reader.get_page_image_bytes(page_num)
+                    with open(image_path, 'wb') as f:
+                        f.write(image_bytes)
+                    image_paths.append(image_path)
+                reader.close()
+
+            copies_data.append({
+                'copy_index': i + 1,
+                'image_paths': image_paths,
+                'student_name': copy.student_name
+            })
+
+            # Emit copy_start BEFORE API call so display shows "processing" during grading
+            if progress_callback:
+                await self._call_callback(progress_callback, 'copy_start', {
+                    'copy_index': i + 1,
+                    'total_copies': total_copies,
+                    'copy_id': copy.id,
+                    'student_name': copy.student_name or '???',
+                    'questions': []  # Unknown until API returns
+                })
+
+        # Build questions dict
+        questions = {}
+        for qid, max_pts in self.grading_scale.items():
+            questions[qid] = {
+                'text': '',  # Will be detected from images
+                'criteria': '',
+                'max_points': max_pts
+            }
+
+        # Determine language
+        language = 'fr'  # Default, could be from session
+
+        graded_copies = []
+        llm_comparison_data = {}  # Store comparison data for audit
+
+        if self._comparison_mode:
+            # Dual LLM batch: run both in parallel, then compare
+            provider_names = [name for name, _ in self.ai.providers]
+            llm1_name, llm2_name = provider_names[0], provider_names[1]
+
+            if progress_callback:
+                await self._call_callback(progress_callback, 'batch_llm_start', {
+                    'providers': provider_names
+                })
+
+            # Run batch grading with both LLMs
+            async def grade_with_provider(provider, name):
+                from ai.batch_grader import BatchGrader
+                grader = BatchGrader(provider)
+                return await grader.grade_batch(copies_data, questions, language)
+
+            tasks = [
+                grade_with_provider(provider, name)
+                for name, provider in self.ai.providers
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            llm1_result = results[0] if not isinstance(results[0], Exception) else None
+            llm2_result = results[1] if not isinstance(results[1], Exception) else None
+
+            if progress_callback:
+                await self._call_callback(progress_callback, 'batch_llm_done', {
+                    'llm1_success': llm1_result is not None and llm1_result.parse_success,
+                    'llm2_success': llm2_result is not None and llm2_result.parse_success
+                })
+
+            # Check if at least one succeeded
+            if not ((llm1_result and llm1_result.parse_success) or (llm2_result and llm2_result.parse_success)):
+                logger.error("Both LLM batch grading failed")
+                return []
+
+            # Build merged results with comparison data
+            # We'll iterate through all copies and merge/compare
+            batch_result = None
+            llm_comparison_data = {
+                "options": {
+                    "mode": "batch",
+                    "providers": provider_names,
+                    "total_copies": total_copies
+                },
+                "llm_comparison": {}
+            }
+
+            # Use LLM1 as base if available, else LLM2
+            if llm1_result and llm1_result.parse_success:
+                batch_result = llm1_result
+            else:
+                batch_result = llm2_result
+
+            # For each copy, build comparison data
+            for copy_result in batch_result.copies:
+                copy_idx = copy_result.copy_index
+                llm_comparison_data["llm_comparison"][f"copy_{copy_idx}"] = {
+                    "student_name": copy_result.student_name,
+                    "questions": {}
+                }
+
+                # Find corresponding result from other LLM
+                llm2_copy = None
+                if llm2_result and llm2_result.parse_success:
+                    for c in llm2_result.copies:
+                        if c.copy_index == copy_idx:
+                            llm2_copy = c
+                            break
+
+                # For each question, store both LLM responses
+                for qid, qdata in copy_result.questions.items():
+                    llm1_qdata = {
+                        "grade": qdata.get('grade', 0),
+                        "max_points": qdata.get('max_points', 1),
+                        "reading": qdata.get('student_answer_read', ''),
+                        "reasoning": qdata.get('reasoning', ''),
+                        "feedback": qdata.get('feedback', ''),
+                        "confidence": qdata.get('confidence', 0.8)
+                    }
+
+                    llm2_qdata = {}
+                    if llm2_copy and qid in llm2_copy.questions:
+                        q2 = llm2_copy.questions[qid]
+                        llm2_qdata = {
+                            "grade": q2.get('grade', 0),
+                            "max_points": q2.get('max_points', 1),
+                            "reading": q2.get('student_answer_read', ''),
+                            "reasoning": q2.get('reasoning', ''),
+                            "feedback": q2.get('feedback', ''),
+                            "confidence": q2.get('confidence', 0.8)
+                        }
+
+                    # Calculate final grade (average if both available, else use one)
+                    if llm2_qdata:
+                        final_grade = (llm1_qdata["grade"] + llm2_qdata["grade"]) / 2
+                        # Agreement threshold: 10% of max_points (relative threshold)
+                        max_pts = max(llm1_qdata.get("max_points", 1.0), llm2_qdata.get("max_points", 1.0))
+                        threshold = max_pts * 0.10
+                        agreement = abs(llm1_qdata["grade"] - llm2_qdata["grade"]) < threshold
+                    else:
+                        final_grade = llm1_qdata["grade"]
+                        agreement = True
+
+                    llm_comparison_data["llm_comparison"][f"copy_{copy_idx}"]["questions"][qid] = {
+                        llm1_name: llm1_qdata,
+                        llm2_name: llm2_qdata if llm2_qdata else None,
+                        "final": {
+                            "grade": final_grade,
+                            "method": "average" if llm2_qdata else "single_llm",
+                            "agreement": agreement
+                        }
+                    }
+
+                    # Update the grade in copy_result with averaged grade
+                    qdata['grade'] = final_grade
+
+            # ═══════════════════════════════════════════════════════════════════
+            # POST-BATCH VERIFICATION (always run for dual LLM batch mode)
+            # Follows same logic as individual mode: verification → ultimatum
+            # ═══════════════════════════════════════════════════════════════════
+            from ai.batch_grader import (
+                detect_disagreements, run_dual_llm_verification,
+                run_per_question_dual_verification, run_dual_llm_ultimatum,
+                Disagreement
+            )
+
+            # Detect disagreements
+            disagreements = detect_disagreements(
+                llm1_result, llm2_result,
+                llm1_name, llm2_name,
+                copies_data
+                # threshold uses default 10% of max_points
+            )
+
+            if disagreements:
+                logger.info(f"Detected {len(disagreements)} disagreements, running dual LLM verification ({self._batch_verify})")
+
+                if progress_callback:
+                    await self._call_callback(progress_callback, 'batch_verification_start', {
+                        'disagreements_count': len(disagreements),
+                        'mode': self._batch_verify
+                    })
+
+                # ===== PHASE 1: Dual LLM Verification =====
+                # Both LLMs see each other's work and can adjust their grades
+                if self._batch_verify == "per-question":
+                    # One call per disagreement per LLM (more granular)
+                    verification_results = await run_per_question_dual_verification(
+                        self.ai.providers, disagreements, language
+                    )
+                else:
+                    # Grouped: one call per LLM (all disagreements in one prompt)
+                    verification_results = await run_dual_llm_verification(
+                        self.ai.providers, disagreements, language
+                    )
+
+                # Apply verification results to batch_result
+                for copy_result in batch_result.copies:
+                    for qid, qdata in copy_result.questions.items():
+                        key = f"copy_{copy_result.copy_index}_{qid}"
+                        if key in verification_results:
+                            verified = verification_results[key]
+                            qdata['grade'] = verified['final_grade']
+                            qdata['reasoning'] = verified.get('llm1_reasoning', qdata.get('reasoning', ''))
+
+                            # Update comparison data with verification result
+                            comp_key = f"copy_{copy_result.copy_index}"
+                            if comp_key in llm_comparison_data.get("llm_comparison", {}):
+                                if qid in llm_comparison_data["llm_comparison"][comp_key].get("questions", {}):
+                                    llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["verification"] = {
+                                        "final_grade": verified['final_grade'],
+                                        "llm1_new_grade": verified.get('llm1_new_grade'),
+                                        "llm2_new_grade": verified.get('llm2_new_grade'),
+                                        "llm1_reasoning": verified.get('llm1_reasoning', ''),
+                                        "llm2_reasoning": verified.get('llm2_reasoning', ''),
+                                        "confidence": verified.get('confidence', 0.8),
+                                        "method": verified.get('method', 'grouped')
+                                    }
+                                    llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["final"]["grade"] = verified['final_grade']
+                                    llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["final"]["method"] = f"verified_{verified.get('method', 'grouped')}"
+
+                if progress_callback:
+                    await self._call_callback(progress_callback, 'batch_verification_done', {
+                        'resolved_count': len(verification_results)
+                    })
+
+                # ===== PHASE 2: Ultimatum Round (if disagreements persist) =====
+                # Check for persistent disagreements after verification
+                persistent_disagreements = []
+                for d in disagreements:
+                    key = f"copy_{d.copy_index}_{d.question_id}"
+                    if key in verification_results:
+                        v = verification_results[key]
+                        llm1_new = v.get('llm1_new_grade', d.llm1_grade)
+                        llm2_new = v.get('llm2_new_grade', d.llm2_grade)
+                        max_pts = v.get('max_points', d.max_points)
+                        # Use relative threshold (10% of max_points)
+                        relative_threshold = max_pts * get_settings().grade_agreement_threshold
+                        if abs(llm1_new - llm2_new) >= relative_threshold:
+                            persistent_disagreements.append({
+                                'copy_index': d.copy_index,
+                                'question_id': d.question_id,
+                                'llm1_grade': llm1_new,
+                                'llm2_grade': llm2_new,
+                                'max_points': max_pts,
+                                'llm1_reasoning': v.get('llm1_reasoning', d.llm1_reasoning),
+                                'llm2_reasoning': v.get('llm2_reasoning', d.llm2_reasoning),
+                                'image_paths': d.image_paths
+                            })
+
+                if persistent_disagreements:
+                    logger.info(f"Persisting {len(persistent_disagreements)} disagreements after verification, running ultimatum round")
+
+                    if progress_callback:
+                        await self._call_callback(progress_callback, 'batch_ultimatum_start', {
+                            'persistent_count': len(persistent_disagreements)
+                        })
+
+                    # Run ultimatum round with both LLMs
+                    ultimatum_results = await run_dual_llm_ultimatum(
+                        self.ai.providers, persistent_disagreements, language
+                    )
+
+                    # Apply ultimatum results
+                    for copy_result in batch_result.copies:
+                        for qid, qdata in copy_result.questions.items():
+                            key = f"copy_{copy_result.copy_index}_{qid}"
+                            if key in ultimatum_results:
+                                ultimate = ultimatum_results[key]
+                                qdata['grade'] = ultimate['final_grade']
+                                qdata['reasoning'] = ultimate.get('llm1_reasoning', qdata.get('reasoning', ''))
+
+                                # Update comparison data with ultimatum result
+                                comp_key = f"copy_{copy_result.copy_index}"
+                                if comp_key in llm_comparison_data.get("llm_comparison", {}):
+                                    if qid in llm_comparison_data["llm_comparison"][comp_key].get("questions", {}):
+                                        llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["ultimatum"] = {
+                                            "final_grade": ultimate['final_grade'],
+                                            "llm1_final_grade": ultimate.get('llm1_final_grade'),
+                                            "llm2_final_grade": ultimate.get('llm2_final_grade'),
+                                            "llm1_decision": ultimate.get('llm1_decision'),
+                                            "llm2_decision": ultimate.get('llm2_decision'),
+                                            "llm1_reasoning": ultimate.get('llm1_reasoning', ''),
+                                            "llm2_reasoning": ultimate.get('llm2_reasoning', ''),
+                                            "flip_flop_detected": ultimate.get('flip_flop_detected', False),
+                                            "confidence": ultimate.get('confidence', 0.8),
+                                            "method": ultimate.get('method', 'ultimatum_average')
+                                        }
+                                        llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["final"]["grade"] = ultimate['final_grade']
+                                        llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["final"]["method"] = ultimate.get('method', 'ultimatum_average')
+
+                    if progress_callback:
+                        await self._call_callback(progress_callback, 'batch_ultimatum_done', {
+                            'resolved_count': len(ultimatum_results)
+                        })
+
+        else:
+            # Single LLM batch
+            from ai.batch_grader import BatchGrader
+            grader = BatchGrader(self.ai)
+            batch_result = await grader.grade_batch(copies_data, questions, language)
+
+            if not batch_result.parse_success:
+                logger.error(f"Batch grading failed: {batch_result.parse_errors}")
+                return []
+
+        # Convert batch results to GradedCopy objects
+        for copy_result in batch_result.copies:
+            copy_idx = copy_result.copy_index - 1
+            if copy_idx < 0 or copy_idx >= len(self.session.copies):
+                continue
+
+            original_copy = self.session.copies[copy_idx]
+
+            # Update student name if detected (do this FIRST for live display)
+            detected_name = copy_result.student_name
+            if detected_name and not original_copy.student_name:
+                original_copy.student_name = detected_name
+
+            # Emit copy_start with detected name for live display update
+            if progress_callback:
+                await self._call_callback(progress_callback, 'copy_start', {
+                    'copy_index': copy_result.copy_index,
+                    'total_copies': total_copies,
+                    'copy_id': original_copy.id,
+                    'student_name': detected_name or original_copy.student_name,
+                    'questions': list(copy_result.questions.keys())
+                })
+
+            # Build grades dict and extract detected scale
+            grades = {}
+            detected_scale = {}
+            reasoning = {}
+            student_feedback = {}
+            readings = {}
+            confidence_by_question = {}
+
+            for qid, qdata in copy_result.questions.items():
+                grades[qid] = qdata.get('grade', 0)
+                max_pts = float(qdata.get('max_points', 0))
+                if max_pts > 0:
+                    detected_scale[qid] = max_pts
+
+                # Populate detailed fields for audit
+                if qdata.get('reasoning'):
+                    reasoning[qid] = qdata.get('reasoning')
+                if qdata.get('feedback'):
+                    student_feedback[qid] = qdata.get('feedback')
+                if qdata.get('student_answer_read'):
+                    readings[qid] = qdata.get('student_answer_read')
+                if qdata.get('confidence') is not None:
+                    confidence_by_question[qid] = float(qdata.get('confidence', 0.8))
+
+            # Update grading scale from detection
+            self.update_scale_from_detection(detected_scale)
+
+            # Calculate max_score from grading_scale (now updated)
+            batch_max_score = self.get_total_max_points()
+            # If still 0, we'll prompt user after grading in main.py
+
+            # Get comparison data for this copy if available
+            copy_comparison = None
+            if llm_comparison_data and f"copy_{copy_result.copy_index}" in llm_comparison_data.get("llm_comparison", {}):
+                copy_comparison = {
+                    "options": llm_comparison_data["options"],
+                    "llm_comparison": llm_comparison_data["llm_comparison"][f"copy_{copy_result.copy_index}"]["questions"]
+                }
+
+            # Create GradedCopy with full audit data
+            graded = GradedCopy(
+                copy_id=original_copy.id,
+                grades=grades,
+                total_score=sum(grades.values()),
+                max_score=batch_max_score,
+                confidence=sum(q.get('confidence', 0.8) for q in copy_result.questions.values()) / max(len(copy_result.questions), 1),
+                feedback=copy_result.overall_feedback or "",
+                reasoning=reasoning,
+                student_feedback=student_feedback,
+                readings=readings,
+                confidence_by_question=confidence_by_question,
+                llm_comparison=copy_comparison
+            )
+
+            graded_copies.append(graded)
+            self.session.graded_copies.append(graded)
+
+            if progress_callback:
+                await self._call_callback(progress_callback, 'copy_done', {
+                    'copy_index': copy_result.copy_index,
+                    'total_copies': total_copies,
+                    'copy_id': original_copy.id,
+                    'student_name': copy_result.student_name,
+                    'total_score': graded.total_score,
+                    'max_score': graded.max_score
+                })
+
+        # Save and notify completion
+        self._save_sync()
+
+        if progress_callback:
+            await self._call_callback(progress_callback, 'batch_done', {
+                'total_copies': total_copies,
+                'graded_copies': len(graded_copies),
+                'patterns': batch_result.patterns
+            })
+
+        self._grading_complete = True
+        return graded_copies
+
+    async def _grade_all_hybrid(
+        self,
+        progress_callback: callable = None
+    ) -> List[GradedCopy]:
+        """
+        Grade all copies using hybrid mode: LLM1=batch, LLM2=individual.
+
+        This combines the benefits of both approaches:
+        - Batch (LLM1): Consistency, pattern detection, sees all copies
+        - Individual (LLM2): Independent verification, no contamination
+
+        Then compares and resolves disagreements.
+        """
+        from ai.batch_grader import BatchGrader, BatchResult
+        from ai.single_pass_grader import SinglePassGrader
+        import logging
+
+        logger = logging.getLogger(__name__)
+        total_copies = len(self.session.copies)
+
+        if not hasattr(self.ai, 'providers') or len(self.ai.providers) < 2:
+            raise RuntimeError("Hybrid mode requires dual LLM with 2 providers")
+
+        provider_names = [name for name, _ in self.ai.providers]
+        llm1_name, llm1_provider = self.ai.providers[0]
+        llm2_name, llm2_provider = self.ai.providers[1]
+
+        # Notify start
+        if progress_callback:
+            await self._call_callback(progress_callback, 'hybrid_start', {
+                'total_copies': total_copies,
+                'llm1': llm1_name,
+                'llm2': llm2_name,
+                'llm1_mode': 'batch',
+                'llm2_mode': 'individual'
+            })
+
+        # Prepare copies data for batch grading
+        copies_data = []
+        for i, copy in enumerate(self.session.copies):
+            image_paths = []
+            if copy.page_images:
+                image_paths = copy.page_images
+            elif copy.pdf_path:
+                from vision.pdf_reader import PDFReader
+                reader = PDFReader(copy.pdf_path)
+                temp_dir = Path(self.store.session_dir) / "temp"
+                temp_dir.mkdir(exist_ok=True)
+
+                for page_num in range(copy.page_count):
+                    image_path = str(temp_dir / f"hybrid_copy_{i+1}_page_{page_num}.png")
+                    image_bytes = reader.get_page_image_bytes(page_num)
+                    with open(image_path, 'wb') as f:
+                        f.write(image_bytes)
+                    image_paths.append(image_path)
+                reader.close()
+
+            copies_data.append({
+                'copy_index': i + 1,
+                'image_paths': image_paths,
+                'student_name': copy.student_name
+            })
+
+        # Build questions dict
+        questions = {}
+        for qid, max_pts in self.grading_scale.items():
+            questions[qid] = {
+                'text': '',
+                'criteria': '',
+                'max_points': max_pts
+            }
+
+        language = 'fr'
+
+        # ===== PARALLEL: LLM1 (batch) + LLM2 (individual) =====
+        async def run_llm1_batch():
+            """LLM1 grades all copies in one batch call."""
+            grader = BatchGrader(llm1_provider)
+            return await grader.grade_batch(copies_data, questions, language)
+
+        async def run_llm2_individual():
+            """LLM2 grades each copy individually in parallel."""
+            results = []
+            semaphore = asyncio.Semaphore(self._parallel)
+
+            async def grade_one_copy(i: int, copy):
+                async with semaphore:
+                    grader = SinglePassGrader(llm2_provider)
+                    copy_data = copies_data[i]
+
+                    q_list = [{'id': qid, 'text': '', 'criteria': '', 'max_points': qdata['max_points']}
+                              for qid, qdata in questions.items()]
+
+                    result = await grader.grade_all_questions(
+                        q_list,
+                        copy_data['image_paths'],
+                        language
+                    )
+                    return (i, result)
+
+            tasks = [grade_one_copy(i, copy) for i, copy in enumerate(self.session.copies)]
+            individual_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for result in individual_results:
+                if not isinstance(result, Exception):
+                    results.append(result)
+            return results
+
+        # Run both in parallel
+        if progress_callback:
+            await self._call_callback(progress_callback, 'hybrid_grading', {
+                'status': 'running_both'
+            })
+
+        batch_result, individual_results = await asyncio.gather(
+            run_llm1_batch(),
+            run_llm2_individual(),
+            return_exceptions=True
+        )
+
+        # Handle errors
+        if isinstance(batch_result, Exception):
+            logger.error(f"LLM1 batch failed: {batch_result}")
+            batch_result = None
+        if isinstance(individual_results, Exception):
+            logger.error(f"LLM2 individual failed: {individual_results}")
+            individual_results = []
+
+        # ===== MERGE AND COMPARE =====
+        graded_copies = []
+
+        for i, original_copy in enumerate(self.session.copies):
+            # Get LLM1 (batch) result for this copy
+            llm1_grades = {}
+            llm1_name_detected = None
+            if batch_result and batch_result.parse_success:
+                for copy_result in batch_result.copies:
+                    if copy_result.copy_index == i + 1:
+                        llm1_grades = {qid: qdata['grade'] for qid, qdata in copy_result.questions.items()}
+                        llm1_name_detected = copy_result.student_name
+                        break
+
+            # Get LLM2 (individual) result for this copy
+            llm2_grades = {}
+            llm2_name_detected = None
+            for idx, result in individual_results:
+                if idx == i and result and result.parse_success:
+                    llm2_grades = {qid: qdata.get('grade', 0) for qid, qdata in result.questions.items()}
+                    llm2_name_detected = result.student_name
+                    break
+
+            # Compare and merge grades
+            final_grades = {}
+            disagreements = []
+            llm_comparison_data = {}
+
+            for qid in self.grading_scale.keys():
+                g1 = llm1_grades.get(qid, 0)
+                g2 = llm2_grades.get(qid, 0)
+                max_pts = self.grading_scale.get(qid, 1)
+
+                # Use relative threshold from settings
+                relative_threshold = max_pts * get_settings().grade_agreement_threshold
+
+                # Check for disagreement
+                if abs(g1 - g2) >= relative_threshold:
+                    disagreements.append({
+                        'question_id': qid,
+                        'llm1_grade': g1,
+                        'llm2_grade': g2,
+                        'max_points': max_pts
+                    })
+                    # For now, use average for disagreements
+                    final_grades[qid] = (g1 + g2) / 2
+                else:
+                    final_grades[qid] = g1  # Use LLM1 (batch) as primary
+
+                # Store comparison data for audit
+                llm_comparison_data[qid] = {
+                    llm1_name: {'grade': g1, 'max_points': max_pts, 'mode': 'batch'},
+                    llm2_name: {'grade': g2, 'max_points': max_pts, 'mode': 'individual'},
+                    'final': {
+                        'grade': final_grades[qid],
+                        'agreement': abs(g1 - g2) < relative_threshold
+                    }
+                }
+
+            # Resolve student name
+            student_name = original_copy.student_name or llm1_name_detected or llm2_name_detected
+
+            # Build llm_comparison for audit
+            copy_llm_comparison = {
+                "options": {
+                    "mode": "hybrid",
+                    "providers": [llm1_name, llm2_name],
+                    "llm1_mode": "batch",
+                    "llm2_mode": "individual"
+                },
+                "llm_comparison": llm_comparison_data
+            }
+
+            # Create GradedCopy with full audit data
+            graded = GradedCopy(
+                copy_id=original_copy.id,
+                grades=final_grades,
+                total_score=sum(final_grades.values()),
+                max_score=sum(self.grading_scale.values()),
+                confidence=0.85 if not disagreements else 0.70,
+                feedback=f"Hybrid mode. Disagreements: {len(disagreements)}",
+                llm_comparison=copy_llm_comparison
+            )
+
+            if student_name:
+                original_copy.student_name = student_name
+
+            graded_copies.append(graded)
+            self.session.graded_copies.append(graded)
+
+            if progress_callback:
+                await self._call_callback(progress_callback, 'copy_done', {
+                    'copy_index': i + 1,
+                    'total_copies': total_copies,
+                    'copy_id': original_copy.id,
+                    'student_name': student_name,
+                    'total_score': graded.total_score,
+                    'max_score': graded.max_score,
+                    'disagreements': [d['question_id'] for d in disagreements]
+                })
+
+        # Save and notify completion
+        self._save_sync()
+
+        if progress_callback:
+            await self._call_callback(progress_callback, 'hybrid_done', {
+                'total_copies': total_copies,
+                'graded_copies': len(graded_copies),
+                'patterns': batch_result.patterns if batch_result else {}
+            })
+
+        self._grading_complete = True
+        return graded_copies
+
     async def _grade_all_dual_llm(
         self,
         progress_callback: callable = None
@@ -555,7 +1324,7 @@ class GradingSessionOrchestrator:
                 "id": q_id,
                 "text": q_text,
                 "criteria": "",
-                "max_points": self.question_scales.get(q_id, 1.0)
+                "max_points": self.grading_scale.get(q_id, 1.0)
             })
 
         # Semaphore to limit concurrent grading
@@ -571,7 +1340,7 @@ class GradingSessionOrchestrator:
                         'total_copies': total_copies,
                         'copy_id': copy.id,
                         'student_name': copy.student_name,
-                        'questions': list(self.question_scales.keys())
+                        'questions': list(self.grading_scale.keys())
                     })
 
                 # Get image paths for this copy
@@ -639,7 +1408,7 @@ class GradingSessionOrchestrator:
                     agreement = q_audit.get('agreement', True)
 
                     # Use detected max_points from grading, fallback to question_scales
-                    detected_max_points = q_result.get("max_points", self.question_scales.get(q_id, 1.0))
+                    detected_max_points = q_result.get("max_points", self.grading_scale.get(q_id, 1.0))
 
                     if progress_callback:
                         await self._call_callback(progress_callback, 'question_done', {
@@ -668,10 +1437,13 @@ class GradingSessionOrchestrator:
                     grade = q_result.get("grade", 0)
                     feedback = q_result.get("feedback", "")
                     reading = q_result.get("reading", "")
+                    reasoning_text = q_result.get("reasoning", "")
 
                     graded.grades[q_id] = grade
                     graded.student_feedback[q_id] = feedback
                     graded.readings[q_id] = reading
+                    if reasoning_text:
+                        graded.reasoning[q_id] = reasoning_text
 
                     # Store detected max_points
                     detected_max = q_result.get("max_points", 1.0)
@@ -685,7 +1457,7 @@ class GradingSessionOrchestrator:
 
                 # Calculate totals using detected max_points
                 graded.total_score = sum(g or 0 for g in graded.grades.values())
-                graded.max_score = sum(graded.max_points_by_question.values()) if graded.max_points_by_question else sum(self.question_scales.values())
+                graded.max_score = sum(graded.max_points_by_question.values()) if graded.max_points_by_question else sum(self.grading_scale.values())
                 graded.confidence = sum(c or 0.5 for c in graded.confidence_by_question.values()) / len(graded.confidence_by_question) if graded.confidence_by_question else 0.5
 
                 # Generate overall feedback from per-question feedbacks
@@ -907,7 +1679,7 @@ class GradingSessionOrchestrator:
         separate CopyDocument for each.
 
         Supports two modes:
-        - Individual mode: PDF pre-split by pages_per_student (no AI for student detection)
+        - Individual mode: PDF pre-split by pages_per_copy (no AI for student detection)
         - Ensemble mode: Use AI to detect students (current behavior)
         """
         from rich.console import Console
@@ -915,7 +1687,7 @@ class GradingSessionOrchestrator:
 
         console = Console()
 
-        if self._pages_per_student:
+        if self._pages_per_copy:
             # INDIVIDUAL MODE: Pre-split PDF, no AI detection of students
             await self._load_copies_individual_mode()
         else:
@@ -959,7 +1731,7 @@ class GradingSessionOrchestrator:
         Load copies by pre-splitting PDF (no AI needed for student detection).
 
         This mode:
-        1. Splits the PDF into chunks of `pages_per_student` pages each
+        1. Splits the PDF into chunks of `pages_per_copy` pages each
         2. Analyzes each chunk as a separate student copy
         3. Uses AI consensus for name detection (if in comparison mode)
         """
@@ -968,7 +1740,7 @@ class GradingSessionOrchestrator:
         import hashlib
 
         console = Console()
-        pages_per_student = self._pages_per_student
+        pages_per_copy = self._pages_per_copy
 
         copy_index = 0
 
@@ -977,10 +1749,10 @@ class GradingSessionOrchestrator:
             total_pages = reader.get_page_count()
             reader.close()
 
-            # Calculate ranges: [(0, 1), (2, 3), (4, 5), ...] for pages_per_student=2
+            # Calculate ranges: [(0, 1), (2, 3), (4, 5), ...] for pages_per_copy=2
             ranges = []
-            for start in range(0, total_pages, pages_per_student):
-                end = min(start + pages_per_student - 1, total_pages - 1)
+            for start in range(0, total_pages, pages_per_copy):
+                end = min(start + pages_per_copy - 1, total_pages - 1)
                 ranges.append((start, end))
 
             num_students = len(ranges)
@@ -1658,7 +2430,7 @@ Reponds UNIQUEMENT par:
                                             if points_match:
                                                 points = float(points_match.group(1))
                                                 summary[f"{key}_points"] = str(points)
-                                                self.question_scales[key] = points
+                                                self.grading_scale[key] = points
 
                             # Store barème detection confidence (more explicit naming)
                             summary[f"{key}_bareme_confidence"] = bareme_confidence

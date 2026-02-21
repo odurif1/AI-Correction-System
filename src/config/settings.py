@@ -43,8 +43,22 @@ class Settings(BaseSettings):
     confidence_auto: float = 0.85
     confidence_flag: float = 0.60
 
+    # Grade agreement threshold (percentage of max_points)
+    # Used to detect disagreements between LLMs
+    # e.g., 0.10 means 10% of max_points
+    grade_agreement_threshold: float = 0.10
+
+    # Flip-flop detection threshold (percentage of max_points)
+    # Used to detect when LLMs swap positions after verification
+    # 0 = detect any position swap regardless of magnitude
+    # 0.25 = only flag swaps where differences exceed 25% of max_points
+    flip_flop_threshold: float = 0.0
+
     # Storage
     data_dir: str = "data"
+
+    # CORS - allowed origins for web frontend
+    cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 
 @lru_cache()

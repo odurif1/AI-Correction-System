@@ -2,19 +2,22 @@
 Main CLI entry point for the AI correction system.
 
 Usage:
-    python src/main.py correct copies/*.pdf
-    python src/main.py correct copies/*.pdf --auto
-    python src/main.py correct copies.pdf --pages-per-student 2
+    python src/main.py correct dual batch copies.pdf --pages-per-copy 2
+    python src/main.py correct single individual copies.pdf --auto-confirm
+    python src/main.py correct dual hybrid copies.pdf --pages-per-copy 2
     python src/main.py api --port 8000
     python src/main.py status <session_id>
     python src/main.py export <session_id>
     python src/main.py list
 
+Arguments:
+    llm_mode        single ou dual (nombre de LLM utilisés)
+    grading_method  individual, batch, ou hybrid
+
 Options:
-    --auto      Mode automatique sans interaction utilisateur.
-                - Le barème est détecté automatiquement pendant la correction
-                - En cas de désaccord entre les 2 IA: prend la moyenne
-                Sans --auto: demande choix utilisateur pour les désaccords
+    --pages-per-copy N  Découpe le PDF en copies de N pages chaque.
+                        Si non spécifié, le PDF entier est envoyé au LLM.
+    --auto-confirm      Mode automatique sans interaction
 """
 
 import asyncio
@@ -34,7 +37,7 @@ from utils.sorting import natural_sort_key
 from config.settings import get_settings
 from config.constants import DEFAULT_PARALLEL_COPIES
 from interaction.cli import CLI
-from interaction.live_progress import LiveProgressDisplay
+from interaction.cli import LiveProgressDisplay
 
 
 def check_api_key() -> bool:
@@ -370,20 +373,13 @@ async def command_correct(args):
     # Initialize workflow state (replaces mutable dicts)
     state = CorrectionState(
         language='fr',
-        auto_mode=args.auto,
+        auto_mode=args.auto_confirm,
         phase=WorkflowPhase.INITIALIZATION
     )
 
     # Jurisprudence: store user decisions to inform future grading
     # (kept as mutable dict for compatibility with orchestrator.ai.set_jurisprudence)
     jurisprudence: Dict = {}
-
-    # Validate required options
-    if not args.pages_per_student:
-        cli.console.print("[red]Erreur: L'option --pages-per-student est requise.[/red]")
-        cli.console.print("[dim]Exemple: --pages-per-student 2 pour 2 pages par élève[/dim]")
-        cli.console.print("[dim]Utilisez --help pour plus d'informations[/dim]")
-        return 1
 
     # Create orchestrator with callbacks (using helper functions)
     orchestrator = GradingSessionOrchestrator(
@@ -392,10 +388,12 @@ async def command_correct(args):
         name_disagreement_callback=None,
         reading_disagreement_callback=None,
         skip_reading_consensus=args.skip_reading,
-        force_single_llm=args.single,
-        pages_per_student=args.pages_per_student,
+        force_single_llm=(args.llm_mode == "single"),
+        pages_per_copy=args.pages_per_copy,
         second_reading=args.second_reading,
-        parallel=args.parallel
+        parallel=args.parallel,
+        grading_mode=args.grading_method,
+        batch_verify=args.batch_verify
     )
 
     # Create callbacks with access to orchestrator
@@ -425,7 +423,7 @@ async def command_correct(args):
     cli.show_startup(
         pdf_files=pdf_paths,
         mode=mode,
-        pages_per_student=args.pages_per_student,
+        pages_per_copy=args.pages_per_copy,
         language='auto',
         llm1_name=llm1_name,
         llm2_name=llm2_name,
@@ -466,15 +464,32 @@ async def command_correct(args):
         cli.show_error("Aucune question détectée. L'analyse a peut-être échoué.")
         return 1
 
-    if questions_detected_during_grading:
-        # In individual mode, questions will be detected during grading
-        scale = {}
-    else:
-        # Use default scale of 1.0 for each question
-        # The actual scale will be detected by the LLM during grading
-        scale = {q: 1.0 for q in analysis['questions'].keys()}
-
+    # Scale will be empty - it will be detected during grading
+    # If not detected and not auto mode, user will be prompted after grading
+    scale = {}
     orchestrator.confirm_scale(scale)
+
+    # Helper function to prompt user for missing scale
+    async def prompt_for_missing_scale(question_ids: List[str]) -> Dict[str, float]:
+        """Prompt user for max points of questions without scale."""
+        if args.auto_confirm:
+            # Auto mode: default to 1.0 for all
+            return {qid: 1.0 for qid in question_ids}
+
+        cli.console.print(f"\n[bold yellow]Barème non détecté pour {len(question_ids)} question(s)[/bold yellow]")
+        new_scale = {}
+        for qid in question_ids:
+            if orchestrator.get_max_points(qid) <= 0:
+                from rich.prompt import Prompt
+                value = Prompt.ask(
+                    f"  {qid} - Points max",
+                    default="1"
+                )
+                try:
+                    new_scale[qid] = float(value.replace(',', '.'))
+                except ValueError:
+                    new_scale[qid] = 1.0
+        return new_scale
 
     # ============================================================
     # Phase 3: Grade All Copies (with live display)
@@ -735,50 +750,42 @@ async def command_correct(args):
     total_copies = len(orchestrator.session.copies)
     live_display = LiveProgressDisplay(console, total_copies=total_copies, language=language)
 
+    # Use factory function to create callback with original progress callback
+    from interaction.cli import create_live_progress_callback
+    live_callback = create_live_progress_callback(live_display, progress_callback)
+
     with live_display:
-        async def live_callback(event_type: str, data: dict):
-            """Callback that updates live display and shows detailed progress."""
-            # Update live display
-            if event_type == 'copy_start':
-                copy_idx = data.get('copy_index', 0)
-                student = data.get('student_name', '???')
-                questions = data.get('questions', [])
-                live_display.mark_processing(
-                    copy_idx,
-                    student_name=student,
-                    questions_total=len(questions) if questions else 0
-                )
+        graded = await orchestrator.grade_all(progress_callback=live_callback)
 
-            elif event_type == 'question_done':
-                copy_idx = data.get('copy_index', 0)
-                if copy_idx:
-                    live_display.mark_question_done(copy_idx)
+    # ============================================================
+    # Phase 3.5: Check if scale was detected, prompt user if not
+    # ============================================================
+    if graded:
+        # Get all question IDs from graded copies
+        all_questions = set()
+        for g in graded:
+            all_questions.update(g.grades.keys())
 
-            elif event_type == 'copy_done':
-                copy_idx = data.get('copy_index', 0)
-                score = data.get('total_score', 0) or 0
-                max_score = data.get('max_score', 20) or 20
-                live_display.mark_done(copy_idx, score, max_score)
+        # Check which questions have no scale (max_points = 0 or not set)
+        missing_scale = [qid for qid in all_questions if orchestrator.get_max_points(qid) <= 0]
 
-            elif event_type == 'copy_error':
-                copy_idx = data.get('copy_index', 0)
-                error = data.get('error', 'Erreur')
-                live_display.mark_error(copy_idx, error)
+        if missing_scale:
+            cli.console.print(f"\n[bold yellow]⚠ Barème non détecté pour {len(missing_scale)} question(s)[/bold yellow]")
+            new_scale = await prompt_for_missing_scale(missing_scale)
+            orchestrator.grading_scale.update(new_scale)
+            orchestrator._save_sync()
 
-            # Also call original progress callback for detailed display
-            await progress_callback(event_type, data)
-
-        # Use dual-LLM grading when in comparison mode, otherwise use per-question
-        if is_comparison_mode and hasattr(orchestrator.ai, 'grade_copy'):
-            graded = await orchestrator.grade_all(progress_callback=live_callback)
-        else:
-            graded = await orchestrator.grade_all(progress_callback=live_callback)
+        # (Re)calculate max_score for all graded copies
+        total_max = orchestrator.get_total_max_points()
+        if total_max > 0:
+            for g in graded:
+                g.max_score = total_max
 
     # ============================================================
     # Phase 4: Review Doubts (if not auto mode)
     # ============================================================
     state = state.with_phase(WorkflowPhase.VERIFICATION)
-    if not args.auto:
+    if not args.auto_confirm:
         doubts = orchestrator.get_doubts(threshold=0.7)
         if doubts:
             decisions = cli.review_doubts(doubts, language=language)
@@ -1059,45 +1066,57 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s correct copies/*.pdf
-  %(prog)s correct copies/*.pdf --auto
-  %(prog)s correct copies.pdf --pages-per-student 2
-  %(prog)s correct copies/*.pdf --output ./my_grades
+  # Avec découpage par pages (PDF multi-copies)
+  %(prog)s correct dual batch copies.pdf --pages-per-copy 2 --auto-confirm
+  %(prog)s correct single individual copies.pdf --pages-per-copy 2
+
+  # Sans découpage (PDF envoyé entier au LLM)
+  %(prog)s correct dual batch copies.pdf --auto-confirm
+  %(prog)s correct single individual copies.pdf
+
+  # Autres commandes
   %(prog)s status abc123
-  %(prog)s analytics abc123
   %(prog)s export abc123 --format json,csv
   %(prog)s list
-  %(prog)s api --port 8000
 
-Note on --auto:
-  En mode automatique (--auto), aucune interaction utilisateur n'est requise.
+Arguments:
+  llm_mode        single ou dual (nombre de LLM utilisés)
+                  - single: un seul LLM, plus rapide et moins coûteux
+                  - dual: deux LLM en parallèle, vérification croisée
+
+  grading_method  individual, batch, ou hybrid
+                  - individual: chaque copie corrigée séparément
+                  - batch: toutes les copies en un seul appel API
+                  - hybrid: LLM1=batch, LLM2=individual (dual uniquement)
+
+Note on --pages-per-copy (--ppc):
+  Optionnel. Deux modes de fonctionnement:
+
+  1. AVEC --pages-per-copy N:
+     - Le PDF est découpé en copies de N pages chacune
+     - Exemple: --pages-per-copy 2 pour un PDF de 8 pages → 4 copies
+     - Recommandé pour les PDF multi-élèves avec structure fixe
+
+  2. SANS --pages-per-copy:
+     - Le PDF entier est envoyé au LLM sans découpage
+     - Le LLM détecte automatiquement les copies et les élèves
+     - Recommandé pour:
+       * PDF pré-découpé (1 fichier = 1 copie élève)
+       * Laisser le LLM analyser la structure du document
+       * Documents avec structure variable
+
+Note on --auto-confirm:
+  En mode automatique, aucune interaction utilisateur n'est requise.
   - Le barème est détecté automatiquement pendant la correction
-  - En cas de désaccord entre les 2 IA: la moyenne est automatiquement appliquée
-  Sans --auto: le programme sollicite l'utilisateur pour arbitrer les désaccords entre IA.
-
-Note on --single:
-  Par défaut, si COMPARISON_MODE=true dans .env, le système utilise 2 LLM en parallèle.
-  Utilisez --single pour forcer l'utilisation d'un seul LLM:
-  - Plus rapide (une seule API call par question)
-  - Moins coûteux (50% d'API calls en moins)
-  - Pas de vérification croisée en cas d'erreur
-
-Note on --pages-per-student (--pps):
-  Active le mode lecture individuelle où le PDF est pré-découpé par copie élève.
-  Chaque LLM analyse une copie à la fois (pas de lecture d'ensemble).
-  Avantages:
-  - Focus LLM concentré sur une seule copie
-  - Aucune contamination entre copies
-  - Pas d'appel IA pour détecter les élèves (découpage par pages fixes)
-  Exemple: --pages-per-student 2 pour un PDF de 8 pages → 4 copies de 2 pages
+  - En cas de désaccord entre les 2 IA (dual): la moyenne est appliquée
+  - Sans --auto-confirm: le programme sollicite l'utilisateur pour:
+    * Arbitrer les désaccords entre IA
+    * Confirmer le barème si non détecté
 
 Note on --second-reading:
   Active la deuxième lecture pour améliorer la qualité de correction.
-  - Mode Single LLM (--single): 2 passes - le LLM reçoit ses propres résultats
-    et peut les ajuster (2 appels API au lieu d'1)
-  - Mode Dual LLM (défaut): Ajoute une instruction de relecture dans le prompt
-    initial, demandant au LLM de vérifier sa correction dans le même appel
-  Par défaut: OFF (pas de deuxième lecture)
+  - Mode Single LLM: 2 passes - le LLM reçoit ses propres résultats
+  - Mode Dual LLM: Ajoute une instruction de relecture dans le prompt
         """
     )
 
@@ -1106,12 +1125,22 @@ Note on --second-reading:
     # Correct command
     correct_parser = subparsers.add_parser("correct", help="Grade student copies")
     correct_parser.add_argument(
+        "llm_mode",
+        choices=["single", "dual"],
+        help="Mode LLM: 'single' (un seul LLM) ou 'dual' (2 LLM en comparaison)"
+    )
+    correct_parser.add_argument(
+        "grading_method",
+        choices=["individual", "batch", "hybrid"],
+        help="Méthode de correction: 'individual' (chaque copie séparément), 'batch' (toutes les copies en un appel), 'hybrid' (LLM1=batch, LLM2=individual)"
+    )
+    correct_parser.add_argument(
         "pdfs",
         nargs="+",
         help="PDF files or directories to process"
     )
     correct_parser.add_argument(
-        "--auto",
+        "--auto-confirm",
         action="store_true",
         help="Mode automatique sans interaction: utilise le barème détecté et moyenne les notes en cas de désaccord entre IA"
     )
@@ -1135,19 +1164,15 @@ Note on --second-reading:
         help="Subject/domain for grading"
     )
     correct_parser.add_argument(
-        "--single",
-        action="store_true",
-        help="Utiliser un seul LLM au lieu du mode comparaison (plus rapide, moins coûteux)"
-    )
-    correct_parser.add_argument(
         "--skip-reading",
         action="store_true",
         help="Ignorer le consensus de lecture (les LLM notent directement sans valider ce qu'ils lisent)"
     )
     correct_parser.add_argument(
-        "--pages-per-student", "--pps",
+        "--pages-per-copy", "--ppc",
         type=int,
-        help="Nombre de pages par élève (active le mode lecture individuelle - PDF pré-découpé)"
+        default=None,
+        help="Nombre de pages par copie élève. Si non spécifié, le PDF est envoyé entier au LLM qui détecte les copies automatiquement."
     )
     correct_parser.add_argument(
         "--second-reading",
@@ -1159,6 +1184,12 @@ Note on --second-reading:
         type=int,
         default=DEFAULT_PARALLEL_COPIES,
         help=f"Nombre de copies traitées en parallèle (défaut: {DEFAULT_PARALLEL_COPIES}). Accélère le traitement en mode individuel (Single ou Dual LLM)"
+    )
+    correct_parser.add_argument(
+        "--batch-verify",
+        choices=["per-question", "grouped"],
+        default="grouped",
+        help="Mode de vérification post-batch pour les désaccords (dual batch uniquement): 'per-question' (un appel par désaccord) ou 'grouped' (un seul appel groupé)"
     )
 
     # Status command

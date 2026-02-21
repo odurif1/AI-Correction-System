@@ -26,6 +26,7 @@ from typing import List, Dict, Any, Tuple, Optional
 from dataclasses import dataclass
 
 from ai.disagreement_analyzer import are_readings_substantially_different
+from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -1480,7 +1481,10 @@ Original question: {kwargs.get('question_text', '')}"""
 
             max_pts = d["llm1"]["max_points"]
 
-            if abs(grade1 - grade2) < 0.1:
+            # Use relative threshold from settings
+            relative_threshold = max_pts * get_settings().grade_agreement_threshold
+
+            if abs(grade1 - grade2) < relative_threshold:
                 # Consensus reached in ultimatum
                 final_results[qid] = {
                     "grade": grade1,

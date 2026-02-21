@@ -26,30 +26,31 @@ Le système combine deux dimensions indépendantes:
 | **SINGLE** | `--single` | Un seul LLM corrige chaque copie |
 | **DUAL** | *(défaut)* | Deux LLM notent en parallèle, avec phases de vérification si désaccord |
 
-### 2. Mode de lecture: ENSEMBLE vs INDIVIDUAL
+### 2. Mode de correction: INDIVIDUAL vs BATCH vs HYBRID
 
 | Mode | Option | Description |
 |------|--------|-------------|
-| **ENSEMBLE** | *(défaut)* | Un PDF contient tous les élèves, l'IA détecte les copies |
-| **INDIVIDUAL** | `--pages-per-student N` | PDF pré-découpé, N pages par élève |
+| **INDIVIDUAL** | *(défaut)* | Chaque copie est corrigée séparément (N appels API) |
+| **BATCH** | `--mode batch` | Toutes les copies corrigées en UN appel API |
+| **HYBRID** | `--mode hybrid` | LLM1=batch, LLM2=individual, puis comparaison |
 
 ### Matrice des combinaisons
 
 ```
-                    ┌─────────────────────────────────────────────────────┐
-                    │              MODE DE LECTURE                         │
-                    │                                                      │
-                    │     ENSEMBLE              INDIVIDUAL                  │
-                    │     (détection IA)        (--pages-per-student N)     │
-┌───────────────────┼─────────────────────────────────────────────────────┤
-│         SINGLE    │  1 LLM détecte            1 LLM par copie           │
-│  NOMBRE   (--single)│  et corrige              (découpage fixe)         │
-│  DE LLM           │  toutes les copies                                  │
-├───────────────────┼─────────────────────────────────────────────────────┤
-│         DUAL      │  2 LLM détectent          2 LLM par copie           │
-│         (défaut)  │  et corrigent             (découpage fixe)          │
-│                   │  ensemble                 + vérification croisée    │
-└───────────────────┴─────────────────────────────────────────────────────┘
+                    ┌─────────────────────────────────────────────────────────────────────┐
+                    │                      MODE DE CORRECTION                              │
+                    │                                                                      │
+                    │     INDIVIDUAL            BATCH                HYBRID              │
+                    │     (défaut)              (--mode batch)       (--mode hybrid)      │
+┌───────────────────┼─────────────────────────────────────────────────────────────────────┤
+│         SINGLE    │  1 LLM × N copies         1 LLM × 1 appel      ✗ Non disponible    │
+│  NOMBRE   (--single)│  = N appels API          = TOUTES en 1 réponse                    │
+│  DE LLM           │                                                                      │
+├───────────────────┼─────────────────────────────────────────────────────────────────────┤
+│         DUAL      │  2 LLM × N copies         2 LLM × 1 appel     LLM1: batch          │
+│         (défaut)  │  = 2N appels API          = 2 appels          LLM2: individual     │
+│                   │  + vérification           + comparaison       + comparaison        │
+└───────────────────┴─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
@@ -66,61 +67,102 @@ Le système combine deux dimensions indépendantes:
 
 ---
 
-## Mode INDIVIDUAL (--pages-per-student N)
+## Mode INDIVIDUAL (défaut)
 
-Le système découpe le PDF en chunks de N pages, chaque chunk étant une copie d'élève.
+Chaque copie est corrigée séparément, avec traitement parallèle possible.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  MODE INDIVIDUAL                                                 │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  1. Le PDF est découpé en chunks de N pages                     │
-│  2. Chaque chunk est analysé comme une copie indépendante       │
-│  3. Analyse faite directement pendant la phase de correction    │
+│  1. Le PDF est découpé en chunks de N pages (--pages-per-student)│
+│  2. Chaque chunk est corrigé indépendamment                      │
+│  3. Parallélisable (--parallel 6 copies simultanées)             │
 │                                                                  │
-│  PDF de 12 pages + --pages-per-student 2 → 6 copies de 2 pages  │
+│  PDF de 12 pages + --pages-per-student 2 → 6 copies             │
+│  6 copies × 2 LLM = 12 appels API (ou 6 si --single)            │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 **Avantages:**
 - Focus LLM concentré sur une seule copie
-- Aucune contamination entre copies
-- Pas d'appel IA supplémentaire pour l'analyse préalable
-- Parallélisable (--parallel)
+- Parallélisable pour accélérer le traitement
+- Chaque copie est indépendante (timeout sur une n'affecte pas les autres)
 
 **Inconvénients:**
 - N appels pour N copies (coût plus élevé)
-- Nécessite de connaître le nombre de pages par élève
+- Cohérence entre copies non garantie
 
 ---
 
-## Mode ENSEMBLE (défaut)
+## Mode BATCH (--mode batch)
 
-L'IA analyse le PDF complet et détecte automatiquement les élèves.
+Toutes les copies sont corrigées en UN SEUL appel API.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  MODE ENSEMBLE                                                   │
+│  MODE BATCH                                                      │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                  │
-│  1. L'IA scanne tout le PDF                                      │
-│  2. Elle identifie les zones de chaque élève                    │
-│  3. Elle extrait et corrige chaque copie                        │
+│  1. Toutes les images de toutes les copies envoyées en 1 appel  │
+│  2. Le LLM voit TOUTES les copies et peut comparer              │
+│  3. Cohérence garantie: même réponse = même note                │
 │                                                                  │
-│  PDF de 12 pages → IA détecte 6 élèves → 6 copies               │
+│  PDF de 12 pages → 1 appel API → TOUTES les notes               │
+│  (ou 2 appels si Dual LLM pour comparaison)                     │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 **Avantages:**
-- Un seul appel pour détecter tous les élèves
-- Pas besoin de connaître le nombre de pages par élève
+- **Cohérence absolue**: Le LLM voit toutes les réponses, garantit same réponse = same note
+- **Économie**: 1-2 appels API au lieu de N
+- **Pattern detection**: Le LLM identifie les réponses courantes, outliers, copiage potentiel
+- **Contexte**: Aider la lecture manuscrite en comparant les réponses
 
 **Inconvénients:**
-- Dépend de la qualité de détection de l'IA
-- Risque de confusion si copies mal délimitées
+- Tout ou rien: si l'appel échoue, tout échoue
+- Limite de tokens (grandes classes)
+
+---
+
+## Mode HYBRID (--mode hybrid, Dual LLM uniquement)
+
+Combine le meilleur des deux mondes: LLM1 en batch, LLM2 en individual.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  MODE HYBRID (Dual LLM uniquement)                               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │  EN PARALLÈLE:                                          │    │
+│  │                                                         │    │
+│  │  LLM1 (BATCH)              LLM2 (INDIVIDUAL)            │    │
+│  │  1 appel                   N appels (parallélisés)      │    │
+│  │  Voit toutes les copies    Chaque copie indépendante    │    │
+│  │  Cohérence garantie        Vérification indépendante    │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                              ↓                                   │
+│  ┌─────────────────────────────────────────────────────────┐    │
+│  │  COMPARAISON                                            │    │
+│  │  Pour chaque copie: comparer les notes LLM1 vs LLM2     │    │
+│  │  Si désaccord → moyenne (ou flag pour review)           │    │
+│  └─────────────────────────────────────────────────────────┘    │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Avantages:**
+- **Cohérence** (via LLM1 batch) + **Vérification indépendante** (via LLM2 individual)
+- Détection des erreurs par comparaison
+- Le meilleur des deux modes
+
+**Inconvénients:**
+- Nécessite Dual LLM
+- 1 + N appels API (plus que batch, moins que individual)
 
 ---
 
@@ -215,33 +257,108 @@ cp .env.example .env
 # Éditer .env avec vos clés Gemini et/ou OpenAI
 
 # 3. Lancer une correction
-python -m src.main correct copies/*.pdf --pages-per-student 2 --auto
+python -m src.main correct dual individual copies.pdf --auto-confirm
 ```
 
 ---
 
-## Options CLI
+## Syntaxe CLI
 
-### Options principales
+```
+python -m src.main correct <LLM_MODE> <GRADING_METHOD> <PDF> [OPTIONS]
+```
+
+### Arguments positionnels
+
+| Argument | Valeurs | Description |
+|----------|---------|-------------|
+| `LLM_MODE` | `single`, `dual` | Nombre de LLM utilisés |
+| `GRADING_METHOD` | `individual`, `batch`, `hybrid` | Méthode de correction |
+| `PDF` | chemin(s) | Fichier(s) PDF à corriger |
+
+### Options
 
 | Option | Description |
 |--------|-------------|
-| `--pages-per-student N` | Active mode INDIVIDUAL: N pages par élève |
-| `--single` | Mode SINGLE LLM (un seul LLM) |
-| `--auto` | Mode automatique (pas d'interaction) |
+| `--pages-per-copy N` | Découpe le PDF en copies de N pages. Si omis, PDF envoyé entier au LLM. |
+| `--auto-confirm` | Mode automatique sans interaction |
+| `--batch-verify MODE` | Vérification post-batch: `per-question` ou `grouped` (dual batch uniquement) |
 | `--second-reading` | 2ème lecture (2 passes en Single, intégrée en Dual) |
+| `--parallel N` | Copies en parallèle (défaut: 6, mode INDIVIDUAL uniquement) |
+| `--output DIR` | Répertoire de sortie |
+| `--export json,csv` | Formats d'export |
 
-### Options avancées
+---
 
-| Option | Défaut | Description |
-|--------|--------|-------------|
-| `--parallel N` | 6 | Nombre de copies traitées en parallèle (mode INDIVIDUAL) |
-| `--skip-reading` | - | Ignorer le consensus de lecture |
-| `--scale Q1=5,Q2=3` | - | Définir le barème manuellement |
-| `--output DIR` | outputs | Répertoire de sortie |
-| `--subject TEXT` | - | Matière/domaine pour la correction |
-| `--annotate` | - | Générer les PDFs annotés |
-| `--export json,csv` | json,csv | Formats d'export |
+## Option --batch-verify
+
+En mode **dual batch**, cette option est **obligatoire**. Elle détermine comment les désaccords entre les deux LLM sont résolus:
+
+### Logique de vérification (identique au mode individual)
+
+Les deux modes suivent la même logique:
+1. **Vérification**: Les deux LLMs voient le travail de l'autre et peuvent ajuster leur note
+2. **Ultimatum**: Si désaccord persiste, un round final est exécuté
+
+### `--batch-verify per-question`
+
+Un appel API **par désaccord** pour **chaque LLM** (les deux LLMs voient le travail de l'autre).
+
+```
+Batch → 2 LLMs → 3 désaccords → 3 appels × 2 LLMs = 6 appels de vérification
+Si désaccord persiste → 6 appels d'ultimatum
+Total max: 2 + 6 + 6 = 14 appels API
+```
+
+**Avantage**: Plus précis, chaque désaccord est traité isolément.
+
+### `--batch-verify grouped`
+
+Un **seul appel** par LLM regroupant **tous les désaccords** (les deux LLMs voient le travail de l'autre).
+
+```
+Batch → 2 LLMs → 3 désaccords → 1 appel × 2 LLMs = 2 appels de vérification
+Si désaccord persiste → 2 appels d'ultimatum
+Total max: 2 + 2 + 2 = 6 appels API
+```
+
+**Avantage**: Plus efficace, moins d'appels API.
+
+**Exemple:**
+```bash
+# Vérification par question (plus précis)
+python -m src.main correct dual batch copies.pdf --batch-verify per-question
+
+# Vérification groupée (plus rapide)
+python -m src.main correct dual batch copies.pdf --batch-verify grouped
+```
+
+---
+
+## Option --pages-per-copy
+
+Cette option est **optionnelle**. Elle détermine comment le PDF est traité:
+
+### AVEC --pages-per-copy N (découpage)
+
+Le PDF est découpé en copies de N pages chacune avant d'être envoyé au LLM.
+
+```
+PDF 8 pages + --pages-per-copy 2 → 4 copies de 2 pages
+```
+
+**Usage:**
+- PDF multi-élèves avec structure fixe (chaque copie fait N pages)
+- Contrôle précis du découpage
+
+### SANS --pages-per-copy (PDF entier)
+
+Le PDF est envoyé entier au LLM qui détecte automatiquement les copies.
+
+**Usage:**
+- PDF pré-découpé (1 fichier = 1 copie élève)
+- Documents avec structure variable
+- Laisser le LLM analyser la structure
 
 ---
 
@@ -249,30 +366,37 @@ python -m src.main correct copies/*.pdf --pages-per-student 2 --auto
 
 ```bash
 # ═══════════════════════════════════════════════════════════════
-# Mode INDIVIDUAL (recommandé pour copies pré-découpées)
+# Avec découpage (--pages-per-copy)
 # ═══════════════════════════════════════════════════════════════
 
-# DUAL LLM + INDIVIDUAL (défaut recommandé)
-python -m src.main correct copies.pdf --pages-per-student 2 --auto
+# DUAL LLM + INDIVIDUAL + découpage 2 pages/copy
+python -m src.main correct dual individual copies.pdf --pages-per-copy 2 --auto-confirm
 
-# SINGLE LLM + INDIVIDUAL (plus rapide)
-python -m src.main correct copies.pdf --pages-per-student 2 --single --auto
-
-# SINGLE LLM + INDIVIDUAL + 2ème lecture (auto-vérification)
-python -m src.main correct copies.pdf --pages-per-student 2 --single --second-reading --auto
-
-# DUAL LLM + INDIVIDUAL + parallélisme agressif
-python -m src.main correct copies.pdf --pages-per-student 2 --parallel 10 --auto
+# SINGLE LLM + BATCH + découpage 2 pages/copy (1 seul appel API!)
+python -m src.main correct single batch copies.pdf --pages-per-copy 2 --auto-confirm
 
 # ═══════════════════════════════════════════════════════════════
-# Mode ENSEMBLE (PDF contenant tous les élèves)
+# Sans découpage (PDF envoyé entier)
 # ═══════════════════════════════════════════════════════════════
 
-# DUAL LLM + ENSEMBLE (IA détecte les élèves)
-python -m src.main correct classe_complete.pdf --auto
+# PDF pré-découpé (1 fichier = 1 élève)
+python -m src.main correct dual batch eleve_dupont.pdf --auto-confirm
 
-# SINGLE LLM + ENSEMBLE
-python -m src.main correct classe_complete.pdf --single --auto
+# Laisser le LLM analyser la structure
+python -m src.main correct single individual copies.pdf --auto-confirm
+
+# ═══════════════════════════════════════════════════════════════
+# Autres options
+# ═══════════════════════════════════════════════════════════════
+
+# Avec 2ème lecture (auto-vérification)
+python -m src.main correct single individual copies.pdf --second-reading --auto-confirm
+
+# Parallélisme agressif (mode individual uniquement)
+python -m src.main correct dual individual copies.pdf --parallel 10 --auto-confirm
+
+# Mode HYBRID (dual uniquement)
+python -m src.main correct dual hybrid copies.pdf --pages-per-copy 2 --auto-confirm
 ```
 
 ---

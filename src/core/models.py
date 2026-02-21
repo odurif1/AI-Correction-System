@@ -145,7 +145,7 @@ class GradingSession(BaseModel):
     storage_path: Optional[str] = None
 
     # Individual reading mode (PDF pre-split)
-    pages_per_student: Optional[int] = None  # If set, activates individual mode
+    pages_per_copy: Optional[int] = None  # If set, activates individual mode
 
 
 class GradedCopy(BaseModel):

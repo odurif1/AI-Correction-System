@@ -1,17 +1,20 @@
 """
 FastAPI application for the AI correction system.
 
-Provides web API for grading operations.
+Provides web API for grading operations with WebSocket support for real-time progress.
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from pathlib import Path
 import shutil
 import uuid
 import re
+import json
+import logging
 
 # Maximum file size for uploads (50 MB)
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
@@ -19,57 +22,16 @@ MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 from config.settings import get_settings
 from core.session import GradingSessionOrchestrator
 from storage.session_store import SessionStore
+from api.websocket import manager as ws_manager
+from api.schemas import (
+    CreateSessionRequest, SessionResponse, SessionDetailResponse,
+    GradeResponse, TeacherDecisionRequest,
+    DisagreementResponse, ResolveDisagreementRequest,
+    AnalyticsResponse, ProviderResponse, ProviderModel,
+    SettingsResponse, UpdateSettingsRequest, ExportOptions
+)
 
-
-# ============================================================================
-# Request/Response Models
-# ============================================================================
-
-class CreateSessionRequest(BaseModel):
-    """Request to create a new grading session."""
-    subject: Optional[str] = None
-    topic: Optional[str] = None
-    total_questions: int = 0
-    question_weights: Dict[str, float] = {}
-
-
-class SessionResponse(BaseModel):
-    """Session information."""
-    session_id: str
-    status: str
-    created_at: str
-    copies_count: int
-    graded_count: int
-    average_score: Optional[float] = None
-
-
-class TeacherDecisionRequest(BaseModel):
-    """Request to provide teacher guidance."""
-    question_id: str
-    copy_id: str
-    teacher_guidance: str
-    original_score: float
-    new_score: float
-    applies_to_all: bool = True
-
-
-class GradeResponse(BaseModel):
-    """Grading result."""
-    success: bool
-    session_id: str
-    graded_count: int
-    total_count: int
-    pending_review: int
-
-
-class AnalyticsResponse(BaseModel):
-    """Analytics data."""
-    mean_score: float
-    median_score: float
-    min_score: float
-    max_score: float
-    std_dev: float
-    score_distribution: Dict[str, int]
+logger = logging.getLogger(__name__)
 
 
 # ============================================================================
@@ -100,8 +62,39 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Session storage (in-memory for now)
+    # Session storage (in-memory for active grading)
     active_sessions: Dict[str, GradingSessionOrchestrator] = {}
+    session_progress: Dict[str, Dict[str, Any]] = {}
+
+    # ============================================================================
+    # WebSocket Endpoint
+    # ============================================================================
+
+    @app.websocket("/api/sessions/{session_id}/ws")
+    async def websocket_progress(websocket: WebSocket, session_id: str):
+        """
+        WebSocket for real-time grading progress.
+
+        Sends events:
+        - copy_start: When a copy starts grading
+        - question_done: When a question is graded
+        - copy_done: When a copy is fully graded
+        - copy_error: When grading fails for a copy
+        - session_complete: When the session is complete
+        """
+        await ws_manager.connect(websocket, session_id)
+        try:
+            # Keep connection alive and handle any client messages
+            while True:
+                data = await websocket.receive_text()
+                # Handle ping/pong or other client messages
+                if data == "ping":
+                    await websocket.send_text("pong")
+        except WebSocketDisconnect:
+            ws_manager.disconnect(websocket, session_id)
+        except Exception as e:
+            logger.error(f"WebSocket error: {e}")
+            ws_manager.disconnect(websocket, session_id)
 
     # ============================================================================
     # Routes
@@ -142,14 +135,25 @@ def create_app() -> FastAPI:
         if request.question_weights:
             orchestrator.session.policy.question_weights = request.question_weights
 
+        # Save initial session
+        orchestrator._save_sync()
+
         active_sessions[session_id] = orchestrator
+        session_progress[session_id] = {
+            "status": "created",
+            "copies_uploaded": 0,
+            "copies_graded": 0,
+            "disagreements": []
+        }
 
         return SessionResponse(
             session_id=session_id,
             status=orchestrator.session.status,
             created_at=str(orchestrator.session.created_at),
             copies_count=0,
-            graded_count=0
+            graded_count=0,
+            subject=request.subject,
+            topic=request.topic
         )
 
     @app.post("/api/sessions/{session_id}/upload")
@@ -161,7 +165,13 @@ def create_app() -> FastAPI:
         Upload PDF copies to a session.
         """
         if session_id not in active_sessions:
-            raise HTTPException(status_code=404, detail="Session not found")
+            # Try to load existing session
+            store = SessionStore(session_id)
+            if not store.exists():
+                raise HTTPException(status_code=404, detail="Session not found")
+            # Create orchestrator for existing session
+            orchestrator = GradingSessionOrchestrator(session_id=session_id)
+            active_sessions[session_id] = orchestrator
 
         orchestrator = active_sessions[session_id]
 
@@ -207,15 +217,20 @@ def create_app() -> FastAPI:
                 shutil.copyfileobj(file.file, f)
             pdf_paths.append(str(file_path))
 
+        # Update session progress
+        if session_id in session_progress:
+            session_progress[session_id]["copies_uploaded"] = len(pdf_paths)
+            session_progress[session_id]["status"] = "uploaded"
+
         return {
             "session_id": session_id,
             "uploaded_count": len(pdf_paths),
             "paths": pdf_paths
         }
 
-    @app.get("/api/sessions/{session_id}", response_model=SessionResponse)
+    @app.get("/api/sessions/{session_id}", response_model=SessionDetailResponse)
     async def get_session(session_id: str):
-        """Get session information."""
+        """Get detailed session information."""
         store = SessionStore(session_id)
         session = store.load_session()
 
@@ -227,19 +242,68 @@ def create_app() -> FastAPI:
             scores = [g.total_score for g in session.graded_copies]
             average = sum(scores) / len(scores)
 
-        return SessionResponse(
+        # Build copies list
+        copies = []
+        for copy in session.copies:
+            copy_info = {
+                "id": copy.id,
+                "student_name": copy.student_name,
+                "page_count": copy.page_count,
+                "processed": copy.processed
+            }
+            copies.append(copy_info)
+
+        # Build graded copies list
+        graded_copies = []
+        for graded in session.graded_copies:
+            graded_info = {
+                "copy_id": graded.copy_id,
+                "total_score": graded.total_score,
+                "max_score": graded.max_score,
+                "confidence": graded.confidence,
+                "grades": graded.grades
+            }
+            graded_copies.append(graded_info)
+
+        return SessionDetailResponse(
             session_id=session_id,
             status=session.status,
             created_at=str(session.created_at),
             copies_count=len(session.copies),
             graded_count=len(session.graded_copies),
-            average_score=average
+            average_score=average,
+            subject=session.policy.subject,
+            topic=session.policy.topic,
+            copies=copies,
+            graded_copies=graded_copies,
+            question_weights=session.policy.question_weights
         )
+
+    @app.delete("/api/sessions/{session_id}")
+    async def delete_session(session_id: str):
+        """Delete a session and all its data."""
+        store = SessionStore(session_id)
+
+        if not store.exists():
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Remove from active sessions if present
+        if session_id in active_sessions:
+            del active_sessions[session_id]
+        if session_id in session_progress:
+            del session_progress[session_id]
+
+        # Delete the session directory
+        success = store.delete()
+
+        return {"success": success}
 
     @app.post("/api/sessions/{session_id}/grade", response_model=GradeResponse)
     async def start_grading(session_id: str, background_tasks: BackgroundTasks):
         """
         Start the grading process for a session.
+
+        Progress updates are sent via WebSocket at /api/sessions/{session_id}/ws
         """
         store = SessionStore(session_id)
         session = store.load_session()
@@ -247,18 +311,71 @@ def create_app() -> FastAPI:
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
 
+        # Get or create orchestrator
+        if session_id not in active_sessions:
+            orchestrator = GradingSessionOrchestrator(session_id=session_id)
+            active_sessions[session_id] = orchestrator
+        else:
+            orchestrator = active_sessions[session_id]
+
+        # Get uploaded PDF paths
+        upload_dir = Path(f"temp/{session_id}")
+        if upload_dir.exists():
+            pdf_paths = [str(p) for p in upload_dir.glob("*.pdf")]
+            orchestrator.pdf_paths = pdf_paths
+
+        # Create progress callback for WebSocket
+        progress_callback = ws_manager.create_progress_callback(session_id)
+
         # Start grading in background
         async def grade_task():
-            orchestrator = GradingSessionOrchestrator(session_id=session_id)
-            await orchestrator.run()
+            try:
+                # Run analysis phase
+                await orchestrator.analyze_only()
+
+                # Confirm scale (use detected or default)
+                orchestrator.confirm_scale(orchestrator.question_scales)
+
+                # Grade with progress callback
+                await orchestrator.grade_all(progress_callback=progress_callback)
+
+                # Notify completion
+                if session.graded_copies:
+                    scores = [g.total_score for g in session.graded_copies]
+                    avg = sum(scores) / len(scores)
+                else:
+                    avg = 0
+
+                await ws_manager.broadcast_event(session_id, "session_complete", {
+                    "average_score": avg,
+                    "total_copies": len(session.graded_copies)
+                })
+
+                # Update progress
+                if session_id in session_progress:
+                    session_progress[session_id]["status"] = "complete"
+                    session_progress[session_id]["copies_graded"] = len(session.graded_copies)
+
+            except Exception as e:
+                logger.error(f"Grading error: {e}")
+                await ws_manager.broadcast_event(session_id, "session_error", {
+                    "error": str(e)
+                })
+                if session_id in session_progress:
+                    session_progress[session_id]["status"] = "error"
+                    session_progress[session_id]["error"] = str(e)
 
         background_tasks.add_task(grade_task)
+
+        # Update progress
+        if session_id in session_progress:
+            session_progress[session_id]["status"] = "grading"
 
         return GradeResponse(
             success=True,
             session_id=session_id,
             graded_count=len(session.graded_copies),
-            total_count=len(session.copies),
+            total_count=len(session.copies) if session.copies else len(orchestrator.pdf_paths),
             pending_review=0
         )
 
@@ -276,7 +393,11 @@ def create_app() -> FastAPI:
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
 
-        orchestrator = GradingSessionOrchestrator(session_id=session_id)
+        if session_id not in active_sessions:
+            orchestrator = GradingSessionOrchestrator(session_id=session_id)
+            active_sessions[session_id] = orchestrator
+        else:
+            orchestrator = active_sessions[session_id]
 
         result = await orchestrator.apply_teacher_decision(
             question_id=decision.question_id,
@@ -308,7 +429,260 @@ def create_app() -> FastAPI:
         index = SessionIndex()
         sessions = index.list_sessions()
 
-        return {"sessions": sessions}
+        # Build detailed session list
+        session_list = []
+        for session_id in sessions:
+            store = SessionStore(session_id)
+            session = store.load_session()
+            if session:
+                avg = None
+                if session.graded_copies:
+                    scores = [g.total_score for g in session.graded_copies]
+                    avg = sum(scores) / len(scores)
+
+                session_list.append({
+                    "session_id": session_id,
+                    "status": session.status,
+                    "created_at": str(session.created_at),
+                    "copies_count": len(session.copies),
+                    "graded_count": len(session.graded_copies),
+                    "average_score": avg,
+                    "subject": session.policy.subject,
+                    "topic": session.policy.topic
+                })
+
+        return {"sessions": session_list}
+
+    # ============================================================================
+    # Disagreement Endpoints
+    # ============================================================================
+
+    @app.get("/api/sessions/{session_id}/disagreements", response_model=List[DisagreementResponse])
+    async def get_disagreements(session_id: str):
+        """Get all disagreements for a session."""
+        store = SessionStore(session_id)
+        session = store.load_session()
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        disagreements = []
+        for graded in session.graded_copies:
+            if graded.llm_comparison and "llm_comparison" in graded.llm_comparison:
+                llm_comp = graded.llm_comparison["llm_comparison"]
+
+                # Find the copy for student name and index
+                copy = next((c for c in session.copies if c.id == graded.copy_id), None)
+                copy_index = session.copies.index(copy) + 1 if copy else 0
+
+                for q_id, comp in llm_comp.items():
+                    llm1 = comp.get("llm1", {})
+                    llm2 = comp.get("llm2", {})
+
+                    # Check if there was a disagreement
+                    grade1 = llm1.get("grade", 0)
+                    grade2 = llm2.get("grade", 0)
+                    diff = abs(grade1 - grade2)
+
+                    # Consider it a disagreement if difference > 0.5 points
+                    if diff > 0.5 or not comp.get("final", {}).get("agreement", True):
+                        disagreements.append(DisagreementResponse(
+                            copy_id=graded.copy_id,
+                            copy_index=copy_index,
+                            student_name=copy.student_name if copy else None,
+                            question_id=q_id,
+                            max_points=graded.max_points_by_question.get(q_id, 1.0),
+                            llm1={
+                                "provider": llm1.get("provider", "unknown"),
+                                "model": llm1.get("model", "unknown"),
+                                "grade": grade1,
+                                "confidence": llm1.get("confidence", 0.5),
+                                "reasoning": llm1.get("reasoning"),
+                                "reading": llm1.get("reading")
+                            },
+                            llm2={
+                                "provider": llm2.get("provider", "unknown"),
+                                "model": llm2.get("model", "unknown"),
+                                "grade": grade2,
+                                "confidence": llm2.get("confidence", 0.5),
+                                "reasoning": llm2.get("reasoning"),
+                                "reading": llm2.get("reading")
+                            },
+                            resolved=comp.get("final", {}).get("agreement", False)
+                        ))
+
+        return disagreements
+
+    @app.post("/api/sessions/{session_id}/disagreements/{question_id}/resolve")
+    async def resolve_disagreement(
+        session_id: str,
+        question_id: str,
+        request: ResolveDisagreementRequest
+    ):
+        """Resolve a disagreement."""
+        store = SessionStore(session_id)
+        session = store.load_session()
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # This is a simplified resolution - in a real implementation,
+        # you would update the actual graded copy
+        # For now, just acknowledge the resolution
+
+        return {"success": True, "question_id": question_id, "action": request.action}
+
+    # ============================================================================
+    # Export Endpoints
+    # ============================================================================
+
+    @app.get("/api/sessions/{session_id}/export/{format}")
+    async def export_session(session_id: str, format: str):
+        """Export session results in the specified format."""
+        from export.analytics import DataExporter
+
+        store = SessionStore(session_id)
+        session = store.load_session()
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        reports_dir = store.get_reports_dir()
+        reports_dir.mkdir(parents=True, exist_ok=True)
+
+        exporter = DataExporter(session, str(reports_dir))
+
+        if format == "csv":
+            path = exporter.export_csv()
+            media_type = "text/csv"
+        elif format == "json":
+            path = exporter.export_json()
+            media_type = "application/json"
+        else:
+            raise HTTPException(status_code=400, detail=f"Unsupported format: {format}")
+
+        def iterfile():
+            with open(path, "rb") as f:
+                yield from f
+
+        return StreamingResponse(
+            iterfile(),
+            media_type=media_type,
+            headers={"Content-Disposition": f"attachment; filename={Path(path).name}"}
+        )
+
+    # ============================================================================
+    # Provider Endpoints
+    # ============================================================================
+
+    @app.get("/api/providers", response_model=List[ProviderResponse])
+    async def list_providers():
+        """
+        List available LLM providers based on .env configuration.
+
+        Returns the providers that have API keys configured and their
+        configured models from environment variables.
+        """
+        from ai.provider_factory import get_available_providers
+
+        settings = get_settings()
+        providers = []
+
+        # Provider display names
+        provider_names = {
+            "gemini": "Google Gemini",
+            "openai": "OpenAI",
+        }
+
+        # Get list of providers that have API keys configured
+        available = get_available_providers()
+
+        for provider_id in available:
+            models = []
+
+            # Add configured models for this provider
+            if provider_id == "gemini":
+                if settings.gemini_model:
+                    models.append(ProviderModel(id=settings.gemini_model, name=settings.gemini_model))
+                if settings.gemini_vision_model and settings.gemini_vision_model != settings.gemini_model:
+                    models.append(ProviderModel(id=settings.gemini_vision_model, name=settings.gemini_vision_model))
+                if settings.gemini_embedding_model:
+                    models.append(ProviderModel(id=settings.gemini_embedding_model, name=settings.gemini_embedding_model))
+
+            elif provider_id == "openai":
+                # OpenAI provider uses model from llm1_model/llm2_model in comparison mode
+                if settings.comparison_mode:
+                    if settings.llm1_provider == "openai" and settings.llm1_model:
+                        models.append(ProviderModel(id=settings.llm1_model, name=settings.llm1_model))
+                    if settings.llm2_provider == "openai" and settings.llm2_model:
+                        if not any(m.id == settings.llm2_model for m in models):
+                            models.append(ProviderModel(id=settings.llm2_model, name=settings.llm2_model))
+
+            providers.append(ProviderResponse(
+                id=provider_id,
+                name=provider_names.get(provider_id, provider_id.title()),
+                type=provider_id,
+                models=models,
+                configured=True
+            ))
+
+        return providers
+
+    # ============================================================================
+    # Settings Endpoints
+    # ============================================================================
+
+    @app.get("/api/settings", response_model=SettingsResponse)
+    async def get_settings_api():
+        """Get application settings."""
+        settings = get_settings()
+
+        return SettingsResponse(
+            ai_provider=settings.ai_provider,
+            comparison_mode=settings.comparison_mode,
+            llm1_provider=settings.llm1_provider,
+            llm1_model=settings.llm1_model,
+            llm2_provider=settings.llm2_provider,
+            llm2_model=settings.llm2_model,
+            confidence_auto=settings.confidence_auto,
+            confidence_flag=settings.confidence_flag
+        )
+
+    @app.put("/api/settings", response_model=SettingsResponse)
+    async def update_settings_api(request: UpdateSettingsRequest):
+        """Update application settings.
+
+        Note: This only updates runtime settings. For persistent changes,
+        modify the .env file.
+        """
+        settings = get_settings()
+
+        # Update in-memory settings (non-persistent)
+        if request.comparison_mode is not None:
+            settings.comparison_mode = request.comparison_mode
+        if request.llm1_provider is not None:
+            settings.llm1_provider = request.llm1_provider
+        if request.llm1_model is not None:
+            settings.llm1_model = request.llm1_model
+        if request.llm2_provider is not None:
+            settings.llm2_provider = request.llm2_provider
+        if request.llm2_model is not None:
+            settings.llm2_model = request.llm2_model
+        if request.confidence_auto is not None:
+            settings.confidence_auto = request.confidence_auto
+        if request.confidence_flag is not None:
+            settings.confidence_flag = request.confidence_flag
+
+        return SettingsResponse(
+            ai_provider=settings.ai_provider,
+            comparison_mode=settings.comparison_mode,
+            llm1_provider=settings.llm1_provider,
+            llm1_model=settings.llm1_model,
+            llm2_provider=settings.llm2_provider,
+            llm2_model=settings.llm2_model,
+            confidence_auto=settings.confidence_auto,
+            confidence_flag=settings.confidence_flag
+        )
 
     return app
 

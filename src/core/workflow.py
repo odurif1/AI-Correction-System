@@ -30,7 +30,7 @@ class WorkflowConfig:
     """Configuration for correction workflow."""
     auto_mode: bool = False
     language: str = "fr"
-    pages_per_student: int = 2
+    pages_per_copy: int = 2
     parallel_copies: int = 6
     dual_llm_mode: bool = False
     second_reading: bool = False
