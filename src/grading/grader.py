@@ -14,7 +14,7 @@ from core.models import (
     ConfidenceLevel, UncertaintyType
 )
 from ai import create_ai_provider
-from config.prompts import build_grading_prompt, get_uncertainty_prompt
+from prompts import build_grading_prompt, get_uncertainty_prompt
 from config.constants import CONFIDENCE_THRESHOLD_AUTO, CONFIDENCE_THRESHOLD_FLAG
 
 

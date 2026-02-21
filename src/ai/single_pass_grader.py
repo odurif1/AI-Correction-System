@@ -108,7 +108,7 @@ class SinglePassGrader:
         Returns:
             SinglePassResult with all question grades
         """
-        from config.prompts import build_multi_question_grading_prompt, build_auto_detect_grading_prompt
+        from prompts import build_multi_question_grading_prompt, build_auto_detect_grading_prompt
 
         start_time = time.time()
 

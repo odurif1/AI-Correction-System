@@ -308,7 +308,7 @@ class GeminiProvider(BaseProvider):
 
         Extended to support multi-page PDFs.
         """
-        from config.prompts import build_vision_grading_prompt
+        from prompts import build_vision_grading_prompt
 
         # Build context about pages if multiple
         num_pages = len(image_path) if isinstance(image_path, list) else 1

@@ -910,7 +910,7 @@ Original question: {kwargs.get('question_text', '')}"""
             - Audit info dict
         """
         import logging
-        from config.prompts import build_unified_verification_prompt
+        from prompts import build_unified_verification_prompt
 
         provider_names = [name for name, _ in self.providers]
 
@@ -1301,7 +1301,7 @@ Original question: {kwargs.get('question_text', '')}"""
             - Audit info dict
         """
         import logging
-        from config.prompts import build_unified_ultimatum_prompt
+        from prompts import build_unified_ultimatum_prompt
         from ai.disagreement_analyzer import compute_reading_anchors, detect_position_swaps
 
         if provider_names is None:

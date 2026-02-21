@@ -28,7 +28,7 @@ from calibration.consistency import ConsistencyDetector
 from storage.session_store import SessionStore
 from vision.pdf_reader import PDFReader
 from export.analytics import DataExporter, AnalyticsGenerator
-from config.prompts import detect_language
+from prompts import detect_language
 from utils.sorting import question_sort_key
 
 

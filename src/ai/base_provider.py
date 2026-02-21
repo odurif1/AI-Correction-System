@@ -304,7 +304,7 @@ class BaseProvider(ABC):
         This is a template method that builds the prompt and parses the response.
         Subclasses can override if needed.
         """
-        from config.prompts import build_vision_grading_prompt
+        from prompts import build_vision_grading_prompt
 
         prompt = build_vision_grading_prompt(
             question_text=question_text,
@@ -448,7 +448,7 @@ BECAUSE [reasoning]
         Returns:
             Extracted rule text
         """
-        from config.prompts import build_rule_extraction_prompt
+        from prompts import build_rule_extraction_prompt
 
         prompt = build_rule_extraction_prompt(
             teacher_decision=teacher_decision,
@@ -482,7 +482,7 @@ BECAUSE [reasoning]
         Returns:
             Analysis with patterns, errors, unique approaches
         """
-        from config.prompts import build_cross_copy_analysis_prompt
+        from prompts import build_cross_copy_analysis_prompt
 
         prompt = build_cross_copy_analysis_prompt(
             question_id=question_id,
@@ -558,7 +558,7 @@ BECAUSE [reasoning]
         Returns:
             Feedback text
         """
-        from config.prompts import build_feedback_prompt
+        from prompts import build_feedback_prompt
 
         prompt = build_feedback_prompt(
             student_name=student_name,
