@@ -434,7 +434,7 @@ class GeminiProvider(BaseProvider):
                         )
                     ))
 
-        response = chat_session.send_message(types.Content(parts=parts))
+        response = chat_session.send_message(parts)  # Chat API accepts list of Parts directly
         result = response.text or ""
 
         # Extract token usage (including cached tokens if using cached context)
