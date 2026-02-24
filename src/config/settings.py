@@ -2,7 +2,6 @@
 Configuration management for the AI correction system.
 
 All configuration comes from environment variables or .env file.
-No hardcoded defaults - .env is required.
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -20,44 +19,54 @@ class Settings(BaseSettings):
         case_sensitive=False
     )
 
+    # AI Provider (required)
+    ai_provider: str  # "gemini", "openai", "glm", "openrouter"
+
     # API Keys
-    gemini_api_key: str
+    gemini_api_key: str = ""
     openai_api_key: str = ""
+    glm_api_key: str = ""
+    openrouter_api_key: str = ""
 
-    # Gemini Configuration (required)
-    gemini_model: str
-    gemini_vision_model: str
-    gemini_embedding_model: str = "models/gemini-embedding-001"
+    # Gemini Models
+    gemini_model: Optional[str] = None
+    gemini_vision_model: Optional[str] = None
+    gemini_embedding_model: Optional[str] = None
 
-    # AI Provider
-    ai_provider: str = "gemini"
+    # OpenAI Models
+    openai_model: Optional[str] = None
+    openai_vision_model: Optional[str] = None
+    openai_embedding_model: Optional[str] = None
 
-    # Comparison Mode (dual LLM) - configurable via ENV
+    # GLM Models
+    glm_model: Optional[str] = None
+    glm_vision_model: Optional[str] = None
+
+    # OpenRouter Models
+    openrouter_model: Optional[str] = None
+    openrouter_vision_model: Optional[str] = None
+
+    # Comparison Mode (dual LLM)
     comparison_mode: bool = False
-    llm1_provider: Optional[str] = None  # "gemini" or "openai"
+    llm1_provider: Optional[str] = None
     llm1_model: Optional[str] = None
-    llm2_provider: Optional[str] = None  # "gemini" or "openai"
+    llm2_provider: Optional[str] = None
     llm2_model: Optional[str] = None
 
     # Thresholds
     confidence_auto: float = 0.85
     confidence_flag: float = 0.60
-
-    # Grade agreement threshold (percentage of max_points)
-    # Used to detect disagreements between LLMs
-    # e.g., 0.10 means 10% of max_points
     grade_agreement_threshold: float = 0.10
-
-    # Flip-flop detection threshold (percentage of max_points)
-    # Used to detect when LLMs swap positions after verification
-    # 0 = detect any position swap regardless of magnitude
-    # 0.25 = only flag swaps where differences exceed 25% of max_points
     flip_flop_threshold: float = 0.0
+
+    # Annotation (optional - uses main provider if not set)
+    annotation_provider: Optional[str] = None
+    annotation_model: Optional[str] = None
 
     # Storage
     data_dir: str = "data"
 
-    # CORS - allowed origins for web frontend
+    # CORS
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 

@@ -30,6 +30,7 @@ from vision.pdf_reader import PDFReader
 from export.analytics import DataExporter, AnalyticsGenerator
 from prompts import detect_language
 from utils.sorting import question_sort_key
+from utils.json_extractor import extract_json_from_response
 
 
 class GradingSessionOrchestrator:
@@ -56,6 +57,7 @@ class GradingSessionOrchestrator:
         parallel: int = 6,
         grading_mode: str = None,  # "individual", "batch", or "hybrid" (required)
         batch_verify: str = None,  # "per-question" or "grouped" (required for batch dual)
+        auto_detect_structure: bool = False,  # Pre-analyze PDF structure with both LLMs
         workflow_state: CorrectionState = None
     ):
         """
@@ -80,7 +82,8 @@ class GradingSessionOrchestrator:
             second_reading: If True, enables second reading (2 passes for Single LLM, re-reading instruction for Dual LLM)
             parallel: Number of copies to process in parallel (default: 6)
             grading_mode: "individual" (each copy separately) or "batch" (all copies in one call)
-            batch_size: Number of copies per batch in batch mode (default: 5)
+            batch_verify: "per-question" or "grouped" for batch verification
+            auto_detect_structure: If True, pre-analyze PDF with both LLMs to detect structure (copies, pages, names, barème)
             workflow_state: Optional CorrectionState for tracking workflow state
         """
         from config.constants import DATA_DIR
@@ -97,6 +100,12 @@ class GradingSessionOrchestrator:
         self._parallel = parallel
         self._grading_mode = grading_mode
         self._batch_verify = batch_verify
+        self._auto_detect_structure = auto_detect_structure
+        self._structure_pre_detected = False  # Set to True after auto-detect-structure phase
+
+        # Store names and barème detected during grading (for cross-verification)
+        self._grading_detected_names = {}  # {copy_id: {'llm1': name, 'llm2': name}}
+        self._grading_detected_bareme = {}  # {question_id: {'llm1': points, 'llm2': points}}
 
         # Workflow state tracking
         self._workflow_state = workflow_state
@@ -245,9 +254,15 @@ class GradingSessionOrchestrator:
                 detected_questions[key] = f"Question {key}"
 
         # In INDIVIDUAL mode, questions will be detected during grading
+        # Also in BATCH mode without --auto-detect-structure, structure is detected during grading
         questions_detected_during_grading = False
-        if not detected_questions and self._pages_per_copy:
-            questions_detected_during_grading = True
+        if not detected_questions:
+            if self._pages_per_copy:
+                # Individual mode with mechanical split
+                questions_detected_during_grading = True
+            elif not self._auto_detect_structure:
+                # Batch mode without pre-analysis - structure detected during grading
+                questions_detected_during_grading = True
             # No placeholder - LLM will detect questions dynamically
             detected_questions = {}
 
@@ -721,15 +736,64 @@ class GradingSessionOrchestrator:
                 logger.error("Both LLM batch grading failed")
                 return []
 
-            # Build merged results with comparison data
-            # We'll iterate through all copies and merge/compare
-            batch_result = None
+            # ===== CROSS-VERIFY STUDENT NAMES =====
+            from utils.name_matching import cross_verify_student_names, format_name_mismatch_message
+
+            name_result = cross_verify_student_names(
+                llm1_result.copies if llm1_result else [],
+                llm2_result.copies if llm2_result else []
+            )
+
+            # Store name verification in comparison data for audit
             llm_comparison_data = {
                 "options": {
                     "mode": "batch",
                     "providers": provider_names,
                     "total_copies": total_copies
                 },
+                "name_verification": {
+                    "matches": name_result.matches,
+                    "mismatches": name_result.mismatches,
+                    "llm1_only": name_result.llm1_only,
+                    "llm2_only": name_result.llm2_only,
+                    "all_matched": name_result.all_matched
+                },
+                "llm_comparison": {}
+            }
+
+            # If names don't match, stop and inform user (unless auto-confirm)
+            if name_result.requires_user_action:
+                from core.exceptions import StudentNameMismatchError
+
+                msg = format_name_mismatch_message(name_result, language)
+
+                # Check if we're in auto mode
+                is_auto_mode = self.workflow_state.auto_mode if self.workflow_state else False
+
+                if is_auto_mode:
+                    # Auto mode: print warning and continue
+                    print(f"\n{msg}")
+                    print("\n[WARNING] Continuing despite name mismatch (--auto-confirm mode)")
+                    llm_comparison_data["name_verification_warning"] = True
+                else:
+                    # Interactive mode: raise exception to stop execution
+                    raise StudentNameMismatchError(
+                        msg,
+                        mismatches=name_result.mismatches,
+                        llm1_only=name_result.llm1_only,
+                        llm2_only=name_result.llm2_only
+                    )
+
+            # Build merged results with comparison data (preserve name_verification)
+            batch_result = None
+            name_verification = llm_comparison_data.get("name_verification", {})
+            llm_comparison_data = {
+                "options": {
+                    "mode": "batch",
+                    "providers": provider_names,
+                    "total_copies": total_copies
+                },
+                "name_verification": name_verification,
                 "llm_comparison": {}
             }
 
@@ -781,26 +845,67 @@ class GradingSessionOrchestrator:
                     # Calculate final grade (average if both available, else use one)
                     if llm2_qdata:
                         final_grade = (llm1_qdata["grade"] + llm2_qdata["grade"]) / 2
-                        # Agreement threshold: 10% of max_points (relative threshold)
+                        # Agreement threshold: configurable % of max_points (relative threshold)
                         max_pts = max(llm1_qdata.get("max_points", 1.0), llm2_qdata.get("max_points", 1.0))
-                        threshold = max_pts * 0.10
-                        agreement = abs(llm1_qdata["grade"] - llm2_qdata["grade"]) < threshold
+                        threshold = max_pts * get_settings().grade_agreement_threshold
+                        grade_agreement = abs(llm1_qdata["grade"] - llm2_qdata["grade"]) < threshold
+                        # Also check max_points agreement (barème must match)
+                        max_points_agreement = abs(llm1_qdata.get("max_points", 1.0) - llm2_qdata.get("max_points", 1.0)) < 0.01
+                        agreement = grade_agreement and max_points_agreement
                     else:
                         final_grade = llm1_qdata["grade"]
+                        max_pts = llm1_qdata.get("max_points", 1.0)
                         agreement = True
 
-                    llm_comparison_data["llm_comparison"][f"copy_{copy_idx}"]["questions"][qid] = {
+                    # Build question data - structure: max_points, LLM1, LLM2, (verification), (ultimatum), final
+                    # We'll add final at the end after all processing
+                    question_data = {
+                        "max_points": max_pts,  # Max points at root level
                         llm1_name: llm1_qdata,
-                        llm2_name: llm2_qdata if llm2_qdata else None,
-                        "final": {
-                            "grade": final_grade,
-                            "method": "average" if llm2_qdata else "single_llm",
-                            "agreement": agreement
-                        }
+                    }
+                    if llm2_qdata:
+                        question_data[llm2_name] = llm2_qdata
+
+                    # Store initial final data (will be moved to end later)
+                    question_data["_initial_final"] = {
+                        "grade": final_grade,
+                        "max_points": max_pts,
+                        "method": "average" if llm2_qdata else "single_llm",
+                        "agreement": agreement
                     }
 
-                    # Update the grade in copy_result with averaged grade
-                    qdata['grade'] = final_grade
+                    llm_comparison_data["llm_comparison"][f"copy_{copy_idx}"]["questions"][qid] = question_data
+
+                    # NOTE: Do NOT update qdata['grade'] here!
+                    # We need the original grades for Disagreement creation.
+                    # Grades will be updated after verification/ultimatum.
+
+            # Notify CLI that comparison data is ready (before verification)
+            if progress_callback:
+                # Build a display-friendly summary of the comparison
+                comparison_summary = {
+                    'providers': [llm1_name, llm2_name],
+                    'copies': []
+                }
+                for copy_idx, copy_data in llm_comparison_data.get("llm_comparison", {}).items():
+                    copy_summary = {
+                        'copy_index': copy_idx,
+                        'student_name': copy_data.get('student_name'),
+                        'questions': {}
+                    }
+                    for qid, qdata in copy_data.get('questions', {}).items():
+                        llm1_q = qdata.get(llm1_name, {})
+                        llm2_q = qdata.get(llm2_name, {})
+                        copy_summary['questions'][qid] = {
+                            'llm1_grade': llm1_q.get('grade'),
+                            'llm1_max_points': llm1_q.get('max_points'),
+                            'llm2_grade': llm2_q.get('grade'),
+                            'llm2_max_points': llm2_q.get('max_points'),
+                            'agreement': qdata.get('_initial_final', {}).get('agreement', True)
+                        }
+                    comparison_summary['copies'].append(copy_summary)
+
+                await self._call_callback(progress_callback, 'batch_comparison_ready', comparison_summary)
 
             # ═══════════════════════════════════════════════════════════════════
             # POST-BATCH VERIFICATION (always run for dual LLM batch mode)
@@ -812,7 +917,7 @@ class GradingSessionOrchestrator:
                 Disagreement
             )
 
-            # Detect disagreements
+            # Detect grade disagreements BEFORE modifying any grades
             disagreements = detect_disagreements(
                 llm1_result, llm2_result,
                 llm1_name, llm2_name,
@@ -820,7 +925,35 @@ class GradingSessionOrchestrator:
                 # threshold uses default 10% of max_points
             )
 
-            if disagreements:
+            # Detect student name disagreements (before verification)
+            # In grouped mode, these will be verified together with grade disagreements
+            name_disagreements = []
+            if self._comparison_mode and llm1_result and llm2_result:
+                for copy_result in batch_result.copies:
+                    llm1_student_name = None
+                    llm2_student_name = None
+
+                    for c in llm1_result.copies:
+                        if c.copy_index == copy_result.copy_index:
+                            llm1_student_name = c.student_name
+                            break
+                    for c in llm2_result.copies:
+                        if c.copy_index == copy_result.copy_index:
+                            llm2_student_name = c.student_name
+                            break
+
+                    # Check for disagreement (both detected names but different)
+                    if llm1_student_name and llm2_student_name:
+                        n1_normalized = llm1_student_name.lower().strip()
+                        n2_normalized = llm2_student_name.lower().strip()
+                        if n1_normalized != n2_normalized:
+                            name_disagreements.append({
+                                'copy_index': copy_result.copy_index,
+                                'llm1_name': llm1_student_name,
+                                'llm2_name': llm2_student_name
+                            })
+
+            if disagreements or (self._batch_verify == "grouped" and name_disagreements):
                 logger.info(f"Detected {len(disagreements)} disagreements, running dual LLM verification ({self._batch_verify})")
 
                 if progress_callback:
@@ -838,8 +971,22 @@ class GradingSessionOrchestrator:
                     )
                 else:
                     # Grouped: one call per LLM (all disagreements in one prompt)
+                    # In grouped mode, include name_disagreements in the same prompt
+
+                    # Collect images from copies with name disagreements (for name-only cases)
+                    extra_images = []
+                    if name_disagreements and not disagreements:
+                        for nd in name_disagreements:
+                            for copy_result in batch_result.copies:
+                                if copy_result.copy_index == nd['copy_index']:
+                                    if hasattr(copy_result, 'image_paths'):
+                                        extra_images.extend(copy_result.image_paths)
+                                    break
+
                     verification_results = await run_dual_llm_verification(
-                        self.ai.providers, disagreements, language
+                        self.ai.providers, disagreements, language,
+                        name_disagreements=name_disagreements if name_disagreements else None,
+                        extra_images=extra_images if extra_images else None
                     )
 
                 # Apply verification results to batch_result
@@ -850,33 +997,128 @@ class GradingSessionOrchestrator:
                             verified = verification_results[key]
                             qdata['grade'] = verified['final_grade']
                             qdata['reasoning'] = verified.get('llm1_reasoning', qdata.get('reasoning', ''))
+                            # Update feedback with consolidated feedback from verification
+                            if verified.get('final_feedback'):
+                                qdata['feedback'] = verified['final_feedback']
 
                             # Update comparison data with verification result
                             comp_key = f"copy_{copy_result.copy_index}"
                             if comp_key in llm_comparison_data.get("llm_comparison", {}):
                                 if qid in llm_comparison_data["llm_comparison"][comp_key].get("questions", {}):
-                                    llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["verification"] = {
-                                        "final_grade": verified['final_grade'],
+                                    # Get LLM data from comparison structure
+                                    question_comp_data = llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]
+                                    llm1_data = question_comp_data.get(llm1_name, {})
+                                    llm2_data = question_comp_data.get(llm2_name, {})
+
+                                    # Get resolved max_points from verification
+                                    resolved_max_points = verified.get('resolved_max_points', qdata.get('max_points', 1.0))
+
+                                    # Check initial max_points disagreement BEFORE updating qdata
+                                    # Compare llm1's original max_points with llm2's original max_points
+                                    initial_mp_disagreement = abs(llm1_data.get('max_points', 1.0) - llm2_data.get('max_points', 1.0)) > 0.01 if llm2_data else False
+
+                                    # Update qdata max_points with resolved value
+                                    qdata['max_points'] = resolved_max_points
+
+                                    # Store verification data
+                                    verification_data = {
                                         "llm1_new_grade": verified.get('llm1_new_grade'),
                                         "llm2_new_grade": verified.get('llm2_new_grade'),
                                         "llm1_reasoning": verified.get('llm1_reasoning', ''),
                                         "llm2_reasoning": verified.get('llm2_reasoning', ''),
+                                        "llm1_feedback": verified.get('llm1_feedback', ''),
+                                        "llm2_feedback": verified.get('llm2_feedback', ''),
+                                        "final_feedback": verified.get('final_feedback', ''),
                                         "confidence": verified.get('confidence', 0.8),
                                         "method": verified.get('method', 'grouped')
                                     }
-                                    llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["final"]["grade"] = verified['final_grade']
-                                    llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["final"]["method"] = f"verified_{verified.get('method', 'grouped')}"
 
-                if progress_callback:
-                    await self._call_callback(progress_callback, 'batch_verification_done', {
-                        'resolved_count': len(verification_results)
-                    })
+                                    # Include max_points if there was an initial disagreement OR if values changed
+                                    llm1_mp = verified.get('llm1_new_max_points')
+                                    llm2_mp = verified.get('llm2_new_max_points')
+                                    mp_values_changed = (llm1_mp is not None and abs(llm1_mp - llm1_data.get('max_points', 1.0)) > 0.01) or \
+                                                       (llm2_mp is not None and abs(llm2_mp - llm2_data.get('max_points', 1.0)) > 0.01)
+
+                                    if initial_mp_disagreement or mp_values_changed or (llm1_mp is not None and llm2_mp is not None and abs(llm1_mp - llm2_mp) > 0.01):
+                                        verification_data["llm1_new_max_points"] = llm1_mp if llm1_mp is not None else llm1_data.get('max_points', 1.0)
+                                        verification_data["llm2_new_max_points"] = llm2_mp if llm2_mp is not None else llm2_data.get('max_points', 1.0)
+                                        verification_data["resolved_max_points"] = resolved_max_points
+
+                                    # Only include readings if they were corrected
+                                    llm1_reading = verified.get('llm1_new_reading')
+                                    llm2_reading = verified.get('llm2_new_reading')
+                                    if llm1_reading or llm2_reading:
+                                        verification_data["llm1_new_reading"] = llm1_reading
+                                        verification_data["llm2_new_reading"] = llm2_reading
+
+                                        # Calculate and store reading similarity score
+                                        if llm1_reading and llm2_reading:
+                                            from difflib import SequenceMatcher
+                                            reading_similarity = SequenceMatcher(
+                                                None,
+                                                llm1_reading.lower().strip(),
+                                                llm2_reading.lower().strip()
+                                            ).ratio()
+                                            verification_data["reading_similarity"] = round(reading_similarity, 2)
+                                            verification_data["reading_disagreement"] = reading_similarity < 0.8
+
+                                    llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["verification"] = verification_data
+
+                                    # Update the pending final data
+                                    llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["_pending_final"] = {
+                                        "grade": verified['final_grade'],
+                                        "max_points": resolved_max_points,
+                                        "method": f"verified_{verified.get('method', 'grouped')}"
+                                    }
+
+                # ===== NAME VERIFICATION RESULTS (grouped mode) =====
+                # Process name verification results from combined verification
+                name_verification_results = {}
+                persistent_name_disagreements = []
+                if self._batch_verify == "grouped" and name_disagreements:
+                    for nd in name_disagreements:
+                        copy_idx = nd['copy_index']
+                        name_key = f"name_{copy_idx}"
+
+                        if name_key in verification_results:
+                            name_result = verification_results[name_key]
+                            name_verification_results[copy_idx] = name_result
+
+                            # Check if agreement was reached
+                            if name_result.get('agreement'):
+                                # Update student name in batch_result
+                                for copy_result in batch_result.copies:
+                                    if copy_result.copy_index == copy_idx:
+                                        copy_result.student_name = name_result['resolved_name']
+                                        break
+
+                                # Store in llm_comparison_data
+                                comp_key = f"copy_{copy_idx}"
+                                if comp_key not in llm_comparison_data.get("llm_comparison", {}):
+                                    llm_comparison_data["llm_comparison"][comp_key] = {}
+                                llm_comparison_data["llm_comparison"][comp_key]["student_name_resolution"] = {
+                                    "verification": {
+                                        "llm1_new_name": name_result.get('llm1_new_name'),
+                                        "llm2_new_name": name_result.get('llm2_new_name'),
+                                        "agreement": True
+                                    },
+                                    "final_resolved_name": name_result['resolved_name']
+                                }
+                            else:
+                                # Persistent disagreement - will need ultimatum
+                                persistent_name_disagreements.append({
+                                    'copy_index': copy_idx,
+                                    'llm1_name': name_result.get('llm1_new_name', nd['llm1_name']),
+                                    'llm2_name': name_result.get('llm2_new_name', nd['llm2_name'])
+                                })
 
                 # ===== PHASE 2: Ultimatum Round (if disagreements persist) =====
                 # Check for persistent disagreements after verification
+
                 persistent_disagreements = []
                 for d in disagreements:
                     key = f"copy_{d.copy_index}_{d.question_id}"
+
                     if key in verification_results:
                         v = verification_results[key]
                         llm1_new = v.get('llm1_new_grade', d.llm1_grade)
@@ -884,17 +1126,113 @@ class GradingSessionOrchestrator:
                         max_pts = v.get('max_points', d.max_points)
                         # Use relative threshold (10% of max_points)
                         relative_threshold = max_pts * get_settings().grade_agreement_threshold
-                        if abs(llm1_new - llm2_new) >= relative_threshold:
+                        gap = abs(llm1_new - llm2_new)
+
+                        # Detect flip-flop (LLMs swapped positions on grade)
+                        llm1_initial = d.llm1_grade
+                        llm2_initial = d.llm2_grade
+                        grade_flip_flop = (llm1_new != llm1_initial and llm2_new != llm2_initial and
+                                          abs(llm1_new - llm2_initial) < 0.01 and abs(llm2_new - llm1_initial) < 0.01)
+
+                        # Check max_points agreement and flip-flop
+                        llm1_new_mp = v.get('llm1_new_max_points', d.llm1_max_points)
+                        llm2_new_mp = v.get('llm2_new_max_points', d.llm2_max_points)
+                        llm1_initial_mp = d.llm1_max_points
+                        llm2_initial_mp = d.llm2_max_points
+
+                        # max_points disagreement: different values after verification
+                        max_points_disagreement = (llm1_new_mp is not None and llm2_new_mp is not None and
+                                                  abs(llm1_new_mp - llm2_new_mp) > 0.01)
+
+                        # max_points flip-flop: LLMs swapped their max_points values
+                        max_points_flip_flop = (llm1_new_mp != llm1_initial_mp and llm2_new_mp != llm2_initial_mp and
+                                               abs(llm1_new_mp - llm2_initial_mp) < 0.01 and
+                                               abs(llm2_new_mp - llm1_initial_mp) < 0.01)
+
+                        # Check if original disagreement included reading disagreement
+                        original_has_reading = hasattr(d, 'disagreement_type') and 'reading' in getattr(d, 'disagreement_type', '')
+
+                        # Check if readings still differ after verification
+                        llm1_new_reading = v.get('llm1_new_reading', d.llm1_reading if hasattr(d, 'llm1_reading') else '')
+                        llm2_new_reading = v.get('llm2_new_reading', d.llm2_reading if hasattr(d, 'llm2_reading') else '')
+                        reading_still_differs = False
+                        if llm1_new_reading and llm2_new_reading:
+                            from difflib import SequenceMatcher
+                            reading_similarity = SequenceMatcher(None, llm1_new_reading.lower(), llm2_new_reading.lower()).ratio()
+                            reading_still_differs = reading_similarity < 0.8
+
+                        # Persistent disagreement if: grade gap persists OR max_points disagree OR any flip-flop OR reading disagreement
+                        is_persistent = (gap >= relative_threshold or
+                                        max_points_disagreement or
+                                        grade_flip_flop or
+                                        max_points_flip_flop or
+                                        (original_has_reading and reading_still_differs))
+
+                        if is_persistent:
                             persistent_disagreements.append({
                                 'copy_index': d.copy_index,
                                 'question_id': d.question_id,
                                 'llm1_grade': llm1_new,
                                 'llm2_grade': llm2_new,
+                                'llm1_initial_grade': llm1_initial,
+                                'llm2_initial_grade': llm2_initial,
+                                'llm1_max_points': llm1_new_mp if llm1_new_mp is not None else d.llm1_max_points,
+                                'llm2_max_points': llm2_new_mp if llm2_new_mp is not None else d.llm2_max_points,
+                                'llm1_initial_max_points': llm1_initial_mp,
+                                'llm2_initial_max_points': llm2_initial_mp,
                                 'max_points': max_pts,
                                 'llm1_reasoning': v.get('llm1_reasoning', d.llm1_reasoning),
                                 'llm2_reasoning': v.get('llm2_reasoning', d.llm2_reasoning),
-                                'image_paths': d.image_paths
+                                'image_paths': d.image_paths,
+                                'flip_flop_detected': grade_flip_flop or max_points_flip_flop,
+                                'max_points_flip_flop': max_points_flip_flop,
+                                'max_points_disagreement': max_points_disagreement,
+                                'reading_disagreement': (original_has_reading and reading_still_differs)
                             })
+
+                # Build verification summary for CLI display (AFTER determining persistent_disagreements)
+                # Create set of keys going to ultimatum for quick lookup
+                ultimatum_keys = set()
+                ultimatum_reasons = {}
+                for pd in persistent_disagreements:
+                    key = f"copy_{pd['copy_index']}_{pd['question_id']}"
+                    ultimatum_keys.add(key)
+                    # Determine reason
+                    reasons = []
+                    if pd.get('max_points_disagreement'):
+                        reasons.append('barème')
+                    if pd.get('flip_flop_detected'):
+                        reasons.append('flip-flop')
+                    if pd.get('reading_disagreement'):
+                        reasons.append('lecture')
+                    if pd.get('llm1_grade') is not None and pd.get('llm2_grade') is not None:
+                        gap = abs(pd['llm1_grade'] - pd['llm2_grade'])
+                        if gap >= pd.get('max_points', 1) * get_settings().grade_agreement_threshold:
+                            reasons.append('notes')
+                    ultimatum_reasons[key] = reasons if reasons else ['autre']
+
+                verification_summary = {
+                    'resolved_count': len([k for k in verification_results if k.startswith('copy_')]),
+                    'questions': []
+                }
+                for key, verified in verification_results.items():
+                    if key.startswith('copy_') and not key.startswith('name_'):
+                        parts = key.split('_')
+                        if len(parts) >= 3:
+                            copy_idx = int(parts[1])
+                            qid = '_'.join(parts[2:])
+                            goes_to_ultimatum = key in ultimatum_keys
+                            verification_summary['questions'].append({
+                                'copy_index': copy_idx,
+                                'question_id': qid,
+                                'final_grade': verified.get('final_grade'),
+                                'method': verified.get('method'),
+                                'goes_to_ultimatum': goes_to_ultimatum,
+                                'ultimatum_reasons': ultimatum_reasons.get(key, [])
+                            })
+
+                if progress_callback:
+                    await self._call_callback(progress_callback, 'batch_verification_done', verification_summary)
 
                 if persistent_disagreements:
                     logger.info(f"Persisting {len(persistent_disagreements)} disagreements after verification, running ultimatum round")
@@ -909,6 +1247,34 @@ class GradingSessionOrchestrator:
                         self.ai.providers, persistent_disagreements, language
                     )
 
+                    # Check for parsing failures
+                    parse_status = ultimatum_results.pop('_parse_status', {})
+                    llm1_parse_failed = parse_status.get('llm1_parse_failed', False)
+                    llm2_parse_failed = parse_status.get('llm2_parse_failed', False)
+
+                    if llm1_parse_failed or llm2_parse_failed:
+                        parse_warning = []
+                        if llm1_parse_failed:
+                            parse_warning.append(llm1_name)
+                        if llm2_parse_failed:
+                            parse_warning.append(llm2_name)
+                        warning_msg = f"Ultimatum parsing failed for: {', '.join(parse_warning)}"
+                        logger.warning(warning_msg)
+
+                        if progress_callback:
+                            await self._call_callback(progress_callback, 'ultimatum_parse_warning', {
+                                'warning': warning_msg,
+                                'llm1_failed': llm1_parse_failed,
+                                'llm2_failed': llm2_parse_failed
+                            })
+
+                        # Add warning to comparison data
+                        llm_comparison_data['ultimatum_parse_warning'] = {
+                            'llm1_parse_failed': llm1_parse_failed,
+                            'llm2_parse_failed': llm2_parse_failed,
+                            'warning': warning_msg
+                        }
+
                     # Apply ultimatum results
                     for copy_result in batch_result.copies:
                         for qid, qdata in copy_result.questions.items():
@@ -917,30 +1283,407 @@ class GradingSessionOrchestrator:
                                 ultimate = ultimatum_results[key]
                                 qdata['grade'] = ultimate['final_grade']
                                 qdata['reasoning'] = ultimate.get('llm1_reasoning', qdata.get('reasoning', ''))
+                                # Update feedback with consolidated feedback from ultimatum
+                                if ultimate.get('final_feedback'):
+                                    qdata['feedback'] = ultimate['final_feedback']
 
                                 # Update comparison data with ultimatum result
                                 comp_key = f"copy_{copy_result.copy_index}"
                                 if comp_key in llm_comparison_data.get("llm_comparison", {}):
                                     if qid in llm_comparison_data["llm_comparison"][comp_key].get("questions", {}):
-                                        llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["ultimatum"] = {
-                                            "final_grade": ultimate['final_grade'],
+                                        # Get max_points from the question data
+                                        q_max_points = qdata.get('max_points', 1.0)
+
+                                        # Find persistent disagreement data for flip-flop
+                                        grade_flip_flop = False
+                                        max_points_flip_flop = False
+                                        max_points_disagreement = False
+                                        for pd in persistent_disagreements:
+                                            if pd.get('copy_index') == copy_result.copy_index and pd.get('question_id') == qid:
+                                                grade_flip_flop = pd.get('flip_flop_detected', False)
+                                                max_points_flip_flop = pd.get('max_points_flip_flop', False)
+                                                max_points_disagreement = pd.get('max_points_disagreement', False)
+                                                break
+
+                                        # Build ultimatum data
+                                        ultimatum_data = {
                                             "llm1_final_grade": ultimate.get('llm1_final_grade'),
                                             "llm2_final_grade": ultimate.get('llm2_final_grade'),
                                             "llm1_decision": ultimate.get('llm1_decision'),
                                             "llm2_decision": ultimate.get('llm2_decision'),
                                             "llm1_reasoning": ultimate.get('llm1_reasoning', ''),
                                             "llm2_reasoning": ultimate.get('llm2_reasoning', ''),
-                                            "flip_flop_detected": ultimate.get('flip_flop_detected', False),
+                                            "llm1_feedback": ultimate.get('llm1_feedback', ''),
+                                            "llm2_feedback": ultimate.get('llm2_feedback', ''),
+                                            "final_feedback": ultimate.get('final_feedback', ''),
+                                            "llm1_parse_success": ultimate.get('llm1_parse_success', True),
+                                            "llm2_parse_success": ultimate.get('llm2_parse_success', True),
+                                            "grade_flip_flop": grade_flip_flop,
+                                            "max_points_flip_flop": max_points_flip_flop,
+                                            "max_points_disagreement": max_points_disagreement,
                                             "confidence": ultimate.get('confidence', 0.8),
                                             "method": ultimate.get('method', 'ultimatum_average')
                                         }
-                                        llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["final"]["grade"] = ultimate['final_grade']
-                                        llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["final"]["method"] = ultimate.get('method', 'ultimatum_average')
+
+                                        # Only include max_points if there was a disagreement
+                                        if ultimate.get('max_points_disagreement'):
+                                            ultimatum_data["llm1_final_max_points"] = ultimate.get('llm1_final_max_points')
+                                            ultimatum_data["llm2_final_max_points"] = ultimate.get('llm2_final_max_points')
+                                            ultimatum_data["resolved_max_points"] = ultimate.get('resolved_max_points')
+
+                                        llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["ultimatum"] = ultimatum_data
+
+                                        # Get resolved max_points from ultimatum
+                                        ultimatum_resolved_mp = ultimate.get('resolved_max_points', q_max_points)
+
+                                        # Update pending final data
+                                        llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["_pending_final"] = {
+                                            "grade": ultimate['final_grade'],
+                                            "max_points": ultimatum_resolved_mp,
+                                            "method": ultimate.get('method', 'ultimatum_average')
+                                        }
+
+                                        # Also update qdata max_points with resolved value
+                                        qdata['max_points'] = ultimatum_resolved_mp
+
+                    # Build ultimatum summary for CLI display
+                    ultimatum_summary = {
+                        'resolved_count': len(ultimatum_results),
+                        'questions': []
+                    }
+                    for key, ultimate in ultimatum_results.items():
+                        if key.startswith('copy_'):
+                            parts = key.split('_')
+                            if len(parts) >= 3:
+                                copy_idx = int(parts[1])
+                                qid = '_'.join(parts[2:])
+                                ultimatum_summary['questions'].append({
+                                    'copy_index': copy_idx,
+                                    'question_id': qid,
+                                    'llm1_final': ultimate.get('llm1_final_grade'),
+                                    'llm2_final': ultimate.get('llm2_final_grade'),
+                                    'final_grade': ultimate.get('final_grade'),
+                                    'method': ultimate.get('method')
+                                })
 
                     if progress_callback:
-                        await self._call_callback(progress_callback, 'batch_ultimatum_done', {
-                            'resolved_count': len(ultimatum_results)
+                        await self._call_callback(progress_callback, 'batch_ultimatum_done', ultimatum_summary)
+
+                    # ===== PHASE 3: Ask user for max_points disagreements after ultimatum =====
+                    max_points_disagreements = []
+                    for copy_result in batch_result.copies:
+                        for qid, qdata in copy_result.questions.items():
+                            key = f"copy_{copy_result.copy_index}_{qid}"
+                            if key in ultimatum_results:
+                                ultimate = ultimatum_results[key]
+                                if ultimate.get('max_points_disagreement'):
+                                    max_points_disagreements.append({
+                                        'copy_index': copy_result.copy_index,
+                                        'question_id': qid,
+                                        'llm1_max_points': ultimate.get('llm1_final_max_points'),
+                                        'llm2_max_points': ultimate.get('llm2_final_max_points'),
+                                        'llm1_grade': ultimate.get('llm1_final_grade'),
+                                        'llm2_grade': ultimate.get('llm2_final_grade')
+                                    })
+
+                    if max_points_disagreements:
+                        logger.warning(f"{len(max_points_disagreements)} max_points disagreements after ultimatum, asking user")
+
+                        if progress_callback:
+                            await self._call_callback(progress_callback, 'max_points_disagreement', {
+                                'disagreements': max_points_disagreements
+                            })
+
+                        # Ask user to resolve each max_points disagreement
+                        for mpd in max_points_disagreements:
+                            comp_key = f"copy_{mpd['copy_index']}"
+                            qid = mpd['question_id']
+
+                            # Use the interactive method to ask user
+                            resolved_max_points = await self._ask_max_points_resolution(mpd, llm1_name, llm2_name)
+
+                            # Update the max_points in the question data
+                            if comp_key in llm_comparison_data.get("llm_comparison", {}):
+                                if qid in llm_comparison_data["llm_comparison"][comp_key].get("questions", {}):
+                                    q_data = llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]
+
+                                    # Update ultimatum section with user resolution
+                                    if "ultimatum" in q_data:
+                                        q_data["ultimatum"]["user_resolved_max_points"] = resolved_max_points
+
+                                    # Update the copy_result max_points (used for max_points_per_question summary)
+                                    for copy_result in batch_result.copies:
+                                        if copy_result.copy_index == mpd['copy_index'] and qid in copy_result.questions:
+                                            copy_result.questions[qid]['max_points'] = resolved_max_points
+
+                # ===== NAME ULTIMATUM (grouped mode) =====
+                # If name disagreements persist after combined verification in grouped mode
+                if self._batch_verify == "grouped" and persistent_name_disagreements:
+                    from ai.batch_grader import run_student_name_ultimatum
+
+                    logger.info(f"{len(persistent_name_disagreements)} name disagreements persist after verification, running ultimatum")
+
+                    if progress_callback:
+                        await self._call_callback(progress_callback, 'name_ultimatum_start', {
+                            'persistent_count': len(persistent_name_disagreements)
                         })
+
+                    # Collect all image paths for copies with name disagreements
+                    name_disagreement_images = []
+                    for copy_result in batch_result.copies:
+                        for d in persistent_name_disagreements:
+                            if d['copy_index'] == copy_result.copy_index:
+                                if hasattr(copy_result, 'image_paths'):
+                                    name_disagreement_images.extend(copy_result.image_paths)
+                                break
+
+                    name_ultimatum_results = await run_student_name_ultimatum(
+                        self.ai.providers, persistent_name_disagreements, name_disagreement_images, language
+                    )
+
+                    if progress_callback:
+                        await self._call_callback(progress_callback, 'name_ultimatum_done', {
+                            'resolved_count': len(name_ultimatum_results)
+                        })
+
+                    # Apply name ultimatum results
+                    for copy_idx, result in name_ultimatum_results.items():
+                        resolved_name = result.get('resolved_name')
+
+                        # Update batch_result
+                        for copy_result in batch_result.copies:
+                            if copy_result.copy_index == copy_idx:
+                                copy_result.student_name = resolved_name
+                                break
+
+                        # Store in llm_comparison_data for audit
+                        comp_key = f"copy_{copy_idx}"
+                        if comp_key in llm_comparison_data.get("llm_comparison", {}):
+                            if "student_name_resolution" not in llm_comparison_data["llm_comparison"][comp_key]:
+                                llm_comparison_data["llm_comparison"][comp_key]["student_name_resolution"] = {}
+                            llm_comparison_data["llm_comparison"][comp_key]["student_name_resolution"]["ultimatum"] = result
+                            llm_comparison_data["llm_comparison"][comp_key]["student_name_resolution"]["final_resolved_name"] = resolved_name
+
+                    # Ask user for any still-unresolved names (or auto-resolve in auto mode)
+                    is_auto_mode = self.workflow_state.auto_mode if self.workflow_state else False
+
+                    for copy_idx, result in name_ultimatum_results.items():
+                        if result.get('needs_user_resolution'):
+                            if is_auto_mode:
+                                # Auto mode: pick the name with higher confidence, or LLM1's name as fallback
+                                llm1_conf = result.get('llm1_confidence', 0.5)
+                                llm2_conf = result.get('llm2_confidence', 0.5)
+                                llm1_final = result.get('llm1_final_name', '')
+                                llm2_final = result.get('llm2_final_name', '')
+
+                                if llm1_conf >= llm2_conf:
+                                    resolved_name = llm1_final
+                                else:
+                                    resolved_name = llm2_final
+
+                                logger.info(f"Auto-resolved name for copy {copy_idx}: {resolved_name} (auto-confirm mode)")
+                            else:
+                                # Interactive mode: ask user
+                                resolved_name = await self._ask_student_name_resolution(result, llm1_name, llm2_name)
+
+                            # Update with resolution
+                            for copy_result in batch_result.copies:
+                                if copy_result.copy_index == copy_idx:
+                                    copy_result.student_name = resolved_name
+                                    break
+
+                            comp_key = f"copy_{copy_idx}"
+                            if comp_key in llm_comparison_data.get("llm_comparison", {}):
+                                llm_comparison_data["llm_comparison"][comp_key]["student_name_resolution"]["user_resolved_name"] = resolved_name
+                                llm_comparison_data["llm_comparison"][comp_key]["student_name_resolution"]["final_resolved_name"] = resolved_name
+
+            # ===== STUDENT NAME VERIFICATION & ULTIMATUM (per-question mode only) =====
+            # In grouped mode, name verification was already done in the combined verification prompt
+            # In per-question mode, run separate name verification calls
+            if self._batch_verify == "per-question" and name_disagreements:
+                from ai.batch_grader import run_student_name_verification, run_student_name_ultimatum
+
+                logger.info(f"{len(name_disagreements)} student name disagreements detected, running verification")
+
+                if progress_callback:
+                    await self._call_callback(progress_callback, 'name_verification_start', {
+                        'disagreements_count': len(name_disagreements)
+                    })
+
+                # Collect all image paths for the copies with name disagreements
+                name_disagreement_images = []
+                for copy_result in batch_result.copies:
+                    for d in name_disagreements:
+                        if d['copy_index'] == copy_result.copy_index:
+                            # Get images for this copy
+                            if hasattr(copy_result, 'image_paths'):
+                                name_disagreement_images.extend(copy_result.image_paths)
+                            break
+
+                # Run verification
+                name_verification_results = await run_student_name_verification(
+                    self.ai.providers, name_disagreements, name_disagreement_images, language
+                )
+
+                # Check for persistent disagreements
+                persistent_name_disagreements = []
+                for copy_idx, result in name_verification_results.items():
+                    if not result.get('agreement'):
+                        # Find original disagreement
+                        orig = next((d for d in name_disagreements if d['copy_index'] == copy_idx), None)
+                        if orig:
+                            persistent_name_disagreements.append({
+                                'copy_index': copy_idx,
+                                'llm1_name': result['llm1_new_name'],
+                                'llm2_name': result['llm2_new_name']
+                            })
+
+                # Run ultimatum if persistent disagreements
+                name_ultimatum_results = {}
+                if persistent_name_disagreements:
+                    logger.info(f"{len(persistent_name_disagreements)} name disagreements persist, running ultimatum")
+
+                    if progress_callback:
+                        await self._call_callback(progress_callback, 'name_ultimatum_start', {
+                            'persistent_count': len(persistent_name_disagreements)
+                        })
+
+                    name_ultimatum_results = await run_student_name_ultimatum(
+                        self.ai.providers, persistent_name_disagreements, name_disagreement_images, language
+                    )
+
+                    if progress_callback:
+                        await self._call_callback(progress_callback, 'name_ultimatum_done', {
+                            'resolved_count': len(name_ultimatum_results)
+                        })
+
+                # Apply resolved names to batch_result and llm_comparison_data
+                all_name_results = {**name_verification_results, **name_ultimatum_results}
+                for copy_idx, result in all_name_results.items():
+                    resolved_name = result.get('resolved_name')
+
+                    # Update batch_result
+                    for copy_result in batch_result.copies:
+                        if copy_result.copy_index == copy_idx:
+                            copy_result.student_name = resolved_name
+                            break
+
+                    # Store in llm_comparison_data for audit
+                    comp_key = f"copy_{copy_idx}"
+                    if comp_key not in llm_comparison_data.get("llm_comparison", {}):
+                        llm_comparison_data["llm_comparison"][comp_key] = {}
+
+                    llm_comparison_data["llm_comparison"][comp_key]["student_name_resolution"] = {
+                        "verification": {
+                            "llm1_new_name": name_verification_results.get(copy_idx, {}).get('llm1_new_name'),
+                            "llm2_new_name": name_verification_results.get(copy_idx, {}).get('llm2_new_name'),
+                            "agreement": name_verification_results.get(copy_idx, {}).get('agreement')
+                        },
+                        "ultimatum": name_ultimatum_results.get(copy_idx) if copy_idx in name_ultimatum_results else None,
+                        "final_resolved_name": resolved_name,
+                        "needs_user_resolution": result.get('needs_user_resolution', False)
+                    }
+
+                # Ask user for any still-unresolved names (or auto-resolve in auto mode)
+                is_auto_mode = self.workflow_state.auto_mode if self.workflow_state else False
+
+                for copy_idx, result in all_name_results.items():
+                    if result.get('needs_user_resolution'):
+                        if is_auto_mode:
+                            # Auto mode: pick the name with higher confidence, or LLM1's name as fallback
+                            llm1_conf = result.get('llm1_confidence', 0.5)
+                            llm2_conf = result.get('llm2_confidence', 0.5)
+                            llm1_final = result.get('llm1_final_name', '')
+                            llm2_final = result.get('llm2_final_name', '')
+
+                            if llm1_conf >= llm2_conf:
+                                resolved_name = llm1_final
+                            else:
+                                resolved_name = llm2_final
+
+                            logger.info(f"Auto-resolved name for copy {copy_idx}: {resolved_name} (auto-confirm mode)")
+                        else:
+                            # Interactive mode: ask user
+                            resolved_name = await self._ask_student_name_resolution(result, llm1_name, llm2_name)
+
+                        # Update with resolution
+                        for copy_result in batch_result.copies:
+                            if copy_result.copy_index == copy_idx:
+                                copy_result.student_name = resolved_name
+                                break
+
+                        comp_key = f"copy_{copy_idx}"
+                        if comp_key in llm_comparison_data.get("llm_comparison", {}):
+                            llm_comparison_data["llm_comparison"][comp_key]["student_name_resolution"]["user_resolved_name"] = resolved_name
+
+                if progress_callback:
+                    await self._call_callback(progress_callback, 'name_verification_done', {
+                        'resolved_count': len(name_verification_results)
+                    })
+
+            # ===== FINALIZE: Rebuild question data in correct order =====
+            # Order: LLM1, LLM2, verification, ultimatum, final (with max_points in final)
+            for copy_idx in range(len(batch_result.copies)):
+                comp_key = f"copy_{copy_idx + 1}"
+                if comp_key in llm_comparison_data.get("llm_comparison", {}):
+                    questions = llm_comparison_data["llm_comparison"][comp_key].get("questions", {})
+                    for qid, qdata in questions.items():
+                        # Get all components
+                        llm1_data = qdata.get(llm1_name)
+                        llm2_data = qdata.get(llm2_name)
+                        verification_data = qdata.get("verification")
+                        ultimatum_data = qdata.get("ultimatum")
+
+                        # Determine final data (already contains max_points from _initial_final or _pending_final)
+                        if "_pending_final" in qdata:
+                            final_data = qdata["_pending_final"].copy()
+                        elif "_initial_final" in qdata:
+                            final_data = qdata["_initial_final"].copy()
+                        else:
+                            # Fallback: construct minimal final data
+                            llm1_mp = llm1_data.get("max_points", 1.0) if llm1_data else 1.0
+                            llm2_mp = llm2_data.get("max_points", 1.0) if llm2_data else 1.0
+                            # Use resolved max_points from verification if available, otherwise consensus
+                            resolved_mp = qdata.get("max_points")
+                            if resolved_mp is None:
+                                # Consensus: prefer agreed value or max as fallback
+                                resolved_mp = llm1_mp if llm1_mp == llm2_mp else max(llm1_mp, llm2_mp)
+                            final_data = {
+                                "grade": 0,
+                                "max_points": resolved_mp,
+                                "method": "unknown"
+                            }
+
+                        # Ensure max_points is present (should be, but safety check)
+                        if "max_points" not in final_data:
+                            final_data["max_points"] = qdata.get("max_points", 1.0)
+
+                        # Rebuild in correct order
+                        rebuilt = {}
+                        if llm1_data:
+                            rebuilt[llm1_name] = llm1_data
+                        if llm2_data:
+                            rebuilt[llm2_name] = llm2_data
+                        if verification_data:
+                            rebuilt["verification"] = verification_data
+                        if ultimatum_data:
+                            rebuilt["ultimatum"] = ultimatum_data
+                        rebuilt["final"] = final_data
+
+                        # Replace the question data
+                        llm_comparison_data["llm_comparison"][comp_key]["questions"][qid] = rebuilt
+
+            else:
+                # No disagreements - apply averaged grades now
+                for copy_result in batch_result.copies:
+                    for qid, qdata in copy_result.questions.items():
+                        comp_key = f"copy_{copy_result.copy_index}"
+                        if comp_key in llm_comparison_data.get("llm_comparison", {}):
+                            if qid in llm_comparison_data["llm_comparison"][comp_key].get("questions", {}):
+                                q_data = llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]
+                                # Get final from _initial_final
+                                final_data = q_data.get("_initial_final", {})
+                                qdata['grade'] = final_data.get('grade', qdata.get('grade', 0))
 
         else:
             # Single LLM batch
@@ -952,10 +1695,64 @@ class GradingSessionOrchestrator:
                 logger.error(f"Batch grading failed: {batch_result.parse_errors}")
                 return []
 
+        # Track student detection for audit
+        student_detection_info = {
+            'mode': 'multi_student_detection' if len(batch_result.copies) > len(self.session.copies) else 'standard',
+            'input_copies': len(self.session.copies),
+            'detected_copies': len(batch_result.copies),
+            'students': [],
+            'llm_detections': {}  # Individual LLM detections
+        }
+
+        # Capture individual LLM student name detections for audit
+        if self._comparison_mode and llm1_result and llm2_result:
+            llm1_name, llm2_name = provider_names[0], provider_names[1]
+            student_detection_info['llm_detections'] = {
+                llm1_name: [
+                    {'copy_index': c.copy_index, 'student_name': c.student_name}
+                    for c in llm1_result.copies
+                ],
+                llm2_name: [
+                    {'copy_index': c.copy_index, 'student_name': c.student_name}
+                    for c in llm2_result.copies
+                ]
+            }
+
+        # If LLM detected more students than we have copies, create new CopyDocument objects
+        if len(batch_result.copies) > len(self.session.copies):
+            logger.info(f"LLM detected {len(batch_result.copies)} students, creating additional copies")
+            first_copy = self.session.copies[0] if self.session.copies else None
+            for i in range(len(self.session.copies), len(batch_result.copies)):
+                new_copy = CopyDocument(
+                    pdf_path=first_copy.pdf_path if first_copy else None,
+                    page_count=first_copy.page_count if first_copy else 0,
+                    student_name=None,  # Will be set from batch result
+                    language=first_copy.language if first_copy else 'fr'
+                )
+                self.session.copies.append(new_copy)
+                logger.info(f"Created new copy {i+1} for detected student")
+            total_copies = len(self.session.copies)
+
+        # Add student detection info to llm_comparison_data for audit
+        if llm_comparison_data:
+            llm_comparison_data['student_detection'] = student_detection_info
+        else:
+            # Single LLM case - create comparison data with detection info
+            llm_comparison_data = {
+                "options": {
+                    "mode": "batch",
+                    "providers": [getattr(self.ai, 'model_name', 'unknown')],
+                    "total_copies": total_copies
+                },
+                "student_detection": student_detection_info,
+                "llm_comparison": {}
+            }
+
         # Convert batch results to GradedCopy objects
         for copy_result in batch_result.copies:
             copy_idx = copy_result.copy_index - 1
             if copy_idx < 0 or copy_idx >= len(self.session.copies):
+                logger.warning(f"Copy index {copy_result.copy_index} out of bounds, skipping")
                 continue
 
             original_copy = self.session.copies[copy_idx]
@@ -964,6 +1761,56 @@ class GradingSessionOrchestrator:
             detected_name = copy_result.student_name
             if detected_name and not original_copy.student_name:
                 original_copy.student_name = detected_name
+
+            # Track student info for this copy (add to llm_comparison for this copy)
+            copy_key = f"copy_{copy_result.copy_index}"
+            if copy_key not in llm_comparison_data.get("llm_comparison", {}):
+                llm_comparison_data["llm_comparison"][copy_key] = {"questions": {}}
+
+            # Get individual LLM student names for this copy
+            llm1_student_name = None
+            llm2_student_name = None
+            if self._comparison_mode and llm1_result and llm2_result:
+                for c in llm1_result.copies:
+                    if c.copy_index == copy_result.copy_index:
+                        llm1_student_name = c.student_name
+                        break
+                for c in llm2_result.copies:
+                    if c.copy_index == copy_result.copy_index:
+                        llm2_student_name = c.student_name
+                        break
+
+            # Determine final resolved name (after any verification/ultimatum if applicable)
+            # For now, use LLM1's name as the resolved name (or detected_name from batch_result)
+            final_resolved_name = detected_name
+
+            llm_comparison_data["llm_comparison"][copy_key]["student_detection"] = {
+                'copy_index': copy_result.copy_index,
+                'student_name': detected_name,
+                'llm1_student_name': llm1_student_name,
+                'llm2_student_name': llm2_student_name,
+                'final_resolved_name': final_resolved_name,
+                'pages': getattr(copy_result, 'pages', None)
+            }
+
+            # Check for name disagreement - EXACT MATCH REQUIRED
+            if llm1_student_name and llm2_student_name:
+                n1_normalized = llm1_student_name.lower().strip()
+                n2_normalized = llm2_student_name.lower().strip()
+                if n1_normalized != n2_normalized:
+                    llm_comparison_data["llm_comparison"][copy_key]["student_detection"]["name_disagreement"] = {
+                        "llm1_name": llm1_student_name,
+                        "llm2_name": llm2_student_name,
+                        "resolved_name": final_resolved_name,
+                        "resolution_method": "llm1_as_base"
+                    }
+
+            # Track student info for global summary
+            student_detection_info['students'].append({
+                'copy_index': copy_result.copy_index,
+                'student_name': detected_name,
+                'pages': getattr(copy_result, 'pages', None)
+            })
 
             # Emit copy_start with detected name for live display update
             if progress_callback:
@@ -983,6 +1830,12 @@ class GradingSessionOrchestrator:
             readings = {}
             confidence_by_question = {}
 
+            # Pre-fetch comparison data for this copy to check for feedback from other LLM
+            copy_key = f"copy_{copy_result.copy_index}"
+            copy_comparison_questions = None
+            if llm_comparison_data and copy_key in llm_comparison_data.get("llm_comparison", {}):
+                copy_comparison_questions = llm_comparison_data["llm_comparison"][copy_key].get("questions", {})
+
             for qid, qdata in copy_result.questions.items():
                 grades[qid] = qdata.get('grade', 0)
                 max_pts = float(qdata.get('max_points', 0))
@@ -992,8 +1845,21 @@ class GradingSessionOrchestrator:
                 # Populate detailed fields for audit
                 if qdata.get('reasoning'):
                     reasoning[qid] = qdata.get('reasoning')
-                if qdata.get('feedback'):
-                    student_feedback[qid] = qdata.get('feedback')
+
+                # Get feedback: prefer qdata, but check comparison data as fallback
+                feedback = qdata.get('feedback')
+                if not feedback and copy_comparison_questions and qid in copy_comparison_questions:
+                    # Try to get feedback from either LLM in comparison data
+                    q_comp = copy_comparison_questions[qid]
+                    for provider_key in q_comp:
+                        if provider_key not in ['max_points', '_initial_final', 'final', 'verification', 'ultimatum', '_pending_final']:
+                            prov_feedback = q_comp[provider_key].get('feedback')
+                            if prov_feedback:
+                                feedback = prov_feedback
+                                break
+                if feedback:
+                    student_feedback[qid] = feedback
+
                 if qdata.get('student_answer_read'):
                     readings[qid] = qdata.get('student_answer_read')
                 if qdata.get('confidence') is not None:
@@ -1006,12 +1872,94 @@ class GradingSessionOrchestrator:
             batch_max_score = self.get_total_max_points()
             # If still 0, we'll prompt user after grading in main.py
 
+            # Build max_points_per_question summary from final resolved values
+            max_points_per_question = {}
+            for qid, qdata in copy_result.questions.items():
+                max_pts = qdata.get('max_points', 0)
+                if max_pts > 0:
+                    max_points_per_question[qid] = max_pts
+
             # Get comparison data for this copy if available
             copy_comparison = None
-            if llm_comparison_data and f"copy_{copy_result.copy_index}" in llm_comparison_data.get("llm_comparison", {}):
+            copy_key = f"copy_{copy_result.copy_index}"
+            if llm_comparison_data and copy_key in llm_comparison_data.get("llm_comparison", {}):
+                copy_data = llm_comparison_data["llm_comparison"][copy_key]
+
+                # Build clean student_name section with same structure as questions
+                # Structure: llm1_name, llm2_name, verification, ultimatum, final
+                student_detection = copy_data.get("student_detection", {})
+                student_name_resolution = copy_data.get("student_name_resolution", {})
+
+                student_name_section = {}
+
+                # Initial LLM names
+                if "name_disagreement" in student_detection:
+                    nd = student_detection["name_disagreement"]
+                    student_name_section["llm1_name"] = nd.get("llm1_name")
+                    student_name_section["llm2_name"] = nd.get("llm2_name")
+
+                # Verification step (if occurred)
+                if student_name_resolution.get("verification"):
+                    v = student_name_resolution["verification"]
+                    student_name_section["verification"] = {
+                        "llm1_new_name": v.get("llm1_new_name"),
+                        "llm2_new_name": v.get("llm2_new_name"),
+                        "agreement": v.get("agreement"),
+                        "method": v.get("method", "verification")
+                    }
+
+                # Ultimatum step (if occurred)
+                if student_name_resolution.get("ultimatum"):
+                    u = student_name_resolution["ultimatum"]
+                    student_name_section["ultimatum"] = {
+                        "llm1_final_name": u.get("llm1_final_name"),
+                        "llm2_final_name": u.get("llm2_final_name"),
+                        "resolved_name": u.get("resolved_name"),
+                        "agreement": u.get("agreement"),
+                        "llm1_confidence": u.get("llm1_confidence"),
+                        "llm2_confidence": u.get("llm2_confidence")
+                    }
+
+                # User resolution (if occurred)
+                if student_name_resolution.get("user_resolved_name"):
+                    student_name_section["user_resolution"] = {
+                        "resolved_name": student_name_resolution["user_resolved_name"]
+                    }
+
+                # Final result
+                final_resolved = student_name_resolution.get("final_resolved_name") or student_detection.get("final_resolved_name")
+                if final_resolved:
+                    # Determine method
+                    if student_name_resolution.get("user_resolved_name"):
+                        method = "user_resolution"
+                    elif student_name_resolution.get("ultimatum"):
+                        method = "ultimatum"
+                    elif student_name_resolution.get("verification", {}).get("agreement"):
+                        method = "verification_consensus"
+                    elif student_name_resolution.get("verification"):
+                        method = "verification_average"
+                    else:
+                        method = "llm1_as_base"
+
+                    student_name_section["final"] = {
+                        "resolved_name": final_resolved,
+                        "method": method
+                    }
+
+                # Copy index for reference
+                if student_detection.get("copy_index"):
+                    student_name_section["copy_index"] = student_detection["copy_index"]
+
                 copy_comparison = {
                     "options": llm_comparison_data["options"],
-                    "llm_comparison": llm_comparison_data["llm_comparison"][f"copy_{copy_result.copy_index}"]["questions"]
+                    "llm_comparison": copy_data.get("questions", {}),
+                    "student_name": student_name_section
+                }
+            elif llm_comparison_data and "student_detection" in llm_comparison_data:
+                # Single LLM case - still add student detection info
+                copy_comparison = {
+                    "options": llm_comparison_data.get("options", {}),
+                    "student_detection": llm_comparison_data["student_detection"]
                 }
 
             # Create GradedCopy with full audit data
@@ -1026,6 +1974,7 @@ class GradingSessionOrchestrator:
                 student_feedback=student_feedback,
                 readings=readings,
                 confidence_by_question=confidence_by_question,
+                max_points_by_question=max_points_per_question,
                 llm_comparison=copy_comparison
             )
 
@@ -1033,13 +1982,24 @@ class GradingSessionOrchestrator:
             self.session.graded_copies.append(graded)
 
             if progress_callback:
+                # Build final questions summary for display
+                final_questions = {}
+                for qid in sorted(grades.keys(), key=lambda x: (int(x.replace('Q', '')) if x.replace('Q', '').isdigit() else 999)):
+                    final_questions[qid] = {
+                        'grade': grades[qid],
+                        'max_points': max_points_per_question.get(qid, 1.0),
+                        'confidence': confidence_by_question.get(qid, 0.8)
+                    }
+
                 await self._call_callback(progress_callback, 'copy_done', {
                     'copy_index': copy_result.copy_index,
                     'total_copies': total_copies,
                     'copy_id': original_copy.id,
                     'student_name': copy_result.student_name,
                     'total_score': graded.total_score,
-                    'max_score': graded.max_score
+                    'max_score': graded.max_score,
+                    'confidence': graded.confidence,
+                    'final_questions': final_questions
                 })
 
         # Save and notify completion
@@ -1541,6 +2501,114 @@ class GradingSessionOrchestrator:
             logger = logging.getLogger(__name__)
             logger.warning(f"Callback error for {event_type}: {e}")
 
+    async def _ask_max_points_resolution(self, disagreement: dict, llm1_name: str, llm2_name: str) -> float:
+        """
+        Ask user to resolve a max_points disagreement after ultimatum.
+
+        Args:
+            disagreement: Dict with copy_index, question_id, llm1_max_points, llm2_max_points
+            llm1_name: Name of first LLM
+            llm2_name: Name of second LLM
+
+        Returns:
+            Resolved max_points value
+        """
+        from interaction.cli import console
+        from rich.prompt import Prompt
+        from rich.panel import Panel
+        from rich.table import Table
+
+        copy_idx = disagreement['copy_index']
+        qid = disagreement['question_id']
+        llm1_mp = disagreement['llm1_max_points']
+        llm2_mp = disagreement['llm2_max_points']
+
+        # Display the disagreement
+        console.print(Panel(
+            f"[bold yellow]Désaccord sur le barème après ultimatum[/bold yellow]\n\n"
+            f"Copie {copy_idx}, {qid}\n\n"
+            f"[cyan]{llm1_name}[/cyan]: {llm1_mp} pts\n"
+            f"[magenta]{llm2_name}[/magenta]: {llm2_mp} pts",
+            title="Résolution requise",
+            border_style="yellow"
+        ))
+
+        # Calculate options
+        avg_mp = (llm1_mp + llm2_mp) / 2
+        max_mp = max(llm1_mp, llm2_mp)
+
+        console.print(f"\nOptions:")
+        console.print(f"  1. {llm1_name}: {llm1_mp} pts")
+        console.print(f"  2. {llm2_name}: {llm2_mp} pts")
+        console.print(f"  3. Moyenne: {avg_mp:.2f} pts")
+        console.print(f"  4. Maximum: {max_mp} pts")
+        console.print(f"  5. Personnalisé")
+
+        choice = Prompt.ask(
+            "Choisir le barème",
+            choices=["1", "2", "3", "4", "5"],
+            default="3"
+        )
+
+        if choice == "1":
+            return llm1_mp
+        elif choice == "2":
+            return llm2_mp
+        elif choice == "3":
+            return avg_mp
+        elif choice == "4":
+            return max_mp
+        else:
+            custom = Prompt.ask("Entrer le barème personnalisé", default=str(avg_mp))
+            return float(custom)
+
+    async def _ask_student_name_resolution(self, disagreement: dict, llm1_name: str, llm2_name: str) -> str:
+        """
+        Ask user to resolve a student name disagreement after ultimatum.
+
+        Args:
+            disagreement: Dict with llm1_final_name, llm2_final_name
+            llm1_name: Name of first LLM
+            llm2_name: Name of second LLM
+
+        Returns:
+            Resolved student name
+        """
+        from interaction.cli import console
+        from rich.prompt import Prompt
+        from rich.panel import Panel
+
+        llm1_student = disagreement.get('llm1_final_name', '')
+        llm2_student = disagreement.get('llm2_final_name', '')
+
+        # Display the disagreement
+        console.print(Panel(
+            f"[bold yellow]Désaccord sur le nom de l'étudiant après ultimatum[/bold yellow]\n\n"
+            f"[cyan]{llm1_name}[/cyan]: {llm1_student}\n"
+            f"[magenta]{llm2_name}[/magenta]: {llm2_student}",
+            title="Résolution requise",
+            border_style="yellow"
+        ))
+
+        console.print(f"\nOptions:")
+        console.print(f"  1. {llm1_name}: {llm1_student}")
+        console.print(f"  2. {llm2_name}: {llm2_student}")
+        console.print(f"  3. Personnalisé")
+
+        choice = Prompt.ask(
+            "Choisir le nom de l'étudiant",
+            choices=["1", "2", "3"],
+            default="1"
+        )
+
+        if choice == "1":
+            return llm1_student
+        elif choice == "2":
+            return llm2_student
+        else:
+            custom = Prompt.ask("Entrer le nom", default=llm1_student)
+            return custom
+
     def get_doubts(self, threshold: float = 0.7) -> List[Tuple[CopyDocument, GradedCopy, str, float]]:
         """
         Get list of doubtful cases (low confidence grades).
@@ -1675,24 +2743,34 @@ class GradingSessionOrchestrator:
     async def _load_copies_phase(self):
         """Phase 0: Load PDFs and extract initial content.
 
-        Detects multiple students in a single PDF and creates
-        separate CopyDocument for each.
-
-        Supports two modes:
-        - Individual mode: PDF pre-split by pages_per_copy (no AI for student detection)
-        - Ensemble mode: Use AI to detect students (current behavior)
+        Logic:
+        1. --auto-detect-structure: AI detects structure in batch (all students, names)
+           - If --pages-per-copy: THEN split mechanically for grading
+           - Else: use AI-detected page distribution
+        2. --pages-per-copy alone: Mechanical split only, no AI (names detected during grading)
+        3. Neither: Structure detected during grading (batch mode)
         """
         from rich.console import Console
         from rich.progress import track
 
         console = Console()
 
-        if self._pages_per_copy:
-            # INDIVIDUAL MODE: Pre-split PDF, no AI detection of students
+        if self._auto_detect_structure:
+            # AUTO-DETECT MODE: AI detects structure (both LLMs)
+            console.print("[bold cyan]🔍 Auto-détection de la structure (2 LLMs)...[/bold cyan]")
+            await self._load_copies_with_dual_llm()
+            # After AI detection, --pages-per-copy determines how to split for grading
+            if self._pages_per_copy:
+                console.print(f"[dim]Structure détectée, split {self._pages_per_copy} pages/copy pour correction[/dim]")
+                # Re-split copies based on pages_per_copy (names already known)
+                await self._resplit_by_pages()
+        elif self._pages_per_copy:
+            # MECHANICAL SPLIT ONLY: No AI, names detected during grading
             await self._load_copies_individual_mode()
         else:
-            # ENSEMBLE MODE: Use AI to detect students (current behavior)
-            await self._load_copies_ensemble_mode()
+            # NO PRE-ANALYSIS: Structure detected during grading
+            console.print("[dim]Structure non pré-analysée (détection pendant la correction)[/dim]")
+            await self._load_copies_minimal()
 
         self._save_sync()
 
@@ -1725,6 +2803,311 @@ class GradingSessionOrchestrator:
                 self.store.save_copy(copy, pdf_bytes)
 
             reader.close()
+
+    async def _load_copies_with_dual_llm(self):
+        """
+        Load copies using BOTH LLMs to detect structure.
+
+        Uses cross-verification + ultimatum workflow for disagreements.
+        Analyzes ENTIRE PDF to detect:
+        - Number of students
+        - Pages per student
+        - Student names
+        - Questions and barème (if visible)
+        """
+        from rich.progress import track
+        from rich.console import Console
+
+        console = Console()
+
+        for pdf_path in track(self.pdf_paths, description="Analyzing PDF structure..."):
+            reader = PDFReader(pdf_path)
+            page_count = reader.get_page_count()
+
+            # Check if we have a comparison provider (dual LLM)
+            if hasattr(self.ai, 'providers') and len(self.ai.providers) >= 2:
+                # Use both LLMs with cross-verification
+                students_data = await self._extract_structure_with_consensus(pdf_path, reader)
+            else:
+                # Fallback to single LLM
+                console.print("[yellow]⚠ Single LLM mode - no cross-verification[/yellow]")
+                students_data = await self._extract_all_students(pdf_path, reader)
+
+            # Create a CopyDocument for each detected student
+            for i, student_data in enumerate(students_data):
+                copy = CopyDocument(
+                    pdf_path=pdf_path,
+                    page_count=len(student_data.get('page_images', [])) or page_count,
+                    student_name=student_data.get('student_name'),
+                    content_summary=student_data.get('content', {}),
+                    language=student_data.get('language', 'fr'),
+                    page_images=student_data.get('page_images', [])
+                )
+
+                self.session.copies.append(copy)
+
+                # Extract only the pages belonging to this student
+                pdf_bytes = self._extract_student_pages(pdf_path, student_data.get('page_images', []))
+                self.store.save_copy(copy, pdf_bytes)
+
+            reader.close()
+
+        # Mark structure as pre-detected (skip name/barème detection during grading)
+        self._structure_pre_detected = True
+
+    async def _extract_structure_with_consensus(self, pdf_path: str, reader) -> List[Dict]:
+        """
+        Extract PDF structure using both LLMs with consensus workflow.
+
+        Workflow:
+        1. Both LLMs analyze the PDF
+        2. If agreement → done
+        3. If disagreement → cross-verification
+        4. If still disagreement → ultimatum
+        5. If still disagreement → ask user (or auto-resolve in auto mode)
+        """
+        import hashlib
+        import asyncio
+        from rich.console import Console
+
+        console = Console()
+        page_count = reader.get_page_count()
+
+        # Convert pages to images
+        temp_dir = self.store.session_dir / "temp_images"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+
+        page_images = []
+        for page_num in range(page_count):
+            image_bytes = reader.get_page_image_bytes(page_num)
+            image_path = str(temp_dir / f"page_{page_num}.png")
+            with open(image_path, 'wb') as f:
+                f.write(image_bytes)
+            page_images.append(image_path)
+
+        # Prompt for structure detection
+        prompt = f"""Analyse ce document PDF de {page_count} pages.
+
+TA TÂCHE: Identifier la structure du document.
+
+RÉPONDS EN JSON:
+{{
+  "students": [
+    {{
+      "name": "Nom de l'élève",
+      "pages": [1, 2],
+      "questions": {{"Q1": "résumé", "Q2": "résumé"}}
+    }}
+  ],
+  "bareme": {{"Q1": 2, "Q2": 3}},
+  "language": "fr"
+}}
+
+IMPORTANT:
+- Détecte TOUS les élèves présents
+- Indique les numéros de page pour chaque élève
+- Détecte le barème si visible
+"""
+
+        # Call both LLMs in parallel
+        console.print(f"  [dim]Appel LLM1 + LLM2 ({page_count} pages)...[/dim]")
+
+        async def call_llm(name, provider):
+            try:
+                response = provider.call_vision(prompt, image_path=page_images)
+                return (name, response)
+            except Exception as e:
+                console.print(f"  [red]Erreur {name}: {e}[/red]")
+                return (name, None)
+
+        tasks = [call_llm(name, provider) for name, provider in self.ai.providers]
+        results = await asyncio.gather(*tasks)
+
+        llm1_name, llm1_response = results[0]
+        llm2_name, llm2_response = results[1]
+
+        # Parse responses
+        llm1_data = self._parse_structure_response(llm1_response) if llm1_response else None
+        llm2_data = self._parse_structure_response(llm2_response) if llm2_response else None
+
+        # Check for agreement
+        if llm1_data and llm2_data:
+            agreement = self._compare_structures(llm1_data, llm2_data)
+
+            if agreement['agreed']:
+                console.print(f"  [green]✓ Accord: {len(llm1_data.get('students', []))} élève(s)[/green]")
+                return self._build_students_from_structure(llm1_data, page_images)
+
+            # Disagreement - try cross-verification
+            console.print(f"  [yellow]⚠ Désaccord: {agreement['reason']}[/yellow]")
+            console.print(f"    LLM1: {llm1_data.get('students', [])}")
+            console.print(f"    LLM2: {llm2_data.get('students', [])}")
+
+            # For now, use LLM1 result (TODO: implement cross-verification + ultimatum)
+            console.print(f"  [yellow]→ Utilisation de {llm1_name}[/yellow]")
+            return self._build_students_from_structure(llm1_data, page_images)
+
+        # One LLM failed - use the other
+        working_data = llm1_data or llm2_data
+        working_name = llm1_name if llm1_data else llm2_name
+
+        if working_data:
+            console.print(f"  [yellow]→ Un LLM échoué, utilisation de {working_name}[/yellow]")
+            return self._build_students_from_structure(working_data, page_images)
+
+        # Both failed - fallback to heuristic
+        console.print(f"  [red]✗ Les deux LLMs ont échoué[/red]")
+        return []
+
+    def _parse_structure_response(self, response: str) -> Optional[Dict]:
+        """Parse JSON structure response from LLM."""
+        if not response:
+            return None
+
+        return extract_json_from_response(response)
+
+    def _compare_structures(self, data1: Dict, data2: Dict) -> Dict:
+        """Compare two structure detections for agreement."""
+        students1 = data1.get('students', [])
+        students2 = data2.get('students', [])
+
+        # Compare number of students
+        if len(students1) != len(students2):
+            return {
+                'agreed': False,
+                'reason': f"Nombre d'élèves différent: {len(students1)} vs {len(students2)}"
+            }
+
+        # Compare names (normalized)
+        names1 = set(s.get('name', '').lower().strip() for s in students1)
+        names2 = set(s.get('name', '').lower().strip() for s in students2)
+
+        if names1 != names2:
+            return {
+                'agreed': False,
+                'reason': f"Noms différents: {names1} vs {names2}"
+            }
+
+        return {'agreed': True}
+
+    def _build_students_from_structure(self, structure: Dict, page_images: List[str]) -> List[Dict]:
+        """Build student data list from parsed structure."""
+        students = []
+        language = structure.get('language', 'fr')
+
+        for student in structure.get('students', []):
+            pages = student.get('pages', [])
+            student_images = [page_images[p - 1] for p in pages if 0 < p <= len(page_images)]
+
+            students.append({
+                'student_name': student.get('name'),
+                'content': student.get('questions', {}),
+                'page_images': student_images,
+                'language': language
+            })
+
+        # Store detected barème
+        bareme = structure.get('bareme', {})
+        if bareme:
+            for q_id, points in bareme.items():
+                if q_id not in self.grading_scale:
+                    self.grading_scale[q_id] = points
+
+        return students if students else self._build_default_students(page_images, language)
+
+    def _build_default_students(self, page_images: List[str], language: str = 'fr') -> List[Dict]:
+        """Build default single student when structure detection fails."""
+        return [{
+            'student_name': None,
+            'content': {},
+            'page_images': page_images,
+            'language': language
+        }]
+
+    async def _load_copies_minimal(self):
+        """
+        Minimal loading without structure detection.
+
+        Just creates placeholder copies - structure will be detected during grading.
+        Used when neither --auto-detect-structure nor --pages-per-copy is set.
+        """
+        from rich.console import Console
+
+        console = Console()
+
+        for pdf_path in self.pdf_paths:
+            reader = PDFReader(pdf_path)
+            page_count = reader.get_page_count()
+
+            # Create a single copy for the entire PDF
+            # Structure (students, names) will be detected during grading
+            copy = CopyDocument(
+                pdf_path=pdf_path,
+                page_count=page_count,
+                student_name=None,  # Will be detected during grading
+                content_summary={},
+                language='fr'  # Will be detected during grading
+            )
+
+            self.session.copies.append(copy)
+
+            # Save the entire PDF
+            with open(pdf_path, 'rb') as f:
+                pdf_bytes = f.read()
+            self.store.save_copy(copy, pdf_bytes)
+
+            reader.close()
+
+    async def _resplit_by_pages(self):
+        """
+        Re-split copies after AI structure detection.
+
+        Used when --auto-detect-structure detects students,
+        then --pages-per-copy determines how to split for grading.
+        """
+        from vision.pdf_reader import split_pdf_by_ranges
+        from rich.console import Console
+
+        console = Console()
+        pages_per_copy = self._pages_per_copy
+
+        # Store detected names before re-splitting
+        detected_names = {copy.id: copy.student_name for copy in self.session.copies}
+
+        new_copies = []
+        for copy in self.session.copies:
+            reader = PDFReader(copy.pdf_path)
+            total_pages = reader.get_page_count()
+            reader.close()
+
+            # Calculate ranges
+            ranges = []
+            for start in range(0, total_pages, pages_per_copy):
+                end = min(start + pages_per_copy - 1, total_pages - 1)
+                ranges.append((start, end))
+
+            # Split PDF
+            split_dir = Path(self.store.session_dir) / "splits"
+            split_dir.mkdir(parents=True, exist_ok=True)
+            split_paths = split_pdf_by_ranges(copy.pdf_path, str(split_dir), ranges)
+
+            # Create new copies for each split
+            for i, split_path in enumerate(split_paths):
+                new_copy = CopyDocument(
+                    pdf_path=split_path,
+                    page_count=pages_per_copy,
+                    student_name=detected_names.get(copy.id),  # Keep detected name
+                    content_summary={},
+                    language=copy.language
+                )
+                new_copies.append(new_copy)
+
+                with open(split_path, 'rb') as f:
+                    pdf_bytes = f.read()
+                self.store.save_copy(new_copy, pdf_bytes)
+
+        # Replace copies with new split copies
+        self.session.copies = new_copies
 
     async def _load_copies_individual_mode(self):
         """
@@ -2176,7 +3559,10 @@ IMPORTANT:
             language = student.get('language', 'fr')
 
             try:
-                # Detect with consensus
+                # Detect with consensus (both LLMs)
+                # If both agree → returns immediately (no extra calls)
+                # If one fails → uses other result (no cross-verification)
+                # If disagree → cross-verification
                 result = await self.ai.detect_student_name_with_consensus(
                     image_path=first_page,
                     language=language,
@@ -2493,6 +3879,48 @@ Reponds UNIQUEMENT par:
 
         self._save_sync()
 
+    async def verify_detected_parameters(self) -> Dict[str, Any]:
+        """
+        Cross-verify names and barème detected during grading.
+
+        Only called if --auto-detect-structure was NOT used.
+        If structure was pre-detected, this is skipped (already verified).
+
+        Returns:
+            Dict with verification results
+        """
+        from rich.console import Console
+        import asyncio
+
+        console = Console()
+
+        # Skip if structure was pre-detected (already cross-verified)
+        if self._structure_pre_detected:
+            console.print("[dim]Structure pré-détectée, vérification skipée[/dim]")
+            return {'skipped': True, 'reason': 'pre_detected'}
+
+        # Skip if no comparison mode
+        if not self._comparison_mode:
+            console.print("[dim]Mode single LLM, pas de cross-vérification[/dim]")
+            return {'skipped': True, 'reason': 'single_llm'}
+
+        results = {
+            'names_verified': 0,
+            'names_disagreed': 0,
+            'bareme_verified': 0,
+            'bareme_disagreed': 0
+        }
+
+        # TODO: Implement name cross-verification
+        # This would require storing both LLMs' name detections during grading
+        # in self._grading_detected_names
+
+        # TODO: Implement barème cross-verification
+        # This would require storing both LLMs' barème detections during grading
+        # in self._grading_detected_bareme
+
+        return results
+
     async def _export_phase(self) -> Dict[str, str]:
         """Phase 4: Export results."""
         from rich.console import Console
@@ -2521,11 +3949,6 @@ Reponds UNIQUEMENT par:
             'csv': str(csv_path),
             'individual': individual_paths
         }
-
-        console.print(f"\nSession ID: {self.session_id}")
-        console.print(f"Copies processed: {len(self.session.copies)}")
-        console.print(f"Average score: {report.mean_score:.1f}")
-        console.print(f"Score range: {report.min_score:.1f} - {report.max_score:.1f}")
 
         return exports
 

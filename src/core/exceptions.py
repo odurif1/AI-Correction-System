@@ -135,6 +135,25 @@ class GradingDisagreementError(GradingError):
     pass
 
 
+class StudentNameMismatchError(GradingError):
+    """
+    Raised when LLMs detect different student names for the same copy.
+
+    This indicates the LLMs are not aligned on which copies they're grading
+    and requires user intervention (--pages-per-copy or --auto-detect-structure).
+    """
+
+    def __init__(self, message: str, mismatches: list = None, llm1_only: list = None, llm2_only: list = None):
+        super().__init__(message, {
+            'mismatches': mismatches or [],
+            'llm1_only': llm1_only or [],
+            'llm2_only': llm2_only or []
+        })
+        self.mismatches = mismatches or []
+        self.llm1_only = llm1_only or []
+        self.llm2_only = llm2_only or []
+
+
 # ==================== PDF Errors ====================
 
 class PDFError(AICorrectionError):

@@ -8,6 +8,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 from difflib import SequenceMatcher
+from config.settings import get_settings
 
 
 class DisagreementType(Enum):
@@ -125,9 +126,9 @@ class PositionSwap:
 
 
 # Seuils hardcodés (simples, pas de config)
-GRADE_DIFF_PERCENTAGE = 0.10  # 10% du barème = différence significative
 READING_SIMILARITY_THRESHOLD = 0.8  # Similarité Jaccard minimum (80%)
 POSITION_SWAP_THRESHOLD = 0.5  # Minimum grade difference to detect swap
+# Note: grade_agreement_threshold is now configurable via settings
 
 
 def detect_position_swaps(
@@ -329,7 +330,7 @@ class DisagreementAnalyzer:
 
         grade_diff = abs(grade1 - grade2)
         scale_diff = abs(max_pts1 - max_pts2)
-        grade_threshold = max_pts1 * GRADE_DIFF_PERCENTAGE
+        grade_threshold = max_pts1 * get_settings().grade_agreement_threshold
         grades_differ = grade_diff >= grade_threshold
 
         # Compute reading similarity (only matters if grades are identical)

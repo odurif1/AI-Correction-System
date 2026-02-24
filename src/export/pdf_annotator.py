@@ -2,10 +2,11 @@
 PDF annotation for student feedback.
 
 Adds grades, comments, and feedback annotations to student PDFs.
+Supports intelligent annotation placement using LLM vision capabilities.
 """
 
 import fitz  # PyMuPDF
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from pathlib import Path
 from datetime import datetime
 
@@ -23,25 +24,41 @@ class PDFAnnotator:
 
     Features:
     - Adds grade stamps
-    - Adds comment boxes
+    - Adds comment boxes with intelligent placement
     - Highlights areas of interest
     - Preserves original layout
+    - Supports LLM-based annotation coordinate detection
     """
 
-    def __init__(self, session: GradingSession = None):
+    def __init__(self, session: GradingSession = None, annotation_provider=None):
         """
         Initialize annotator.
 
         Args:
             session: Grading session for context
+            annotation_provider: Optional AI provider for coordinate detection
         """
         self.session = session
+        self.annotation_provider = annotation_provider
+        self._coordinate_detector = None
+
+    @property
+    def coordinate_detector(self):
+        """Lazy-load the coordinate detector."""
+        if self._coordinate_detector is None:
+            from export.annotation_service import AnnotationCoordinateDetector
+            self._coordinate_detector = AnnotationCoordinateDetector(
+                provider=self.annotation_provider
+            )
+        return self._coordinate_detector
 
     def annotate_copy(
         self,
         copy: CopyDocument,
         graded: GradedCopy,
-        output_path: str = None
+        output_path: str = None,
+        smart_placement: bool = True,
+        language: str = 'fr'
     ) -> str:
         """
         Annotate a student's copy with grading results.
@@ -50,6 +67,8 @@ class PDFAnnotator:
             copy: Original copy document
             graded: Graded copy with results
             output_path: Output PDF path (auto-generated if None)
+            smart_placement: Use LLM for intelligent annotation placement
+            language: Language for annotation prompts
 
         Returns:
             Path to annotated PDF
@@ -57,6 +76,20 @@ class PDFAnnotator:
         # Determine output path
         if output_path is None:
             output_path = f"{copy.id}_annotated.pdf"
+
+        # Detect annotation coordinates if smart placement enabled
+        annotations = None
+        if smart_placement and graded.student_feedback:
+            try:
+                annotations = self.coordinate_detector.detect_annotations(
+                    pdf_path=copy.pdf_path,
+                    graded_copy=graded,
+                    language=language,
+                    student_name=copy.student_name
+                )
+            except Exception as e:
+                print(f"Warning: Smart placement failed, using heuristic: {e}")
+                annotations = None
 
         # Open and process with proper resource management
         doc = None
@@ -66,10 +99,15 @@ class PDFAnnotator:
             # Add cover page with summary
             self._add_cover_page(doc, copy, graded)
 
-            # Annotate each page
-            for page_num in range(len(doc)):
-                page = doc[page_num]
-                self._annotate_page(page, page_num, copy, graded)
+            # Annotate pages
+            if annotations and annotations.placements:
+                # Use smart placement
+                self._annotate_with_smart_placement(doc, copy, graded, annotations)
+            else:
+                # Fall back to heuristic placement
+                for page_num in range(len(doc)):
+                    page = doc[page_num]
+                    self._annotate_page(page, page_num, copy, graded)
 
             # Save
             doc.save(output_path)
@@ -78,6 +116,271 @@ class PDFAnnotator:
                 doc.close()
 
         return output_path
+
+    def create_annotation_overlay(
+        self,
+        copy: CopyDocument,
+        graded: GradedCopy,
+        output_path: str = None,
+        smart_placement: bool = True,
+        language: str = 'fr'
+    ) -> str:
+        """
+        Create a transparent overlay PDF with only annotations.
+
+        This overlay can be superimposed on the original copy.
+        Useful for:
+        - Printing annotations separately
+        - Overlaying on scanned copies
+        - Non-destructive annotation
+
+        Args:
+            copy: Original copy document (for dimensions)
+            graded: Graded copy with results
+            output_path: Output PDF path (auto-generated if None)
+            smart_placement: Use LLM for intelligent annotation placement
+            language: Language for annotation prompts
+
+        Returns:
+            Path to overlay PDF
+        """
+        # Determine output path
+        if output_path is None:
+            output_path = f"{copy.id}_overlay.pdf"
+
+        # Detect annotation coordinates
+        annotations = None
+        if smart_placement and graded.student_feedback:
+            try:
+                annotations = self.coordinate_detector.detect_annotations(
+                    pdf_path=copy.pdf_path,
+                    graded_copy=graded,
+                    language=language,
+                    student_name=copy.student_name
+                )
+            except Exception as e:
+                print(f"Warning: Smart placement failed, using heuristic: {e}")
+                annotations = self._heuristic_annotations(copy, graded)
+
+        # Create overlay document
+        overlay_doc = None
+        original_doc = None
+        try:
+            # Open original to get page dimensions
+            original_doc = fitz.open(copy.pdf_path)
+            overlay_doc = fitz.open()
+
+            # Create each overlay page
+            for page_num in range(len(original_doc)):
+                orig_page = original_doc[page_num]
+                # Create new page with same dimensions
+                overlay_page = overlay_doc.new_page(
+                    width=orig_page.rect.width,
+                    height=orig_page.rect.height
+                )
+
+            # Add annotations to overlay pages
+            if annotations and annotations.placements:
+                from export.annotation_service import create_annotation_boxes
+                boxes_by_page = create_annotation_boxes(annotations, overlay_doc)
+
+                for page_num in range(len(overlay_doc)):
+                    page = overlay_doc[page_num]
+
+                    # Add question annotations
+                    if page_num in boxes_by_page:
+                        for rect, feedback_text in boxes_by_page[page_num]:
+                            self._add_feedback_annotation(page, rect, feedback_text, graded)
+
+                    # Add page label
+                    self._add_text(
+                        page,
+                        f"Page {page_num + 1} - Annotations",
+                        10, 10,
+                        size=8,
+                        color=(0.5, 0.5, 0.5)
+                    )
+
+            # Save overlay
+            overlay_doc.save(output_path)
+        finally:
+            if overlay_doc is not None:
+                overlay_doc.close()
+            if original_doc is not None:
+                original_doc.close()
+
+        return output_path
+
+    def _heuristic_annotations(self, copy: CopyDocument, graded: GradedCopy) -> 'CopyAnnotations':
+        """Generate heuristic annotations when LLM fails."""
+        from export.annotation_service import CopyAnnotations, AnnotationPlacement
+
+        annotations = CopyAnnotations(
+            copy_id=copy.id,
+            student_name=copy.student_name
+        )
+
+        # Distribute feedback across pages
+        num_pages = 1
+        try:
+            doc = fitz.open(copy.pdf_path)
+            try:
+                num_pages = len(doc)
+            finally:
+                doc.close()
+        except (FileNotFoundError, PermissionError, OSError) as e:
+            # PDF access failed, use default of 1 page
+            pass
+
+        questions = list(graded.student_feedback.keys())
+        questions_per_page = max(1, len(questions) // num_pages)
+
+        for i, (q_id, feedback) in enumerate(graded.student_feedback.items()):
+            page_num = min(i // max(1, questions_per_page), num_pages - 1)
+            y_position = 15.0 + (i % max(1, questions_per_page)) * 12.0
+
+            annotations.placements.append(AnnotationPlacement(
+                question_id=q_id,
+                feedback_text=feedback,
+                page_number=page_num + 1,
+                x_percent=70.0,
+                y_percent=y_position,
+                width_percent=25.0,
+                height_percent=5.0,
+                placement="right_margin",
+                confidence=0.5
+            ))
+
+        return annotations
+
+    def _annotate_with_smart_placement(
+        self,
+        doc: fitz.Document,
+        copy: CopyDocument,
+        graded: GradedCopy,
+        annotations: 'CopyAnnotations'
+    ):
+        """
+        Annotate PDF using LLM-determined coordinates.
+
+        Args:
+            doc: PDF document
+            copy: Original copy document
+            graded: Graded copy with results
+            annotations: Smart annotation placements
+        """
+        from export.annotation_service import create_annotation_boxes
+
+        # Group annotations by page
+        boxes_by_page = create_annotation_boxes(annotations, doc)
+
+        # Add annotations to each page
+        for page_num in range(len(doc)):
+            page = doc[page_num]
+
+            # Add page summary in margin
+            rect = fitz.Rect(page.rect.width - 80, 50, page.rect.width - 10, 100)
+            self._add_annotation_box(
+                page,
+                rect,
+                f"Page {page_num + 1}",
+                f"Score: {graded.total_score:.1f}/{graded.max_score:.1f}"
+            )
+
+            # Add smart-placed feedback annotations
+            if page_num in boxes_by_page:
+                for rect, feedback_text in boxes_by_page[page_num]:
+                    self._add_feedback_annotation(page, rect, feedback_text, graded)
+
+    def _add_feedback_annotation(
+        self,
+        page: fitz.Page,
+        rect: fitz.Rect,
+        feedback_text: str,
+        graded: GradedCopy
+    ):
+        """
+        Add a feedback annotation at the specified position.
+
+        Args:
+            page: PDF page
+            rect: Rectangle for annotation
+            feedback_text: Feedback text to display
+            graded: Graded copy (for context/color)
+        """
+        # Draw light background
+        page.draw_rect(
+            rect,
+            color=(0.6, 0.8, 1.0),  # Blue border
+            fill=(0.95, 0.98, 1.0),  # Very light blue fill
+            width=1.0
+        )
+
+        # Calculate text layout
+        font_size = 8
+        line_height = font_size + 3
+        margin = 4
+        max_width = rect.width - (margin * 2)
+
+        # Word wrap the feedback
+        lines = self._wrap_text(feedback_text, max_width, font_size)
+
+        # Draw each line
+        y_pos = rect.y0 + margin + font_size
+        for line in lines:
+            if y_pos > rect.y1 - margin:
+                break  # Stop if we exceed the box height
+            self._add_text(
+                page,
+                line,
+                rect.x0 + margin,
+                y_pos,
+                size=font_size,
+                color=(0.1, 0.2, 0.4)
+            )
+            y_pos += line_height
+
+    def _wrap_text(self, text: str, max_width: float, font_size: int) -> List[str]:
+        """
+        Wrap text to fit within a given width.
+
+        Args:
+            text: Text to wrap
+            max_width: Maximum width in points
+            font_size: Font size
+
+        Returns:
+            List of lines
+        """
+        # Approximate character width (helvetica)
+        char_width = font_size * 0.5
+        max_chars = int(max_width / char_width)
+
+        if max_chars <= 0:
+            return [text[:20]]  # Fallback
+
+        words = text.split()
+        lines = []
+        current_line = ""
+
+        for word in words:
+            test_line = current_line + (" " if current_line else "") + word
+            if len(test_line) <= max_chars:
+                current_line = test_line
+            else:
+                if current_line:
+                    lines.append(current_line)
+                # Handle very long words
+                if len(word) > max_chars:
+                    lines.append(word[:max_chars-1] + "…")
+                    current_line = ""
+                else:
+                    current_line = word
+
+        if current_line:
+            lines.append(current_line)
+
+        return lines if lines else [text[:max_chars]]
 
     def _add_cover_page(
         self,
@@ -211,14 +514,14 @@ class PDFAnnotator:
         color: Tuple[float, float, float] = (0, 0, 0)
     ):
         """Add text to a page."""
-        flags = fitz.TEXT_FONT_BOLD if bold else 0
+        # Use helv for normal, helv-bold doesn't exist, so we just use helvetica
+        fontname = "helv" if not bold else "hebo"  # hebo is helvetica bold outline
         page.insert_text(
             (x, y),
             text,
-            fontname="helvetica",
+            fontname="helv",
             fontsize=size,
-            color=color,
-            flags=flags
+            color=color
         )
 
     def _add_text_centered(
@@ -231,17 +534,15 @@ class PDFAnnotator:
         color: Tuple[float, float, float] = (0, 0, 0)
     ):
         """Add centered text to a page."""
-        flags = fitz.TEXT_FONT_BOLD if bold else 0
         text_width = len(text) * size * 0.5  # Approximate
         x = (page.rect.width - text_width) / 2
 
         page.insert_text(
             (x, y),
             text,
-            fontname="helvetica",
+            fontname="helv",
             fontsize=size,
-            color=color,
-            flags=flags
+            color=color
         )
 
     def _add_line(self, page: fitz.Page, y: float, margin: float = 50):

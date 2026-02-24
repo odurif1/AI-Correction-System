@@ -1,15 +1,16 @@
 """
 Factory for creating AI provider instances.
 
-Supports switching between OpenAI and Gemini providers based on configuration.
-Also supports comparison mode with dual LLMs.
+Uses registry-based configuration for easy extensibility.
 """
 
-from typing import Optional, Union, List, Tuple, Any
+from typing import Union, List, Tuple, Any, Optional
 
 from ai.openai_provider import OpenAIProvider
+from config.settings import get_settings
+from config.providers import get_provider_config, PROVIDER_REGISTRY
 
-# Optional Gemini support
+# Optional Gemini support (requires google-genai)
 try:
     from ai.gemini_provider import GeminiProvider
     _gemini_available = True
@@ -18,97 +19,84 @@ except ImportError:
     GeminiProvider = None  # type: ignore
 
 from ai.comparison_provider import ComparisonProvider
-from config.settings import get_settings
 
 
 def create_ai_provider(
     provider_type: str = None,
+    model: str = None,
     mock_mode: bool = False
 ) -> Union[OpenAIProvider, "GeminiProvider"]:
     """
-    Create an AI provider instance based on configuration.
+    Create an AI provider instance.
 
     Args:
-        provider_type: "openai" or "gemini" (default: from settings or "openai")
-        mock_mode: If True, skip API key validation for testing
+        provider_type: Provider name (default: from settings)
+        model: Override model name
+        mock_mode: Skip API key validation for testing
 
     Returns:
-        An instance of OpenAIProvider or GeminiProvider
-
-    Raises:
-        ValueError: If provider_type is invalid or API key is missing
+        Provider instance
     """
     settings = get_settings()
+    provider_type = (provider_type or settings.ai_provider).lower()
 
-    # Auto-detect provider type from available API keys
-    # Gemini is preferred when available (better for French, more cost-effective)
-    if provider_type is None:
-        if settings.gemini_api_key and _gemini_available:
-            provider_type = "gemini"
-        elif settings.openai_api_key:
-            provider_type = "openai"
-        else:
-            raise ValueError(
-                "No AI provider API key configured. "
-                "Set AI_CORRECTION_GEMINI_API_KEY (recommended) or AI_CORRECTION_OPENAI_API_KEY."
-            )
+    if provider_type not in PROVIDER_REGISTRY:
+        raise ValueError(f"Unknown provider: {provider_type}. Available: {list(PROVIDER_REGISTRY.keys())}")
 
-    if provider_type.lower() == "gemini":
+    config = get_provider_config(provider_type, settings)
+
+    # Override model if specified
+    if model:
+        config.model = model
+        config.vision_model = config.vision_model or model
+
+    # Validate API key
+    if not config.api_key and not mock_mode:
+        raise ValueError(f"API key required for {provider_type}. Set AI_CORRECTION_{provider_type.upper()}_API_KEY")
+
+    # Validate model
+    if not config.model and not mock_mode:
+        raise ValueError(f"Model required for {provider_type}. Set AI_CORRECTION_{provider_type.upper()}_MODEL")
+
+    # Gemini uses native client
+    if provider_type == "gemini":
         if not _gemini_available:
-            raise ValueError(
-                "Gemini provider is not available. "
-                "Install google-generativeai package to use Gemini."
-            )
-        return GeminiProvider(mock_mode=mock_mode)  # type: ignore
-    elif provider_type.lower() == "openai":
-        return OpenAIProvider(mock_mode=mock_mode)
-    else:
-        raise ValueError(
-            f"Invalid provider_type: {provider_type}. "
-            "Must be 'openai' or 'gemini'."
+            raise ValueError("Gemini provider not available. Install google-genai package.")
+        return GeminiProvider(
+            api_key=config.api_key,
+            model=config.model,
+            vision_model=config.vision_model,
+            embedding_model=config.embedding_model,
+            mock_mode=mock_mode
         )
 
+    # All other providers use OpenAI-compatible API
+    return OpenAIProvider(
+        api_key=config.api_key,
+        base_url=config.base_url,
+        model=config.model,
+        vision_model=config.effective_vision_model,
+        embedding_model=config.embedding_model,
+        name=f"{provider_type}/{config.model}",
+        mock_mode=mock_mode,
+        extra_headers=config.extra_headers,
+        **config.extra_kwargs
+    )
 
-def get_available_providers() -> list[str]:
-    """
-    Get list of available AI providers based on configured API keys.
 
-    Returns:
-        List of provider names that have API keys configured
-    """
+def get_available_providers() -> List[str]:
+    """Get providers with configured API keys."""
     settings = get_settings()
     available = []
 
-    if settings.openai_api_key:
-        available.append("openai")
-
-    if settings.gemini_api_key and _gemini_available:
-        available.append("gemini")
+    for name in PROVIDER_REGISTRY:
+        config = get_provider_config(name, settings)
+        if config.api_key:
+            if name == "gemini" and not _gemini_available:
+                continue
+            available.append(name)
 
     return available
-
-
-def _create_gemini_provider(model: str = None, mock_mode: bool = False):
-    """Create a Gemini provider instance."""
-    if not _gemini_available:
-        raise ValueError("Gemini provider not available. Install google-genai package.")
-    return GeminiProvider(model=model, mock_mode=mock_mode)
-
-
-def _create_openai_provider(model: str = None, mock_mode: bool = False):
-    """Create an OpenAI provider instance."""
-    return OpenAIProvider(model=model, mock_mode=mock_mode)
-
-
-# Provider factory registry - extensible for future providers
-_PROVIDER_FACTORIES = {
-    "gemini": _create_gemini_provider,
-    "openai": _create_openai_provider,
-    # Add more providers here as needed:
-    # "anthropic": _create_anthropic_provider,
-    # "ollama": _create_ollama_provider,
-    # "mistral": _create_mistral_provider,
-}
 
 
 def create_comparison_provider(
@@ -117,78 +105,25 @@ def create_comparison_provider(
     progress_callback: callable = None
 ) -> ComparisonProvider:
     """
-    Create a comparison provider with two LLMs for dual grading.
+    Create a comparison provider with two LLMs.
 
-    Configuration via environment variables (REQUIRED):
-        AI_CORRECTION_LLM1_PROVIDER=gemini
-        AI_CORRECTION_LLM1_MODEL=gemini-2.5-flash
-        AI_CORRECTION_LLM2_PROVIDER=gemini
-        AI_CORRECTION_LLM2_MODEL=gemini-3-pro
-
-    Args:
-        mock_mode: If True, skip API key validation for testing
-        disagreement_callback: Optional async callback for when LLMs disagree
-                               Signature: async def callback(question_id, question_text,
-                                                             llm1_name, llm1_result,
-                                                             llm2_name, llm2_result,
-                                                             max_points) -> float
-        progress_callback: Optional callback for progress updates
-                           Signature: async def callback(event_type, data)
-
-    Returns:
-        ComparisonProvider instance with two providers
-
-    Raises:
-        ValueError: If LLM1_PROVIDER or LLM2_PROVIDER is not configured
+    Requires AI_CORRECTION_LLM1_PROVIDER and AI_CORRECTION_LLM2_PROVIDER in .env.
     """
     settings = get_settings()
     providers: List[Tuple[str, Any]] = []
 
-    # LLM1 - REQUIRED
-    llm1_provider = settings.llm1_provider
-    llm1_model = settings.llm1_model
+    for llm_num in [1, 2]:
+        provider_name = getattr(settings, f"llm{llm_num}_provider")
+        model = getattr(settings, f"llm{llm_num}_model")
 
-    if llm1_provider is None:
-        raise ValueError(
-            "LLM1_PROVIDER is required for comparison mode. "
-            "Set AI_CORRECTION_LLM1_PROVIDER"
-        )
+        if not provider_name:
+            raise ValueError(f"LLM{llm_num}_PROVIDER required for comparison mode")
 
-    factory1 = _PROVIDER_FACTORIES.get(llm1_provider.lower())
-    if factory1 is None:
-        available = list(_PROVIDER_FACTORIES.keys())
-        raise ValueError(
-            f"Unknown LLM1 provider: {llm1_provider}. "
-            f"Available: {available}"
-        )
-
-    provider1_instance = factory1(model=llm1_model, mock_mode=mock_mode)
-    # Use full model name for display
-    llm1_display_name = llm1_model or llm1_provider
-    providers.append((llm1_display_name, provider1_instance))
-
-    # LLM2 - REQUIRED
-    llm2_provider = settings.llm2_provider
-    llm2_model = settings.llm2_model
-
-    if llm2_provider is None:
-        raise ValueError(
-            "LLM2_PROVIDER is required for comparison mode. "
-            "Set AI_CORRECTION_LLM2_PROVIDER"
-        )
-
-    factory2 = _PROVIDER_FACTORIES.get(llm2_provider.lower())
-    if factory2 is None:
-        available = list(_PROVIDER_FACTORIES.keys())
-        raise ValueError(
-            f"Unknown LLM2 provider: {llm2_provider}. "
-            f"Available: {available}"
-        )
-
-    provider2_instance = factory2(model=llm2_model, mock_mode=mock_mode)
-    # Use full model name for display
-    llm2_display_name = llm2_model or llm2_provider
-    providers.append((llm2_display_name, provider2_instance))
+        provider = create_ai_provider(provider_name, model=model, mock_mode=mock_mode)
+        # Use LLM1/LLM2 prefix to distinguish providers even if same model
+        model_name = model or provider_name
+        display_name = f"LLM{llm_num}: {model_name}"
+        providers.append((display_name, provider))
 
     return ComparisonProvider(
         providers,

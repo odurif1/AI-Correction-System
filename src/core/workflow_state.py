@@ -13,14 +13,13 @@ from enum import Enum
 
 class WorkflowPhase(str, Enum):
     """Phases of the correction workflow."""
-    INITIALIZATION = "initialization"
-    PDF_LOADING = "pdf_loading"
-    ANALYSIS = "analysis"
-    SCALE_DETECTION = "scale_detection"
-    GRADING = "grading"
-    VERIFICATION = "verification"
-    CALIBRATION = "calibration"
-    EXPORT = "export"
+    INITIALIZATION = "initialization"  # Chargement PDF + découpe + pré-vérification
+    GRADING = "grading"                # Correction + détection élèves/questions/langue
+    VERIFICATION = "verification"      # Cross-verification
+    ULTIMATUM = "ultimatum"            # Résolution désaccords persistants
+    CALIBRATION = "calibration"        # Consistency check
+    EXPORT = "export"                  # JSON, CSV, analytics
+    ANNOTATION = "annotation"          # PDFs annotés + overlays
     COMPLETE = "complete"
     ERROR = "error"
 
@@ -54,6 +53,10 @@ class CorrectionState:
     total_copies: int = 0
     processed_copies: int = 0
 
+    # Token usage per phase
+    # Format: {phase_name: {'prompt': int, 'completion': int, 'total': int}}
+    token_usage_by_phase: Dict[str, Dict[str, int]] = field(default_factory=dict)
+
     # Error tracking
     errors: List[Dict[str, Any]] = field(default_factory=list)
 
@@ -79,8 +82,66 @@ class CorrectionState:
                 session_id=self.session_id,
                 total_copies=self.total_copies,
                 processed_copies=self.processed_copies,
+                token_usage_by_phase=self.token_usage_by_phase.copy(),
                 errors=self.errors.copy()
             )
+
+    def with_token_usage(
+        self,
+        phase: WorkflowPhase,
+        prompt_tokens: int,
+        completion_tokens: int
+    ) -> 'CorrectionState':
+        """
+        Record token usage for a phase.
+
+        Args:
+            phase: Phase to record tokens for
+            prompt_tokens: Number of prompt tokens
+            completion_tokens: Number of completion tokens
+
+        Returns:
+            New CorrectionState instance
+        """
+        with self._lock:
+            new_usage = self.token_usage_by_phase.copy()
+            phase_name = phase.value
+
+            if phase_name not in new_usage:
+                new_usage[phase_name] = {'prompt': 0, 'completion': 0, 'total': 0}
+
+            new_usage[phase_name]['prompt'] += prompt_tokens
+            new_usage[phase_name]['completion'] += completion_tokens
+            new_usage[phase_name]['total'] += prompt_tokens + completion_tokens
+
+            return CorrectionState(
+                language=self.language,
+                auto_mode=self.auto_mode,
+                phase=self.phase,
+                jurisprudence=self.jurisprudence.copy(),
+                session_id=self.session_id,
+                total_copies=self.total_copies,
+                processed_copies=self.processed_copies,
+                token_usage_by_phase=new_usage,
+                errors=self.errors.copy()
+            )
+
+    def get_token_summary(self) -> Dict[str, Any]:
+        """Get token usage summary by phase."""
+        with self._lock:
+            total_prompt = 0
+            total_completion = 0
+
+            for phase_usage in self.token_usage_by_phase.values():
+                total_prompt += phase_usage.get('prompt', 0)
+                total_completion += phase_usage.get('completion', 0)
+
+            return {
+                'by_phase': self.token_usage_by_phase.copy(),
+                'total_prompt': total_prompt,
+                'total_completion': total_completion,
+                'total': total_prompt + total_completion
+            }
 
     def with_language(self, language: str) -> 'CorrectionState':
         """Create a new state with updated language."""
@@ -93,6 +154,7 @@ class CorrectionState:
                 session_id=self.session_id,
                 total_copies=self.total_copies,
                 processed_copies=self.processed_copies,
+                token_usage_by_phase=self.token_usage_by_phase.copy(),
                 errors=self.errors.copy()
             )
 
@@ -133,6 +195,7 @@ class CorrectionState:
                 session_id=self.session_id,
                 total_copies=self.total_copies,
                 processed_copies=self.processed_copies,
+                token_usage_by_phase=self.token_usage_by_phase.copy(),
                 errors=self.errors.copy()
             )
 
@@ -153,6 +216,7 @@ class CorrectionState:
                 session_id=self.session_id,
                 total_copies=self.total_copies,
                 processed_copies=self.processed_copies,
+                token_usage_by_phase=self.token_usage_by_phase.copy(),
                 errors=new_errors
             )
 
@@ -167,6 +231,7 @@ class CorrectionState:
                 session_id=self.session_id,
                 total_copies=total if total is not None else self.total_copies,
                 processed_copies=processed,
+                token_usage_by_phase=self.token_usage_by_phase.copy(),
                 errors=self.errors.copy()
             )
 
@@ -191,6 +256,7 @@ class CorrectionState:
                 'session_id': self.session_id,
                 'total_copies': self.total_copies,
                 'processed_copies': self.processed_copies,
+                'token_usage_by_phase': self.token_usage_by_phase.copy(),
                 'errors': self.errors.copy()
             }
 
@@ -205,5 +271,6 @@ class CorrectionState:
             session_id=data.get('session_id'),
             total_copies=data.get('total_copies', 0),
             processed_copies=data.get('processed_copies', 0),
+            token_usage_by_phase=data.get('token_usage_by_phase', {}),
             errors=data.get('errors', [])
         )

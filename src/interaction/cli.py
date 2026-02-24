@@ -31,6 +31,10 @@ from rich.layout import Layout
 from core.models import CopyDocument, GradedCopy, TeacherDecision, ConfidenceLevel
 
 
+# Shared console instance for CLI output
+console = Console()
+
+
 # Semantic color palette
 class Colors:
     """Semantic colors for consistent UI."""
@@ -81,12 +85,14 @@ class CLI:
         self,
         pdf_files: List[str] = None,
         mode: str = "single",
+        grading_method: str = "individual",
         pages_per_copy: int = 2,
         language: str = "auto",
         llm1_name: str = None,
         llm2_name: str = None,
         display_language: str = "fr",
-        session_id: str = None
+        session_id: str = None,
+        options: Dict[str, Any] = None
     ):
         """
         Display compact startup screen with configuration.
@@ -94,13 +100,17 @@ class CLI:
         Args:
             pdf_files: List of PDF file paths
             mode: Grading mode ("single", "comparison", "conversation")
+            grading_method: Grading method ("individual", "batch", "hybrid")
             pages_per_copy: Pages per student
             language: Content language ("auto", "fr", "en")
             llm1_name: First LLM name (for comparison mode)
             llm2_name: Second LLM name (for comparison mode)
             display_language: UI language
             session_id: Session identifier
+            options: Dict of additional options (auto_confirm, batch_verify, annotate, etc.)
         """
+        options = options or {}
+
         # Header
         header = Panel(
             "[bold cyan]🎓  AI Correction[/bold cyan]",
@@ -122,7 +132,14 @@ class CLI:
                 "conversation": "Conversation"
             }.get(mode, mode)
             config_lines.append(f"[bold]🤖 Mode:[/bold]        {mode_display}")
-            config_lines.append(f"[bold]🔧 Pages/student:[/bold] {pages_per_copy}")
+            # Grading method
+            method_display = {
+                "individual": "Individual",
+                "batch": "Batch",
+                "hybrid": "Hybrid"
+            }.get(grading_method, grading_method)
+            config_lines.append(f"[bold]📋 Method:[/bold]      {method_display}")
+            config_lines.append(f"[bold]🔧 Pages/student:[/bold] {pages_per_copy if pages_per_copy else 'Auto'}")
             lang_display = "Auto-detect" if language == "auto" else language.upper()
             config_lines.append(f"[bold]🌐 Language:[/bold]     {lang_display}")
             if session_id:
@@ -135,7 +152,15 @@ class CLI:
                 "conversation": "Conversation"
             }.get(mode, mode)
             config_lines.append(f"[bold]🤖 Mode:[/bold]        {mode_display}")
-            config_lines.append(f"[bold]🔧 Pages/élève:[/bold]  {pages_per_copy}")
+            # Grading method
+            method_display = {
+                "individual": "Individuel",
+                "batch": "Lot",
+                "hybrid": "Hybride"
+            }.get(grading_method, grading_method)
+            config_lines.append(f"[bold]📋 Méthode:[/bold]     {method_display}")
+            pages_display = str(pages_per_copy) if pages_per_copy else "Auto"
+            config_lines.append(f"[bold]🔧 Pages/élève:[/bold]  {pages_display}")
             lang_display = "Auto-détection" if language == "auto" else language.upper()
             config_lines.append(f"[bold]🌐 Langue:[/bold]      {lang_display}")
             if session_id:
@@ -149,6 +174,26 @@ class CLI:
             else:
                 config_lines.append(f"[dim]LLM1: {llm1_name}[/dim]")
                 config_lines.append(f"[dim]LLM2: {llm2_name}[/dim]")
+
+        # Options line
+        opts_parts = []
+        if options.get('auto_confirm'):
+            opts_parts.append("--auto-confirm")
+        if options.get('batch_verify'):
+            opts_parts.append(f"--batch-verify={options['batch_verify']}")
+        if options.get('annotate'):
+            opts_parts.append("--annotate")
+        if options.get('parallel', 1) > 1:
+            opts_parts.append(f"--parallel={options['parallel']}")
+        if options.get('second_reading'):
+            opts_parts.append("--second-reading")
+        if options.get('auto_detect_structure'):
+            opts_parts.append("--auto-detect-structure")
+        if options.get('skip_reading'):
+            opts_parts.append("--skip-reading")
+
+        if opts_parts:
+            config_lines.append(f"[dim]Options: {' '.join(opts_parts)}[/dim]")
 
         config_panel = Panel(
             "\n".join(config_lines),
@@ -554,7 +599,6 @@ class CLI:
 
     def show_summary(
         self,
-        session_id: str,
         copies_count: int,
         graded_count: int,
         scores: List[float],
@@ -568,7 +612,6 @@ class CLI:
         Display the final summary with rich dashboard.
 
         Args:
-            session_id: Session identifier
             copies_count: Total copies processed
             graded_count: Number of graded copies
             scores: List of all scores
@@ -581,7 +624,7 @@ class CLI:
         # Build summary content
         lines = []
 
-        # Session info
+        # Duration info only
         duration_str = ""
         if duration:
             if duration < 60:
@@ -591,35 +634,25 @@ class CLI:
             else:
                 duration_str = f"{int(duration / 3600)}h {int((duration % 3600) / 60)}m"
 
+        # Calculate average score
+        avg_score = sum(scores) / len(scores) if scores else 0
+
         if language == 'fr':
             mode_display = {"single": "LLM Simple", "comparison": "Double LLM", "conversation": "Conversation"}.get(mode, mode)
-            lines.append(f"[bold]Session:[/bold] {session_id}  │  [bold]Durée:[/bold] {duration_str}  │  [bold]Mode:[/bold] {mode_display}")
+            lines.append(f"[bold]Durée:[/bold] {duration_str}  │  [bold]Mode:[/bold] {mode_display}  │  [bold]Copies:[/bold] {copies_count}  │  [bold]Moyenne:[/bold] {avg_score:.1f}")
         else:
             mode_display = {"single": "Single LLM", "comparison": "Dual LLM", "conversation": "Conversation"}.get(mode, mode)
-            lines.append(f"[bold]Session:[/bold] {session_id}  │  [bold]Duration:[/bold] {duration_str}  │  [bold]Mode:[/bold] {mode_display}")
+            lines.append(f"[bold]Duration:[/bold] {duration_str}  │  [bold]Mode:[/bold] {mode_display}  │  [bold]Copies:[/bold] {copies_count}  │  [bold]Average:[/bold] {avg_score:.1f}")
 
         lines.append("")
 
-        # Core stats
+        # Score distribution (main visual)
         if scores:
-            avg = sum(scores) / len(scores)
-            min_score = min(scores)
-            max_score = max(scores)
-
             # Determine actual max score from first graded copy (if available)
             # Otherwise default to 20
             actual_max = 20
             if top_performers and len(top_performers) > 0:
                 actual_max = top_performers[0].get('max', 20)
-
-            percentage = (avg / actual_max * 100) if actual_max > 0 else 0
-
-            if language == 'fr':
-                lines.append(f"[bold]Copies:[/bold] {copies_count}  │  [bold]Moyenne:[/bold] {avg:.1f}/{actual_max} ({percentage:.0f}%)  │  [bold]Étendue:[/bold] {min_score:.1f} - {max_score:.1f}")
-            else:
-                lines.append(f"[bold]Copies:[/bold] {copies_count}  │  [bold]Average:[/bold] {avg:.1f}/{actual_max} ({percentage:.0f}%)  │  [bold]Range:[/bold] {min_score:.1f} - {max_score:.1f}")
-
-            lines.append("")
 
             # Score distribution
             if language == 'fr':

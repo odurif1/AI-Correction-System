@@ -1107,8 +1107,8 @@ Original question: {kwargs.get('question_text', '')}"""
                     f"Scale disagreement for {qid}: LLM1={max_pts1}, LLM2={max_pts2}, using max={max_pts}"
                 )
 
-            # Check for agreement (relative threshold: 10% of max_points)
-            grade_threshold = max_pts * 0.10
+            # Check for agreement (relative threshold: configurable % of max_points)
+            grade_threshold = max_pts * get_settings().grade_agreement_threshold
             grades_agree = abs(grade1 - grade2) < grade_threshold
 
             # Check if readings are still substantially different
@@ -1905,6 +1905,35 @@ STUDENT_FEEDBACK: [feedback]
         norm1 = normalize_name(name1)
         norm2 = normalize_name(name2)
 
+        # Check if one LLM failed (returned None with low confidence)
+        # In this case, use the other LLM's result without cross-verification
+        if not norm1 and norm2:
+            # LLM1 failed, use LLM2's result
+            await self._notify_progress('name_detection_done', {
+                'name': name2,
+                'consensus': True,
+                'note': 'LLM1 failed, using LLM2'
+            })
+            return {
+                "name": name2,
+                "confidence": conf2,
+                "comparison": comparison_info,
+                "consensus": True
+            }
+        if not norm2 and norm1:
+            # LLM2 failed, use LLM1's result
+            await self._notify_progress('name_detection_done', {
+                'name': name1,
+                'consensus': True,
+                'note': 'LLM2 failed, using LLM1'
+            })
+            return {
+                "name": name1,
+                "confidence": conf1,
+                "comparison": comparison_info,
+                "consensus": True
+            }
+
         if norm1 and norm1 == norm2:
             # Perfect agreement
             comparison_info["consensus"] = True
@@ -1919,7 +1948,7 @@ STUDENT_FEEDBACK: [feedback]
                 "consensus": True
             }
 
-        # Step 3: Try cross-verification
+        # Step 3: Try cross-verification (only if both LLMs returned results)
         verified_results = await self._cross_verify_name(
             results, image_path, language
         )

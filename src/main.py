@@ -37,7 +37,6 @@ from utils.sorting import natural_sort_key
 from config.settings import get_settings
 from config.constants import DEFAULT_PARALLEL_COPIES
 from interaction.cli import CLI
-from interaction.cli import LiveProgressDisplay
 
 
 def check_api_key() -> bool:
@@ -61,8 +60,6 @@ def validate_pdf_path(path_str: str) -> tuple[bool, str]:
     Returns:
         Tuple of (is_valid, error_message)
     """
-    from pathlib import Path
-
     # Check for empty path
     if not path_str or not path_str.strip():
         return False, "Empty path provided"
@@ -370,6 +367,16 @@ async def command_correct(args):
         cli.show_error("No PDF files found to process.")
         return 1
 
+    # Validate mode/option combinations
+    if args.grading_method == "individual":
+        if not args.pages_per_copy and not args.auto_detect_structure:
+            cli.show_error(
+                "Mode 'individual' nécessite soit --pages-per-copy (--ppc) soit --auto-detect-structure.\n"
+                "  --ppc N                 : Découpe mécanique en copies de N pages\n"
+                "  --auto-detect-structure : Détection AI de la structure (cross-vérification en mode dual)"
+            )
+            return 1
+
     # Initialize workflow state (replaces mutable dicts)
     state = CorrectionState(
         language='fr',
@@ -393,7 +400,9 @@ async def command_correct(args):
         second_reading=args.second_reading,
         parallel=args.parallel,
         grading_mode=args.grading_method,
-        batch_verify=args.batch_verify
+        batch_verify=args.batch_verify,
+        auto_detect_structure=args.auto_detect_structure,
+        workflow_state=state  # Pass the workflow state with auto_mode
     )
 
     # Create callbacks with access to orchestrator
@@ -423,18 +432,31 @@ async def command_correct(args):
     cli.show_startup(
         pdf_files=pdf_paths,
         mode=mode,
+        grading_method=args.grading_method,
         pages_per_copy=args.pages_per_copy,
         language='auto',
         llm1_name=llm1_name,
         llm2_name=llm2_name,
         display_language='fr',
-        session_id=orchestrator.session_id
+        session_id=orchestrator.session_id,
+        options={
+            'auto_confirm': args.auto_confirm,
+            'batch_verify': args.batch_verify,
+            'annotate': args.annotate,
+            'parallel': args.parallel,
+            'second_reading': args.second_reading,
+            'auto_detect_structure': args.auto_detect_structure,
+            'skip_reading': args.skip_reading
+        }
     )
 
     # ============================================================
-    # Phase 1: Analyze
+    # Phase 1: Initialisation
+    # - Chargement du PDF
+    # - Découpe si --pages-per-copy
+    # - Pré-vérification optionnelle (ex: ordre des copies)
     # ============================================================
-    state = state.with_phase(WorkflowPhase.ANALYSIS)
+    state = state.with_phase(WorkflowPhase.INITIALIZATION)
 
     try:
         analysis = await orchestrator.analyze_only()
@@ -448,18 +470,26 @@ async def command_correct(args):
 
     # Show analysis result
     copies_count = analysis['copies_count']
-    if language == 'fr':
-        cli.console.print(f"[green]✓ {copies_count} copie(s) détectée(s)[/green]\n")
-    else:
-        cli.console.print(f"[green]✓ {copies_count} copy/copies detected[/green]\n")
-
-    # ============================================================
-    # Phase 2: Setup Scale (will be detected during grading)
-    # ============================================================
-
-    # Check if questions were detected or will be detected during grading
     questions_detected_during_grading = analysis.get('questions_detected_during_grading', False)
 
+    if questions_detected_during_grading:
+        # Structure will be detected during grading
+        if language == 'fr':
+            pdf_word = "fichier" if copies_count == 1 else "fichiers"
+            cli.console.print(f"[green]✓ {copies_count} {pdf_word} PDF chargé(s) - structure détectée pendant la correction[/green]\n")
+        else:
+            pdf_word = "file" if copies_count == 1 else "files"
+            cli.console.print(f"[green]✓ {copies_count} PDF {pdf_word} loaded - structure detected during grading[/green]\n")
+    else:
+        # Structure was pre-detected
+        if language == 'fr':
+            copy_word = "copie" if copies_count == 1 else "copies"
+            cli.console.print(f"[green]✓ {copies_count} {copy_word} détectée(s)[/green]\n")
+        else:
+            copy_word = "copy" if copies_count == 1 else "copies"
+            cli.console.print(f"[green]✓ {copies_count} {copy_word} detected[/green]\n")
+
+    # Check if questions were detected or will be detected during grading
     if not analysis['questions'] and not questions_detected_during_grading:
         cli.show_error("Aucune question détectée. L'analyse a peut-être échoué.")
         return 1
@@ -491,8 +521,47 @@ async def command_correct(args):
                     new_scale[qid] = 1.0
         return new_scale
 
+    # Helper to record token usage for current phase (delta from previous)
+    _prev_tokens = {'prompt': 0, 'completion': 0}
+    _current_sub_phase = WorkflowPhase.GRADING  # Track sub-phase within grading (verification, ultimatum)
+    _token_debug_log = []  # Debug log for token tracking
+
+    def record_phase_tokens(current_phase: WorkflowPhase, event_name: str = ""):
+        """Record token usage for the completed phase (delta)."""
+        nonlocal state, _prev_tokens
+        if hasattr(orchestrator.ai, 'get_token_usage'):
+            usage = orchestrator.ai.get_token_usage()
+            current_prompt = usage.get('prompt_tokens', 0)
+            current_completion = usage.get('completion_tokens', 0)
+
+            # Calculate delta from previous phase
+            delta_prompt = current_prompt - _prev_tokens['prompt']
+            delta_completion = current_completion - _prev_tokens['completion']
+            delta_total = delta_prompt + delta_completion
+
+            # Debug log
+            _token_debug_log.append({
+                'event': event_name,
+                'phase': current_phase.value,
+                'delta_prompt': delta_prompt,
+                'delta_completion': delta_completion,
+                'total_prompt': current_prompt,
+                'total_completion': current_completion
+            })
+
+            # Update state with delta
+            if delta_prompt > 0 or delta_completion > 0:
+                state = state.with_token_usage(
+                    phase=current_phase,
+                    prompt_tokens=delta_prompt,
+                    completion_tokens=delta_completion
+                )
+
+            # Store current for next delta calculation
+            _prev_tokens = {'prompt': current_prompt, 'completion': current_completion}
+
     # ============================================================
-    # Phase 3: Grade All Copies (with live display)
+    # Phase 2: Grading
     # ============================================================
     state = state.with_phase(WorkflowPhase.GRADING)
     console = cli.console
@@ -509,7 +578,7 @@ async def command_correct(args):
 
     # Progress callback for real-time display
     async def progress_callback(event_type: str, data: dict):
-        nonlocal prev_tokens
+        nonlocal prev_tokens, _current_sub_phase
 
         if event_type == 'copy_start':
             copy_idx = data['copy_index']
@@ -524,8 +593,6 @@ async def command_correct(args):
             q_idx = data['question_index']
             total_q = data['total_questions']
             llm_status['results'] = {}  # Reset for new question
-            # Update live display via mark_current_activity
-            live_display.mark_current_activity(copy_idx, q_idx, total_q)
 
         elif event_type == 'llm_parallel_start':
             # Skip - too repetitive
@@ -597,15 +664,30 @@ async def command_correct(args):
             }
 
         elif event_type == 'copy_done':
+            copy_idx = data.get('copy_index', '')
+            student_name = data.get('student_name', '???')
             score = data['total_score']
             max_s = data['max_score']
             pct = (score / max_s * 100) if max_s > 0 else 0
             conf = data.get('confidence', 0.5) or 0.5
+            final_questions = data.get('final_questions', {})
+            feedback = data.get('feedback', '')
 
-            # Display all questions sorted chronologically
-            for qid in sorted(current_copy_questions.keys(), key=natural_sort_key):
-                q = current_copy_questions[qid]
-                console.print(f"  [{q['color']}]{q['icon']}[/{q['color']}] {qid}: [bold]{q['grade']:.1f}/{q['max_pts']}[/bold][dim]{q['note']}[/dim]")
+            # In batch mode, use final_questions from the event
+            # In individual mode, use current_copy_questions populated by question_done
+            questions_to_display = final_questions if final_questions else current_copy_questions
+
+            # Header for this copy
+            console.print(f"\n  [bold cyan]── Copie {copy_idx}: {student_name} ──[/bold cyan]")
+
+            # Display questions in compact format
+            grades_str = "  "
+            for qid in sorted(questions_to_display.keys(), key=natural_sort_key):
+                q = questions_to_display[qid]
+                grade = q.get('grade', 0)
+                max_pts = q.get('max_points', q.get('max_pts', 1))
+                grades_str += f"{qid}: [bold]{grade:.0f}/{max_pts:.0f}[/bold]  "
+            console.print(grades_str)
 
             # Calculate tokens used for this copy
             token_usage = data.get('token_usage')
@@ -622,7 +704,11 @@ async def command_correct(args):
             else:
                 color = "red"
 
-            console.print(f"  [bold {color}]Total: {score:.1f}/{max_s} ({pct:.0f}%)[/bold {color}] [dim]confiance: {conf:.0%}[/dim]{tokens_str}")
+            console.print(f"  [bold {color}]Total: {score:.1f}/{max_s} ({pct:.0f}%)[/bold {color}] [dim]conf: {conf:.0%}[/dim]{tokens_str}")
+
+            # Display feedback/appreciation
+            if feedback:
+                console.print(f"  [italic dim]{feedback[:150]}{'...' if len(feedback) > 150 else ''}[/italic dim]")
 
         elif event_type == 'feedback_start':
             console.print(f"  [dim]Génération de l'appréciation...[/dim]", end="")
@@ -710,57 +796,257 @@ async def command_correct(args):
                         console.print(f"    [yellow]⚠ {qid}:[/yellow] {reason} ({llm1_grade:.1f} vs {llm2_grade:.1f})")
 
         elif event_type == 'verification_start':
+            # Switch to VERIFICATION phase for token tracking
+            record_phase_tokens(_current_sub_phase, event_type)  # Record any pending GRADING tokens
+            _current_sub_phase = WorkflowPhase.VERIFICATION
+
             qid = data.get('question_id')
             reason = data.get('reason', '')
             console.print(f"  [dim]🔄 Vérification {qid}...[/dim]")
 
-        elif event_type == 'question_done':
-            qid = data.get('question_id')
-            grade = data.get('grade', 0)
-            max_pts = data.get('max_points', 1)
-            method = data.get('method', 'unknown')
-            agreement = data.get('agreement', True)
+        elif event_type == 'batch_comparison_ready':
+            # Display structured comparison results for dual LLM batch mode
+            providers = data.get('providers', ['LLM1', 'LLM2'])
+            copies = data.get('copies', [])
 
-            # Determine display based on method
-            if method == 'single_pass_consensus':
-                color = "green"
-                icon = "✓"
-                note = ""
-            elif 'verification' in method or 'ultimatum' in method:
-                color = "yellow"
-                icon = "✓"
-                note = " (après vérification)"
-            else:
-                color = "green" if agreement else "red"
-                icon = "✓" if agreement else "⚠"
-                note = ""
+            # Store for later display after verification/ultimatum
+            llm_status['comparison_data'] = data
 
-            # Store for sorted display at copy_done
-            current_copy_questions[qid] = {
-                'grade': grade,
-                'max_pts': max_pts,
-                'color': color,
-                'icon': icon,
-                'note': note
-            }
+            # Helper to get short provider name
+            def get_short_name(provider_str: str, idx: int) -> str:
+                # Extract model name from "LLM1: model-name" format
+                model = provider_str.replace('LLM1: ', '').replace('LLM2: ', '')
+                # Create short readable name
+                if 'gemini' in model.lower():
+                    if 'flash' in model.lower():
+                        return 'Gemini Flash'
+                    elif 'pro' in model.lower():
+                        return 'Gemini Pro'
+                    return 'Gemini'
+                elif 'gpt' in model.lower() or 'openai' in model.lower():
+                    if '4o' in model.lower():
+                        return 'GPT-4o'
+                    elif '4' in model:
+                        return 'GPT-4'
+                    return 'GPT'
+                elif 'claude' in model.lower():
+                    if 'opus' in model.lower():
+                        return 'Claude Opus'
+                    elif 'sonnet' in model.lower():
+                        return 'Claude Sonnet'
+                    return 'Claude'
+                # Fallback to LLM1/LLM2
+                return f'LLM{idx+1}'
+
+            p1_short = get_short_name(providers[0], 0)
+            p2_short = get_short_name(providers[1], 1) if len(providers) > 1 else ''
+
+            for copy_info in copies:
+                copy_idx = copy_info.get('copy_index', '')
+                student_name = copy_info.get('student_name') or '???'
+                questions = copy_info.get('questions', {})
+
+                # Header for this copy
+                console.print(f"\n[bold cyan]═══ Copie {copy_idx}: {student_name} ═══[/bold cyan]")
+
+                # Table header with cleaner format
+                console.print(f"   {'Q':<4} │ {p1_short:<12} │ {p2_short:<12} │ {'Status'}")
+                console.print(f"   {'─'*4}─┼─{'─'*12}─┼─{'─'*12}─┼─{'─'*12}")
+
+                # Sort questions naturally
+                for qid in sorted(questions.keys(), key=natural_sort_key):
+                    q = questions[qid]
+                    llm1_grade = q.get('llm1_grade')
+                    llm1_max = q.get('llm1_max_points', 1)
+                    llm2_grade = q.get('llm2_grade')
+                    llm2_max = q.get('llm2_max_points', 1)
+                    agreement = q.get('agreement', True)
+
+                    # Format grades
+                    if llm1_grade is not None:
+                        g1_str = f"{llm1_grade:.1f}/{llm1_max:.0f}"
+                    else:
+                        g1_str = "erreur"
+
+                    if llm2_grade is not None:
+                        g2_str = f"{llm2_grade:.1f}/{llm2_max:.0f}"
+                    else:
+                        g2_str = "erreur"
+
+                    # Status
+                    if agreement:
+                        status = "[green]✓ accord[/green]"
+                    else:
+                        status = "[yellow]⚠ désaccord[/yellow]"
+
+                    console.print(f"   {qid:<4} │ {g1_str:<12} │ {g2_str:<12} │ {status}")
+
+                console.print("")
+
+        elif event_type == 'batch_verification_start':
+            # Switch to VERIFICATION phase for batch verification
+            record_phase_tokens(_current_sub_phase, event_type)  # Record any pending GRADING tokens
+            _current_sub_phase = WorkflowPhase.VERIFICATION
+            console.print(f"\n  [dim]🔄 Vérification des désaccords...[/dim]")
+
+        elif event_type == 'batch_verification_done':
+            # Record VERIFICATION tokens and switch back to GRADING
+            record_phase_tokens(WorkflowPhase.VERIFICATION, event_type)
+            _current_sub_phase = WorkflowPhase.GRADING
+
+            # Display verification results
+            # Show which cases are truly resolved vs going to ultimatum
+            questions = data.get('questions', [])
+            if questions:
+                # Cases that are truly resolved (not going to ultimatum)
+                resolved_cases = [q for q in questions if not q.get('goes_to_ultimatum', False)]
+                # Cases going to ultimatum
+                ultimatum_cases = [q for q in questions if q.get('goes_to_ultimatum', False)]
+
+                if resolved_cases:
+                    console.print(f"\n  [bold]📋 Vérification - Consensus atteint:[/bold]")
+                    for q in resolved_cases:
+                        qid = q.get('question_id')
+                        copy_idx = q.get('copy_index', '')
+                        final = q.get('final_grade', 0)
+                        # Show copy index if available
+                        if copy_idx:
+                            console.print(f"    Copie {copy_idx} {qid}: [green]{final:.1f}[/green] (consensus)")
+                        else:
+                            console.print(f"    {qid}: [green]{final:.1f}[/green] (consensus)")
+
+                if ultimatum_cases:
+                    console.print(f"\n  [dim]📋 Vérification - Cas nécessitant l'ultimatum ({len(ultimatum_cases)}):[/dim]")
+                    for q in ultimatum_cases:
+                        qid = q.get('question_id')
+                        copy_idx = q.get('copy_index', '')
+                        reasons = q.get('ultimatum_reasons', [])
+                        reason_str = f" ({', '.join(reasons)})" if reasons else ""
+                        # Show copy index if available
+                        if copy_idx:
+                            console.print(f"    [dim]Copie {copy_idx} {qid} → ultimatum{reason_str}[/dim]")
+                        else:
+                            console.print(f"    [dim]{qid} → ultimatum{reason_str}[/dim]")
+
+        elif event_type == 'batch_ultimatum_start':
+            # Switch to ULTIMATUM phase for ultimatum tokens
+            record_phase_tokens(_current_sub_phase, event_type)  # Record any pending tokens
+            _current_sub_phase = WorkflowPhase.ULTIMATUM
+            console.print(f"\n  [dim]⚖️ Ultimatum (désaccords persistants)...[/dim]")
+
+        elif event_type == 'batch_ultimatum_done':
+            # Record ultimatum tokens and switch back to GRADING
+            record_phase_tokens(WorkflowPhase.ULTIMATUM, event_type)
+            _current_sub_phase = WorkflowPhase.GRADING
+
+            # Display ultimatum results
+            questions = data.get('questions', [])
+            if questions:
+                console.print(f"\n  [bold]📋 Résultats de l'ultimatum:[/bold]")
+                for q in questions:
+                    qid = q.get('question_id')
+                    copy_idx = q.get('copy_index', '')
+                    final = q.get('final_grade', 0)
+                    method = q.get('method', 'unknown')
+                    # Show copy index if available
+                    if copy_idx:
+                        console.print(f"    Copie {copy_idx} {qid}: [dark_orange]{final:.1f}[/dark_orange] ({method})")
+                    else:
+                        console.print(f"    {qid}: [dark_orange]{final:.1f}[/dark_orange] ({method})")
+
+        elif event_type == 'ultimatum_parse_warning':
+            # Alert user about parsing failure
+            warning = data.get('warning', 'Ultimatum parsing failed')
+            console.print(f"\n  [bold red]⚠️ {warning}[/bold red]")
+            console.print(f"  [dim]Les décisions finales peuvent être imprécises[/dim]")
+
+        elif event_type == 'verification_done':
+            # Record VERIFICATION tokens and switch back to GRADING
+            record_phase_tokens(WorkflowPhase.VERIFICATION, event_type)
+            _current_sub_phase = WorkflowPhase.GRADING
+
+        elif event_type == 'ultimatum_start':
+            # Switch to ULTIMATUM phase for ultimatum tokens
+            record_phase_tokens(_current_sub_phase, event_type)  # Record any pending tokens
+            _current_sub_phase = WorkflowPhase.ULTIMATUM
+
+        elif event_type == 'ultimatum_done':
+            # Record ultimatum tokens and switch back to GRADING
+            record_phase_tokens(WorkflowPhase.ULTIMATUM, event_type)
+            _current_sub_phase = WorkflowPhase.GRADING
 
     # Run grading with progress updates
+    try:
+        graded = await orchestrator.grade_all(progress_callback=progress_callback)
+    except Exception as e:
+        # Handle StudentNameMismatchError specifically
+        from core.exceptions import StudentNameMismatchError
+        if isinstance(e, StudentNameMismatchError):
+            console.print(f"\n[red]{e.message}[/red]")
+            console.print("\n[yellow]Arrêt de la correction. Résolvez le problème avec une des options suivantes:[/yellow]")
+            console.print("  1. [cyan]--pages-per-copy N[/cyan]      Découpe mécanique du PDF en copies de N pages")
+            console.print("  2. [cyan]--auto-detect-structure[/cyan] Pré-analyse la structure avant correction")
+            console.print("  3. [cyan]--auto-confirm[/cyan]          Continue malgré le problème (non recommandé)")
+            return 1
+        raise
 
-    # Create live progress display for parallel processing visibility
-    total_copies = len(orchestrator.session.copies)
-    live_display = LiveProgressDisplay(console, total_copies=total_copies, language=language)
+    # Record any remaining tokens for the current sub-phase
+    record_phase_tokens(_current_sub_phase, "grading_complete")
 
-    # Use factory function to create callback with original progress callback
-    from interaction.cli import create_live_progress_callback
-    live_callback = create_live_progress_callback(live_display, progress_callback)
-
-    with live_display:
-        graded = await orchestrator.grade_all(progress_callback=live_callback)
-
-    # ============================================================
-    # Phase 3.5: Check if scale was detected, prompt user if not
-    # ============================================================
+    # Check if scale was detected, prompt user if not
     if graded:
+        # Check for max_points disagreements in dual LLM mode
+        if is_comparison_mode:
+            max_points_disagreements = []
+            name_disagreements = []
+
+            for g in graded:
+                llm_comp = g.llm_comparison or {}
+                llm_comparison = llm_comp.get('llm_comparison', {})
+
+                # Check for max_points disagreements
+                for qid, qdata in llm_comparison.items():
+                    if isinstance(qdata, dict) and 'max_points_disagreement' in qdata:
+                        mpd = qdata['max_points_disagreement']
+                        max_points_disagreements.append({
+                            'copy_index': llm_comp.get('student_detection', {}).get('copy_index', '?'),
+                            'question_id': qid,
+                            'llm1_max_points': mpd.get('llm1_max_points'),
+                            'llm2_max_points': mpd.get('llm2_max_points'),
+                            'resolved': mpd.get('resolved_max_points'),
+                            'persisted_after_ultimatum': mpd.get('persisted_after_ultimatum', False)
+                        })
+
+                # Check for name disagreements
+                student_detection = llm_comp.get('student_detection', {})
+                if 'name_disagreement' in student_detection:
+                    nd = student_detection['name_disagreement']
+                    name_disagreements.append({
+                        'copy_index': student_detection.get('copy_index', '?'),
+                        'llm1_name': nd.get('llm1_name'),
+                        'llm2_name': nd.get('llm2_name'),
+                        'resolved_name': nd.get('resolved_name')
+                    })
+
+            # Display max_points disagreements
+            if max_points_disagreements:
+                console.print(f"\n[bold yellow]⚠ Désaccord sur le barème pour {len(max_points_disagreements)} question(s)[/bold yellow]")
+                for mpd in max_points_disagreements[:3]:  # Show max 3
+                    persisted = " (non résolu après ultimatum)" if mpd['persisted_after_ultimatum'] else ""
+                    console.print(f"  Copie {mpd['copy_index']}, {mpd['question_id']}: LLM1={mpd['llm1_max_points']}pts, LLM2={mpd['llm2_max_points']}pts → résolu à {mpd['resolved']}pts{persisted}")
+                if len(max_points_disagreements) > 3:
+                    console.print(f"  ... et {len(max_points_disagreements) - 3} autre(s)")
+                console.print("[dim]Conseil: Vérifiez le barème dans le sujet et utilisez --bareme pour le spécifier[/dim]")
+
+            # Display name disagreements
+            if name_disagreements:
+                console.print(f"\n[bold yellow]⚠ Désaccord sur le nom pour {len(name_disagreements)} copie(s)[/bold yellow]")
+                for nd in name_disagreements[:3]:  # Show max 3
+                    console.print(f"  Copie {nd['copy_index']}: LLM1=\"{nd['llm1_name']}\", LLM2=\"{nd['llm2_name']}\" → résolu à \"{nd['resolved_name']}\"")
+                if len(name_disagreements) > 3:
+                    console.print(f"  ... et {len(name_disagreements) - 3} autre(s)")
+                console.print("[dim]Conseil: Utilisez --pages-per-copy ou --auto-detect-structure pour une meilleure détection[/dim]")
+
         # Get all question IDs from graded copies
         all_questions = set()
         for g in graded:
@@ -782,9 +1068,19 @@ async def command_correct(args):
                 g.max_score = total_max
 
     # ============================================================
-    # Phase 4: Review Doubts (if not auto mode)
+    # Phase 3: Verification / Ultimatum
     # ============================================================
     state = state.with_phase(WorkflowPhase.VERIFICATION)
+
+    # Cross-verify names and barème if detected during grading (not pre-detected)
+    if args.auto_detect_structure:
+        cli.console.print("[dim]Structure pré-détectée, vérification noms/barème skipée[/dim]")
+    else:
+        verification_results = await orchestrator.verify_detected_parameters()
+        if verification_results.get('names_disagreed', 0) > 0:
+            cli.console.print(f"[yellow]⚠ {verification_results['names_disagreed']} désaccord(s) sur les noms[/yellow]")
+
+    # Review doubts (low confidence grades)
     if not args.auto_confirm:
         doubts = orchestrator.get_doubts(threshold=0.7)
         if doubts:
@@ -793,19 +1089,94 @@ async def command_correct(args):
                 await orchestrator.apply_decisions(decisions)
                 cli.show_success(f"Applied {len(decisions)} decision(s)")
 
-    # ============================================================
-    # Phase 5: Calibration (internal consistency check)
-    # ============================================================
-    state = state.with_phase(WorkflowPhase.CALIBRATION)
-    # Run calibration phase silently
-    await orchestrator._calibration_phase()
+    # Record VERIFICATION phase tokens
+    record_phase_tokens(WorkflowPhase.VERIFICATION)
 
     # ============================================================
-    # Phase 6: Export
+    # Phase 4: Calibration
+    # ============================================================
+    state = state.with_phase(WorkflowPhase.CALIBRATION)
+    await orchestrator._calibration_phase()
+
+    # Record CALIBRATION phase tokens
+    record_phase_tokens(WorkflowPhase.CALIBRATION)
+
+    # ============================================================
+    # Phase 5: Export
     # ============================================================
     state = state.with_phase(WorkflowPhase.EXPORT)
 
     exports = await orchestrator.export()
+
+    # ============================================================
+    # Phase 6: Annotation (optionnel)
+    # ============================================================
+    annotated_files = []
+    overlay_files = []
+    if args.annotate:
+        # Check if annotation model is configured
+        annotation_model = get_settings().annotation_model
+        if not annotation_model:
+            cli.console.print(f"\n[yellow]⚠ Annotation skip: AI_CORRECTION_ANNOTATION_MODEL non configuré[/yellow]")
+        else:
+            state = state.with_phase(WorkflowPhase.ANNOTATION)
+            cli.console.print(f"\n[bold cyan]📄 Annotation des copies...[/bold cyan]")
+
+            from export.pdf_annotator import PDFAnnotator
+
+            # Create output directories
+            annotated_dir = Path(args.output) / orchestrator.session_id / "annotated"
+            overlay_dir = Path(args.output) / orchestrator.session_id / "overlays"
+            annotated_dir.mkdir(parents=True, exist_ok=True)
+            overlay_dir.mkdir(parents=True, exist_ok=True)
+
+            annotator = PDFAnnotator(session=orchestrator.session)
+
+            for i, (copy, graded_copy) in enumerate(zip(orchestrator.session.copies, graded), 1):
+                student_name = copy.student_name or f"copie_{i}"
+                safe_name = student_name.replace(" ", "_").replace("/", "-")
+
+                # Annotated copy (full PDF with annotations)
+                annotated_path = annotated_dir / f"{safe_name}_annotated.pdf"
+                # Overlay (just annotations, transparent background)
+                overlay_path = overlay_dir / f"{safe_name}_overlay.pdf"
+
+                try:
+                    cli.console.print(f"  [dim]{student_name}...[/dim]", end="")
+
+                    # Generate annotated copy
+                    annotator.annotate_copy(
+                        copy=copy,
+                        graded=graded_copy,
+                        output_path=str(annotated_path),
+                        smart_placement=True,
+                        language=language
+                    )
+                    annotated_files.append(str(annotated_path))
+
+                    # Generate overlay
+                    annotator.create_annotation_overlay(
+                        copy=copy,
+                        graded=graded_copy,
+                        output_path=str(overlay_path),
+                        smart_placement=True,
+                        language=language
+                    )
+                    overlay_files.append(str(overlay_path))
+
+                    cli.console.print(f" [green]✓[/green]")
+                except Exception as e:
+                    cli.console.print(f" [red]✗ {e}[/red]")
+
+            if annotated_files:
+                cli.console.print(f"[green]✓ {len(annotated_files)} copie(s) annotée(s)[/green]")
+                exports['annotated_pdfs'] = str(annotated_dir)
+            if overlay_files:
+                cli.console.print(f"[green]✓ {len(overlay_files)} overlay(s) généré(s)[/green]")
+                exports['annotation_overlays'] = str(overlay_dir)
+
+            # Record ANNOTATION phase tokens
+            record_phase_tokens(WorkflowPhase.ANNOTATION)
 
     # Mark complete
     from core.models import SessionStatus
@@ -845,25 +1216,8 @@ async def command_correct(args):
     else:
         summary_mode = "single"  # Will be displayed as "LLM Simple" or "Single LLM"
 
-    # Compact summary of all copies
-    copies_data = []
-    for i, g in enumerate(graded, 1):
-        copy = next((c for c in orchestrator.session.copies if c.id == g.copy_id), None)
-        student_name = copy.student_name if copy else None
-        copies_data.append({
-            'copy_number': i,
-            'student_name': student_name,
-            'total': g.total_score,
-            'max': g.max_score,
-            'confidence': g.confidence,
-            'feedback': g.feedback
-        })
-
-    cli.show_all_copies_summary(copies_data, language=language)
-
-    # Final summary panel
+    # Final summary panel (without redundant session_id - already shown in config)
     cli.show_summary(
-        session_id=orchestrator.session_id,
         copies_count=len(orchestrator.session.copies),
         graded_count=len(graded),
         scores=scores,
@@ -874,32 +1228,39 @@ async def command_correct(args):
         language=language
     )
 
-    # Show token usage
-    if hasattr(orchestrator.ai, 'get_token_usage'):
-        token_usage = orchestrator.ai.get_token_usage()
-        if token_usage.get('total_tokens', 0) > 0:
-            total = token_usage['total_tokens']
-            prompt = token_usage.get('prompt_tokens', 0)
-            completion = token_usage.get('completion_tokens', 0)
+    # Show token usage by phase
+    token_summary = state.get_token_summary()
+    if token_summary['total'] > 0:
+        cli.console.print(f"\n[bold cyan]📊 Token Usage par Phase:[/bold cyan]")
 
-            cli.console.print(f"\n[bold cyan]📊 Token Usage:[/bold cyan]")
-            cli.console.print(f"  Total: [bold]{total:,}[/bold] tokens")
-            cli.console.print(f"  Prompt: {prompt:,} | Completion: {completion:,}")
+        # Phase order for display
+        phase_order = ['grading', 'verification', 'ultimatum', 'calibration', 'annotation']
+        phase_labels = {
+            'grading': 'Correction',
+            'verification': 'Vérification',
+            'ultimatum': 'Ultimatum',
+            'calibration': 'Calibration',
+            'annotation': 'Annotation'
+        }
 
-            # Show by provider if available
-            if 'by_provider' in token_usage:
-                for provider_name, usage in token_usage['by_provider'].items():
-                    cli.console.print(f"  [{provider_name}] {usage.get('total_tokens', 0):,} tokens ({usage.get('calls', 0)} calls)")
+        for phase_name in phase_order:
+            if phase_name in token_summary['by_phase']:
+                usage = token_summary['by_phase'][phase_name]
+                label = phase_labels.get(phase_name, phase_name)
+                cli.console.print(f"  {label}: {usage['total']:,} tokens")
 
-    # Annotate PDFs if requested
-    if args.annotate:
-        cli.show_info("Annotating PDFs...")
-        # Would call PDFAnnotator here
+        # Total
+        cli.console.print(f"  [bold]Total: {token_summary['total']:,}[/bold] tokens")
+        cli.console.print(f"  (Prompt: {token_summary['total_prompt']:,} | Completion: {token_summary['total_completion']:,})")
 
-    if language == 'fr':
-        cli.show_success(f"Session sauvegardée: {orchestrator.session_id}")
-    else:
-        cli.show_success(f"Session saved: {orchestrator.session_id}")
+        # Show by provider if available
+        if hasattr(orchestrator.ai, 'get_token_usage'):
+            provider_usage = orchestrator.ai.get_token_usage()
+            if 'by_provider' in provider_usage:
+                cli.console.print(f"\n  [dim]Par provider:[/dim]")
+                for provider_name, usage in provider_usage['by_provider'].items():
+                    # Use markup=False to avoid Rich interpreting brackets
+                    cli.console.print(f"  [{provider_name}] {usage.get('total_tokens', 0):,} tokens ({usage.get('calls', 0)} calls)", markup=False)
 
     return 0
 
@@ -1152,7 +1513,7 @@ Note on --second-reading:
     correct_parser.add_argument(
         "--annotate",
         action="store_true",
-        help="Generate annotated PDFs"
+        help="Générer des PDFs annotés avec le feedback (nécessite un LLM vision configuré)"
     )
     correct_parser.add_argument(
         "--output",
@@ -1190,6 +1551,11 @@ Note on --second-reading:
         choices=["per-question", "grouped"],
         default="grouped",
         help="Mode de vérification post-batch pour les désaccords (dual batch uniquement): 'per-question' (un appel par désaccord) ou 'grouped' (un seul appel groupé)"
+    )
+    correct_parser.add_argument(
+        "--auto-detect-structure",
+        action="store_true",
+        help="Analyse le PDF entier en pré-phase pour détecter la structure (copies, pages, noms, barème) avec les 2 LLMs. Cross-vérification automatique des désaccords."
     )
 
     # Status command

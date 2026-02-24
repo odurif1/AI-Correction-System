@@ -18,9 +18,11 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 
 from config.settings import get_settings
+from config.constants import MAX_RETRIES
+from utils.json_extractor import extract_json_from_response
 from prompts.batch import (
     build_batch_grading_prompt,
     build_dual_llm_verification_prompt,
@@ -28,6 +30,75 @@ from prompts.batch import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Retry configuration (base delay for exponential backoff)
+RETRY_BASE_DELAY = 1.0  # seconds
+RETRYABLE_STATUS_CODES = {503, 429, 500, 502, 504}
+
+
+def _is_retryable_error(error: Exception) -> bool:
+    """Check if an error is retryable (503, 429, etc.)."""
+    error_str = str(error).lower()
+    # Check for status codes in error message
+    for code in RETRYABLE_STATUS_CODES:
+        if str(code) in error_str:
+            return True
+    # Check for common retryable error messages
+    retryable_messages = ['unavailable', 'overloaded', 'rate limit', 'timeout', 'temporary']
+    return any(msg in error_str for msg in retryable_messages)
+
+
+async def _call_provider_vision(
+    provider,
+    prompt: str,
+    images: Optional[List[str]] = None,
+    max_retries: int = MAX_RETRIES
+) -> Optional[str]:
+    """
+    Call a provider's vision API with proper error handling and retry logic.
+
+    This is a shared utility function that handles the common pattern of:
+    - Calling provider.call_vision with optional images
+    - Ensuring the response is a string
+    - Handling exceptions gracefully
+    - Retrying on temporary errors (503, 429, etc.)
+
+    Args:
+        provider: LLM provider instance
+        prompt: The prompt to send
+        images: Optional list of image paths
+        max_retries: Maximum number of retry attempts (default: 3)
+
+    Returns:
+        Raw response as string, or None if all attempts failed
+    """
+    last_error = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            raw_response = provider.call_vision(prompt, image_path=images or [])
+            if not isinstance(raw_response, str):
+                raw_response = str(raw_response)
+            return raw_response
+        except Exception as e:
+            last_error = e
+            error_str = str(e)
+
+            # Check if we should retry
+            if attempt < max_retries and _is_retryable_error(e):
+                delay = RETRY_BASE_DELAY * (2 ** attempt)  # Exponential backoff
+                logger.warning(
+                    f"API call failed (attempt {attempt + 1}/{max_retries + 1}): {e}. "
+                    f"Retrying in {delay:.1f}s..."
+                )
+                await asyncio.sleep(delay)
+            else:
+                # Non-retryable error or max retries exceeded
+                logger.error(f"Provider vision call failed: {e}")
+                return None
+
+    logger.error(f"All {max_retries + 1} attempts failed. Last error: {last_error}")
+    return None
 
 
 def get_agreement_threshold(max_points: float) -> float:
@@ -115,7 +186,8 @@ class BatchGrader:
         self,
         copies: List[Dict[str, Any]],
         questions: Dict[str, Dict[str, Any]],
-        language: str = "fr"
+        language: str = "fr",
+        detect_students: bool = False
     ) -> BatchResult:
         """
         Grade a batch of copies in a single API call.
@@ -127,6 +199,7 @@ class BatchGrader:
                 - (optional) student_name: Pre-detected name
             questions: Dict of {question_id: {text, criteria, max_points}}
             language: Language for prompts
+            detect_students: If True, ask LLM to detect multiple students in single PDF
 
         Returns:
             BatchResult with all copy grades and detected patterns
@@ -134,7 +207,7 @@ class BatchGrader:
         start_time = time.time()
 
         # Build prompt
-        prompt = build_batch_grading_prompt(copies, questions, language)
+        prompt = build_batch_grading_prompt(copies, questions, language, detect_students)
 
         # Collect all images from all copies
         all_images = []
@@ -177,58 +250,40 @@ class BatchGrader:
         patterns = {}
 
         # Try to extract JSON from response
-        try:
-            # Find JSON in response
-            json_match = raw_response
-            if '```json' in raw_response:
-                json_start = raw_response.find('```json') + 7
-                json_end = raw_response.find('```', json_start)
-                json_match = raw_response[json_start:json_end].strip()
-            elif '```' in raw_response:
-                json_start = raw_response.find('```') + 3
-                json_end = raw_response.find('```', json_start)
-                json_match = raw_response[json_start:json_end].strip()
+        data = extract_json_from_response(raw_response)
+        if data is None:
+            parse_errors.append("No JSON object found in response")
+        else:
+            try:
+                # Parse copies
+                for copy_data in data.get('copies', []):
+                    copy_index = copy_data.get('copy_index', 0)
+                    student_name = copy_data.get('student_name')
 
-            # Find the main JSON object
-            brace_start = json_match.find('{')
-            brace_end = json_match.rfind('}') + 1
-            if brace_start >= 0 and brace_end > brace_start:
-                json_str = json_match[brace_start:brace_end]
-                data = json.loads(json_str)
-            else:
-                raise ValueError("No JSON object found in response")
+                    # Parse questions
+                    questions = {}
+                    for qid, qdata in copy_data.get('questions', {}).items():
+                        questions[qid] = {
+                            'student_answer_read': qdata.get('student_answer_read', ''),
+                            'grade': float(qdata.get('grade', 0)),
+                            'max_points': float(qdata.get('max_points', 1)),
+                            'confidence': float(qdata.get('confidence', 0.8)),
+                            'reasoning': qdata.get('reasoning', ''),
+                            'feedback': qdata.get('feedback', '')
+                        }
 
-            # Parse copies
-            for copy_data in data.get('copies', []):
-                copy_index = copy_data.get('copy_index', 0)
-                student_name = copy_data.get('student_name')
+                    copies_results.append(BatchCopyResult(
+                        copy_index=copy_index,
+                        student_name=student_name,
+                        questions=questions,
+                        overall_feedback=copy_data.get('overall_feedback', '')
+                    ))
 
-                # Parse questions
-                questions = {}
-                for qid, qdata in copy_data.get('questions', {}).items():
-                    questions[qid] = {
-                        'student_answer_read': qdata.get('student_answer_read', ''),
-                        'grade': float(qdata.get('grade', 0)),
-                        'max_points': float(qdata.get('max_points', 1)),
-                        'confidence': float(qdata.get('confidence', 0.8)),
-                        'reasoning': qdata.get('reasoning', ''),
-                        'feedback': qdata.get('feedback', '')
-                    }
+                # Parse patterns
+                patterns = data.get('patterns', {})
 
-                copies_results.append(BatchCopyResult(
-                    copy_index=copy_index,
-                    student_name=student_name,
-                    questions=questions,
-                    overall_feedback=copy_data.get('overall_feedback', '')
-                ))
-
-            # Parse patterns
-            patterns = data.get('patterns', {})
-
-        except json.JSONDecodeError as e:
-            parse_errors.append(f"JSON parsing error: {str(e)}")
-        except Exception as e:
-            parse_errors.append(f"Parsing error: {str(e)}")
+            except (KeyError, TypeError, ValueError) as e:
+                parse_errors.append(f"Parsing error: {str(e)}")
 
         # Ensure we have results for all input copies
         if len(copies_results) < len(copies):
@@ -246,6 +301,23 @@ class BatchGrader:
         )
 
 
+def _should_detect_students(copies: List[Dict[str, Any]]) -> bool:
+    """
+    Determine if student detection should be enabled.
+
+    Returns True if:
+    - Only 1 "copy" is passed (meaning 1 PDF file)
+    - No student name is pre-detected
+
+    This indicates a single PDF that may contain multiple students.
+    """
+    if len(copies) != 1:
+        return False
+    # Check if the single copy has no pre-detected student name
+    first_copy = copies[0]
+    return not first_copy.get('student_name')
+
+
 async def grade_all_copies_in_batches(
     provider,
     copies: List[Dict[str, Any]],
@@ -253,7 +325,8 @@ async def grade_all_copies_in_batches(
     max_pages_per_batch: int = 0,
     pages_per_copy: int = 2,
     language: str = "fr",
-    progress_callback=None
+    progress_callback=None,
+    detect_students: bool = None
 ) -> List[BatchResult]:
     """
     Grade all copies in batches.
@@ -266,12 +339,21 @@ async def grade_all_copies_in_batches(
         pages_per_copy: Number of pages per copy (for calculating batch size)
         language: Language for prompts
         progress_callback: Optional callback for progress updates
+        detect_students: If True, ask LLM to detect multiple students.
+                        If None, auto-detect based on copies structure.
 
     Returns:
         List of BatchResult, one per batch
     """
     grader = BatchGrader(provider)
     results = []
+
+    # Auto-detect student detection mode if not specified
+    if detect_students is None:
+        detect_students = _should_detect_students(copies)
+
+    if detect_students:
+        logger.info("Student detection mode enabled: LLM will detect multiple students in PDF")
 
     # If no limit, process all copies in one batch
     if max_pages_per_batch <= 0:
@@ -307,7 +389,7 @@ async def grade_all_copies_in_batches(
                 'copies_in_batch': len(batch_copies)
             })
 
-        result = await grader.grade_batch(batch_copies, questions, language)
+        result = await grader.grade_batch(batch_copies, questions, language, detect_students)
         results.append(result)
 
         if progress_callback:
@@ -329,17 +411,21 @@ class Disagreement:
     """Represents a disagreement between two LLMs on a specific question."""
     copy_index: int
     question_id: str
+    student_name: str  # Student name for this copy
     llm1_name: str
     llm1_grade: float
+    llm1_max_points: float  # Max points detected by LLM1
     llm1_reasoning: str
     llm1_reading: str
     llm2_name: str
     llm2_grade: float
+    llm2_max_points: float  # Max points detected by LLM2
     llm2_reasoning: str
     llm2_reading: str
     difference: float
-    max_points: float  # For calculating relative thresholds
+    max_points: float  # Max of both (for calculating relative thresholds)
     image_paths: List[str]  # Paths to the copy images
+    disagreement_type: str = "grade"  # "grade", "reading", "max_points", or combination
 
 
 def detect_disagreements(
@@ -348,7 +434,7 @@ def detect_disagreements(
     llm1_name: str,
     llm2_name: str,
     copies_data: List[Dict[str, Any]],
-    threshold: float = 0.10
+    threshold: Optional[float] = None
 ) -> List[Disagreement]:
     """
     Detect disagreements between two LLM batch results.
@@ -359,11 +445,14 @@ def detect_disagreements(
         llm1_name: Name of first LLM
         llm2_name: Name of second LLM
         copies_data: Original copies data with image paths
-        threshold: Minimum difference as percentage of max_points (default 10%)
+        threshold: Minimum difference as percentage of max_points (default from settings)
 
     Returns:
         List of Disagreement objects
     """
+    if threshold is None:
+        threshold = get_settings().grade_agreement_threshold
+
     disagreements = []
 
     # Build lookup for LLM2 results
@@ -375,6 +464,9 @@ def detect_disagreements(
 
         if not llm2_copy:
             continue
+
+        # Get student name (prefer LLM1, fallback to LLM2)
+        student_name = llm1_copy.student_name or llm2_copy.student_name or f"Élève {copy_idx}"
 
         # Get image paths for this copy
         copy_data = next((c for c in copies_data if c['copy_index'] == copy_idx), None)
@@ -388,30 +480,67 @@ def detect_disagreements(
 
             grade1 = float(q1_data.get('grade', 0))
             grade2 = float(q2_data.get('grade', 0))
-            max_points = max(
-                float(q1_data.get('max_points', 1.0)),
-                float(q2_data.get('max_points', 1.0))
-            )
+            llm1_max_pts = float(q1_data.get('max_points', 1.0))
+            llm2_max_pts = float(q2_data.get('max_points', 1.0))
+            max_points = max(llm1_max_pts, llm2_max_pts)
             diff = abs(grade1 - grade2)
 
             # Use relative threshold (percentage of max_points)
             relative_threshold = max_points * threshold
 
-            if diff >= relative_threshold:
+            # Get readings
+            reading1 = q1_data.get('student_answer_read', '').strip().lower()
+            reading2 = q2_data.get('student_answer_read', '').strip().lower()
+
+            # Detect reading disagreement (significant difference, not just case/whitespace)
+            reading_disagreement = False
+            if reading1 and reading2 and reading1 != reading2:
+                # Check if readings are significantly different
+                # Use simple string similarity check
+                from difflib import SequenceMatcher
+                similarity = SequenceMatcher(None, reading1, reading2).ratio()
+                reading_disagreement = similarity < 0.8  # Less than 80% similar
+
+            # Detect grade disagreement
+            grade_disagreement = diff >= relative_threshold
+
+            # Detect max_points disagreement (different barème detected)
+            max_points_disagreement = llm1_max_pts != llm2_max_pts
+
+            # Add to disagreements if any type
+            if grade_disagreement or reading_disagreement or max_points_disagreement:
+                # Determine type (can combine multiple)
+                types = []
+                if grade_disagreement:
+                    types.append("grade")
+                if reading_disagreement:
+                    types.append("reading")
+                if max_points_disagreement:
+                    types.append("max_points")
+
+                if len(types) > 1:
+                    disp_type = "+".join(types)
+                else:
+                    disp_type = types[0] if types else "grade"
+
                 disagreements.append(Disagreement(
                     copy_index=copy_idx,
                     question_id=qid,
+                    student_name=student_name,
                     llm1_name=llm1_name,
                     llm1_grade=grade1,
+                    llm1_max_points=llm1_max_pts,
                     llm1_reasoning=q1_data.get('reasoning', ''),
                     llm1_reading=q1_data.get('student_answer_read', ''),
                     llm2_name=llm2_name,
                     llm2_grade=grade2,
+                    llm2_max_points=llm2_max_pts,
                     llm2_reasoning=q2_data.get('reasoning', ''),
                     llm2_reading=q2_data.get('student_answer_read', ''),
                     difference=diff,
                     max_points=max_points,
-                    image_paths=image_paths
+                    image_paths=image_paths,
+                    disagreement_type=disp_type
                 ))
 
     return disagreements
@@ -420,7 +549,9 @@ def detect_disagreements(
 async def run_dual_llm_verification(
     providers: List[tuple],
     disagreements: List[Disagreement],
-    language: str = "fr"
+    language: str = "fr",
+    name_disagreements: List[Dict[str, Any]] = None,
+    extra_images: List[str] = None
 ) -> Dict[str, Dict[str, Any]]:
     """
     Run verification with BOTH LLMs seeing each other's work.
@@ -429,17 +560,21 @@ async def run_dual_llm_verification(
         providers: List of (name, provider) tuples
         disagreements: List of disagreements to verify
         language: Language for prompts
+        name_disagreements: Optional list of student name disagreements (for grouped mode)
+        extra_images: Optional list of additional images (for name-only cases)
 
     Returns:
-        Dict mapping "copy_{idx}_{qid}" -> {final_grade, llm1_grade, llm2_grade, method, ...}
+        Dict with:
+        - "copy_{idx}_{qid}" -> {final_grade, llm1_grade, llm2_grade, method, ...}
+        - "name_{idx}" -> {llm1_new_name, llm2_new_name, resolved_name, agreement} for name verifications
     """
-    if not disagreements:
+    if not disagreements and not name_disagreements:
         return {}
 
     llm1_name, llm1_provider = providers[0]
     llm2_name, llm2_provider = providers[1]
 
-    # Collect all unique image paths
+    # Collect all unique image paths from grade disagreements
     all_images = []
     seen = set()
     for d in disagreements:
@@ -448,42 +583,60 @@ async def run_dual_llm_verification(
                 all_images.append(img)
                 seen.add(img)
 
+    # Add extra images (for name-only disagreements case)
+    if extra_images:
+        for img in extra_images:
+            if img not in seen:
+                all_images.append(img)
+                seen.add(img)
+
+    # Add provider info to name disagreements for prompt building
+    name_disags_with_providers = []
+    if name_disagreements:
+        for nd in name_disagreements:
+            name_disags_with_providers.append({
+                **nd,
+                'llm1_provider': llm1_name,
+                'llm2_provider': llm2_name
+            })
+
     # Build prompts for each LLM
     llm1_prompt = build_dual_llm_verification_prompt(
-        disagreements, llm1_name, llm2_name, is_own_perspective=True, language=language
+        disagreements, llm1_name, llm2_name, is_own_perspective=True, language=language,
+        name_disagreements=name_disags_with_providers if name_disags_with_providers else None
     )
     llm2_prompt = build_dual_llm_verification_prompt(
-        disagreements, llm2_name, llm1_name, is_own_perspective=True, language=language
+        disagreements, llm2_name, llm1_name, is_own_perspective=True, language=language,
+        name_disagreements=name_disags_with_providers if name_disags_with_providers else None
     )
 
     # Call both LLMs in parallel
-    async def call_provider(provider, prompt):
-        try:
-            raw_response = provider.call_vision(prompt, image_path=all_images)
-            if not isinstance(raw_response, str):
-                raw_response = str(raw_response)
-            return raw_response
-        except Exception as e:
-            logger.error(f"Verification call failed: {e}")
-            return None
-
     llm1_response, llm2_response = await asyncio.gather(
-        call_provider(llm1_provider, llm1_prompt),
-        call_provider(llm2_provider, llm2_prompt)
+        _call_provider_vision(llm1_provider, llm1_prompt, all_images),
+        _call_provider_vision(llm2_provider, llm2_prompt, all_images)
     )
 
-    # Parse responses
-    llm1_results = _parse_verification_response(llm1_response)
-    llm2_results = _parse_verification_response(llm2_response)
+    # Parse responses - now returns tuple of (question_results, name_results)
+    llm1_question_results, llm1_name_results = _parse_verification_response(llm1_response)
+    llm2_question_results, llm2_name_results = _parse_verification_response(llm2_response)
 
-    # Merge results
+    # Merge question verification results (grades, readings, max_points)
     results = {}
     for d in disagreements:
         key = f"copy_{d.copy_index}_{d.question_id}"
 
         # Get new grades from each LLM
-        llm1_new = llm1_results.get(key, {}).get('my_new_grade', d.llm1_grade)
-        llm2_new = llm2_results.get(key, {}).get('my_new_grade', d.llm2_grade)
+        llm1_new = llm1_question_results.get(key, {}).get('my_new_grade', d.llm1_grade)
+        llm2_new = llm2_question_results.get(key, {}).get('my_new_grade', d.llm2_grade)
+
+        # Get new max_points from each LLM (if provided)
+        llm1_new_mp = llm1_question_results.get(key, {}).get('my_new_max_points')
+        llm2_new_mp = llm2_question_results.get(key, {}).get('my_new_max_points')
+
+        # Resolve max_points: use new values if provided, otherwise use original
+        llm1_mp = llm1_new_mp if llm1_new_mp is not None else d.llm1_max_points
+        llm2_mp = llm2_new_mp if llm2_new_mp is not None else d.llm2_max_points
+        resolved_max_points = max(llm1_mp, llm2_mp)
 
         # Resolve: if both agree now, use that; otherwise average
         if abs(llm1_new - llm2_new) < get_agreement_threshold(d.max_points):
@@ -493,19 +646,81 @@ async def run_dual_llm_verification(
             final_grade = (llm1_new + llm2_new) / 2
             method = "verification_average"
 
+        # Get new readings if provided
+        llm1_new_reading = llm1_question_results.get(key, {}).get('my_new_reading')
+        llm2_new_reading = llm2_question_results.get(key, {}).get('my_new_reading')
+
+        # Get feedback from both LLMs - prefer the one that changed their mind or has better feedback
+        llm1_feedback = llm1_question_results.get(key, {}).get('feedback', '')
+        llm2_feedback = llm2_question_results.get(key, {}).get('feedback', '')
+
+        # Consolidate feedback: prefer non-empty, or use LLM2's if LLM1 changed their grade more
+        if llm1_feedback and llm2_feedback:
+            # Both have feedback - use LLM1's as primary (it's the "base" LLM)
+            final_feedback = llm1_feedback
+        elif llm1_feedback:
+            final_feedback = llm1_feedback
+        elif llm2_feedback:
+            final_feedback = llm2_feedback
+        else:
+            final_feedback = ''
+
         results[key] = {
             'final_grade': final_grade,
             'llm1_new_grade': llm1_new,
             'llm2_new_grade': llm2_new,
-            'llm1_reasoning': llm1_results.get(key, {}).get('reasoning', ''),
-            'llm2_reasoning': llm2_results.get(key, {}).get('reasoning', ''),
+            'llm1_new_max_points': llm1_mp,
+            'llm2_new_max_points': llm2_mp,
+            'resolved_max_points': resolved_max_points,
+            'llm1_new_reading': llm1_new_reading,
+            'llm2_new_reading': llm2_new_reading,
+            'llm1_reasoning': llm1_question_results.get(key, {}).get('reasoning', ''),
+            'llm2_reasoning': llm2_question_results.get(key, {}).get('reasoning', ''),
+            'llm1_feedback': llm1_feedback,
+            'llm2_feedback': llm2_feedback,
+            'final_feedback': final_feedback,
             'method': method,
             'max_points': d.max_points,
             'confidence': max(
-                llm1_results.get(key, {}).get('confidence', 0.8),
-                llm2_results.get(key, {}).get('confidence', 0.8)
+                llm1_question_results.get(key, {}).get('confidence', 0.8),
+                llm2_question_results.get(key, {}).get('confidence', 0.8)
             )
         }
+
+    # Process name verifications if present
+    if name_disagreements:
+        for nd in name_disagreements:
+            copy_idx = nd['copy_index']
+            name_key = f"name_{copy_idx}"
+
+            # Get new names from each LLM
+            llm1_name_result = llm1_name_results.get(copy_idx, {})
+            llm2_name_result = llm2_name_results.get(copy_idx, {})
+
+            llm1_new_name = llm1_name_result.get('my_new_name', nd.get('llm1_name', ''))
+            llm2_new_name = llm2_name_result.get('my_new_name', nd.get('llm2_name', ''))
+
+            # Check agreement (normalized comparison)
+            n1_normalized = llm1_new_name.lower().strip()
+            n2_normalized = llm2_new_name.lower().strip()
+            agreement = n1_normalized == n2_normalized and n1_normalized != ''
+
+            # Resolve name: if agreement, use that; otherwise keep original disagreement for ultimatum
+            if agreement:
+                resolved_name = llm1_new_name  # They match, use either
+            else:
+                resolved_name = None  # Will need ultimatum or user resolution
+
+            results[name_key] = {
+                'llm1_new_name': llm1_new_name,
+                'llm2_new_name': llm2_new_name,
+                'resolved_name': resolved_name,
+                'agreement': agreement,
+                'confidence': max(
+                    llm1_name_result.get('confidence', 0.8),
+                    llm2_name_result.get('confidence', 0.8)
+                )
+            }
 
     return results
 
@@ -550,28 +765,27 @@ async def run_per_question_dual_verification(
         )
 
         # Call both LLMs in parallel for this disagreement
-        async def call_provider(provider, prompt, images):
-            try:
-                raw_response = provider.call_vision(prompt, image_path=images)
-                if not isinstance(raw_response, str):
-                    raw_response = str(raw_response)
-                return raw_response
-            except Exception as e:
-                logger.error(f"Per-question verification call failed: {e}")
-                return None
-
         llm1_response, llm2_response = await asyncio.gather(
-            call_provider(llm1_provider, llm1_prompt, d.image_paths),
-            call_provider(llm2_provider, llm2_prompt, d.image_paths)
+            _call_provider_vision(llm1_provider, llm1_prompt, d.image_paths),
+            _call_provider_vision(llm2_provider, llm2_prompt, d.image_paths)
         )
 
-        # Parse responses
-        llm1_results = _parse_verification_response(llm1_response)
-        llm2_results = _parse_verification_response(llm2_response)
+        # Parse responses (returns tuple, we only need question_results for per-question mode)
+        llm1_question_results, _ = _parse_verification_response(llm1_response)
+        llm2_question_results, _ = _parse_verification_response(llm2_response)
 
         # Get new grades from each LLM
-        llm1_new = llm1_results.get(key, {}).get('my_new_grade', d.llm1_grade)
-        llm2_new = llm2_results.get(key, {}).get('my_new_grade', d.llm2_grade)
+        llm1_new = llm1_question_results.get(key, {}).get('my_new_grade', d.llm1_grade)
+        llm2_new = llm2_question_results.get(key, {}).get('my_new_grade', d.llm2_grade)
+
+        # Get new max_points from each LLM (if provided)
+        llm1_new_mp = llm1_question_results.get(key, {}).get('my_new_max_points')
+        llm2_new_mp = llm2_question_results.get(key, {}).get('my_new_max_points')
+
+        # Resolve max_points: use new values if provided, otherwise use original
+        llm1_mp = llm1_new_mp if llm1_new_mp is not None else d.llm1_max_points
+        llm2_mp = llm2_new_mp if llm2_new_mp is not None else d.llm2_max_points
+        resolved_max_points = max(llm1_mp, llm2_mp)
 
         # Resolve: if both agree now, use that; otherwise average
         if abs(llm1_new - llm2_new) < get_agreement_threshold(d.max_points):
@@ -581,17 +795,35 @@ async def run_per_question_dual_verification(
             final_grade = (llm1_new + llm2_new) / 2
             method = "verification_average"
 
+        # Get and consolidate feedback
+        llm1_feedback = llm1_question_results.get(key, {}).get('feedback', '')
+        llm2_feedback = llm2_question_results.get(key, {}).get('feedback', '')
+        if llm1_feedback and llm2_feedback:
+            final_feedback = llm1_feedback
+        elif llm1_feedback:
+            final_feedback = llm1_feedback
+        elif llm2_feedback:
+            final_feedback = llm2_feedback
+        else:
+            final_feedback = ''
+
         results[key] = {
             'final_grade': final_grade,
             'llm1_new_grade': llm1_new,
             'llm2_new_grade': llm2_new,
-            'llm1_reasoning': llm1_results.get(key, {}).get('reasoning', ''),
-            'llm2_reasoning': llm2_results.get(key, {}).get('reasoning', ''),
+            'llm1_new_max_points': llm1_mp,
+            'llm2_new_max_points': llm2_mp,
+            'resolved_max_points': resolved_max_points,
+            'llm1_reasoning': llm1_question_results.get(key, {}).get('reasoning', ''),
+            'llm2_reasoning': llm2_question_results.get(key, {}).get('reasoning', ''),
+            'llm1_feedback': llm1_feedback,
+            'llm2_feedback': llm2_feedback,
+            'final_feedback': final_feedback,
             'method': method,
             'max_points': d.max_points,
             'confidence': max(
-                llm1_results.get(key, {}).get('confidence', 0.8),
-                llm2_results.get(key, {}).get('confidence', 0.8)
+                llm1_question_results.get(key, {}).get('confidence', 0.8),
+                llm2_question_results.get(key, {}).get('confidence', 0.8)
             ),
             'image_paths': d.image_paths  # Keep for potential ultimatum
         }
@@ -599,41 +831,52 @@ async def run_per_question_dual_verification(
     return results
 
 
-def _parse_verification_response(raw_response: str) -> Dict[str, Dict]:
-    """Parse a verification response from an LLM."""
-    results = {}
+def _parse_verification_response(raw_response: str) -> Tuple[Dict[str, Dict], Dict[int, Dict]]:
+    """
+    Parse a verification response from an LLM.
+
+    Returns:
+        Tuple of (question_results, name_results) where:
+        - question_results: Dict mapping "copy_{idx}_{qid}" -> verification data for grades/readings/max_points
+        - name_results: Dict mapping copy_index -> name verification data
+    """
+    question_results = {}
+    name_results = {}
     if not raw_response:
-        return results
+        return question_results, name_results
+
+    data = extract_json_from_response(raw_response)
+    if data is None:
+        logger.error("Failed to extract JSON from verification response")
+        return question_results, name_results
 
     try:
-        json_match = raw_response
-        if '```json' in raw_response:
-            json_start = raw_response.find('```json') + 7
-            json_end = raw_response.find('```', json_start)
-            json_match = raw_response[json_start:json_end].strip()
-        elif '```' in raw_response:
-            json_start = raw_response.find('```') + 3
-            json_end = raw_response.find('```', json_start)
-            json_match = raw_response[json_start:json_end].strip()
+        # Parse question verifications (grades, readings, max_points)
+        for v in data.get('verifications', []):
+            key = f"copy_{v.get('copy_index')}_{v.get('question_id')}"
+            question_results[key] = {
+                'my_new_grade': float(v.get('my_new_grade', v.get('my_initial_grade', 0))),
+                'my_new_max_points': float(v.get('my_new_max_points', 0)) if v.get('my_new_max_points') else None,
+                'my_new_reading': v.get('my_new_reading'),
+                'changed': v.get('changed', False),
+                'reasoning': v.get('reasoning', ''),
+                'feedback': v.get('feedback', ''),
+                'confidence': float(v.get('confidence', 0.8))
+            }
 
-        brace_start = json_match.find('{')
-        brace_end = json_match.rfind('}') + 1
-        if brace_start >= 0 and brace_end > brace_start:
-            json_str = json_match[brace_start:brace_end]
-            data = json.loads(json_str)
-
-            for v in data.get('verifications', []):
-                key = f"copy_{v.get('copy_index')}_{v.get('question_id')}"
-                results[key] = {
-                    'my_new_grade': float(v.get('my_new_grade', v.get('my_initial_grade', 0))),
-                    'changed': v.get('changed', False),
-                    'reasoning': v.get('reasoning', ''),
-                    'confidence': float(v.get('confidence', 0.8))
+        # Parse name verifications (if present)
+        for nv in data.get('name_verifications', []):
+            copy_idx = nv.get('copy_index')
+            if copy_idx is not None:
+                name_results[copy_idx] = {
+                    'my_new_name': nv.get('my_new_name', ''),
+                    'changed': nv.get('changed', False),
+                    'confidence': float(nv.get('confidence', 0.8))
                 }
-    except Exception as e:
+    except (KeyError, TypeError, ValueError) as e:
         logger.error(f"Failed to parse verification response: {e}")
 
-    return results
+    return question_results, name_results
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -680,29 +923,31 @@ async def run_dual_llm_ultimatum(
     )
 
     # Call both LLMs in parallel
-    async def call_provider(provider, prompt):
-        try:
-            raw_response = provider.call_vision(prompt, image_path=all_images)
-            if not isinstance(raw_response, str):
-                raw_response = str(raw_response)
-            return raw_response
-        except Exception as e:
-            logger.error(f"Ultimatum call failed: {e}")
-            return None
-
     llm1_response, llm2_response = await asyncio.gather(
-        call_provider(llm1_provider, llm1_prompt),
-        call_provider(llm2_provider, llm2_prompt)
+        _call_provider_vision(llm1_provider, llm1_prompt, all_images),
+        _call_provider_vision(llm2_provider, llm2_prompt, all_images)
     )
 
     # Parse responses
     llm1_results = _parse_ultimatum_response(llm1_response)
     llm2_results = _parse_ultimatum_response(llm2_response)
 
+    # Track parsing failures
+    llm1_parse_failed = len(llm1_results) == 0 and llm1_response
+    llm2_parse_failed = len(llm2_results) == 0 and llm2_response
+    if llm1_parse_failed:
+        logger.warning(f"LLM1 ultimatum response parsing failed")
+    if llm2_parse_failed:
+        logger.warning(f"LLM2 ultimatum response parsing failed")
+
     # Merge results
     results = {}
     for d in persistent_disagreements:
         key = f"copy_{d['copy_index']}_{d['question_id']}"
+
+        # Check if parsing failed for this specific disagreement
+        llm1_parsed = key in llm1_results
+        llm2_parsed = key in llm2_results
 
         # Get final grades from each LLM
         llm1_final = llm1_results.get(key, {}).get('my_final_grade', d['llm1_grade'])
@@ -710,6 +955,17 @@ async def run_dual_llm_ultimatum(
 
         # Get max_points for relative threshold calculation
         max_pts = d.get('max_points', 1.0)
+
+        # Get new max_points from each LLM (if provided)
+        llm1_final_mp = llm1_results.get(key, {}).get('my_final_max_points')
+        llm2_final_mp = llm2_results.get(key, {}).get('my_final_max_points')
+
+        # Resolve max_points: use new values if provided, otherwise use original
+        llm1_resolved_mp = llm1_final_mp if llm1_final_mp is not None else d.get('llm1_max_points', max_pts)
+        llm2_resolved_mp = llm2_final_mp if llm2_final_mp is not None else d.get('llm2_max_points', max_pts)
+
+        # Check if there's a max_points disagreement after ultimatum
+        max_points_disagreement = abs(llm1_resolved_mp - llm2_resolved_mp) > 0.01
 
         # Resolve: if both agree now, use that; otherwise average
         if abs(llm1_final - llm2_final) < get_agreement_threshold(max_pts):
@@ -734,7 +990,20 @@ async def run_dual_llm_ultimatum(
             abs(ultimatum_diff) >= significant_diff
         )
 
-        results[key] = {
+        # Get and consolidate feedback
+        llm1_feedback = llm1_results.get(key, {}).get('feedback', '')
+        llm2_feedback = llm2_results.get(key, {}).get('feedback', '')
+        if llm1_feedback and llm2_feedback:
+            final_feedback = llm1_feedback
+        elif llm1_feedback:
+            final_feedback = llm1_feedback
+        elif llm2_feedback:
+            final_feedback = llm2_feedback
+        else:
+            final_feedback = ''
+
+        # Build result dict
+        result = {
             'final_grade': final_grade,
             'llm1_final_grade': llm1_final,
             'llm2_final_grade': llm2_final,
@@ -742,6 +1011,11 @@ async def run_dual_llm_ultimatum(
             'llm2_decision': llm2_results.get(key, {}).get('decision', 'unknown'),
             'llm1_reasoning': llm1_results.get(key, {}).get('reasoning', ''),
             'llm2_reasoning': llm2_results.get(key, {}).get('reasoning', ''),
+            'llm1_feedback': llm1_feedback,
+            'llm2_feedback': llm2_feedback,
+            'final_feedback': final_feedback,
+            'llm1_parse_success': llm1_parsed,
+            'llm2_parse_success': llm2_parsed,
             'method': method,
             'flip_flop_detected': flip_flop,
             'confidence': max(
@@ -749,6 +1023,24 @@ async def run_dual_llm_ultimatum(
                 llm2_results.get(key, {}).get('confidence', 0.8)
             )
         }
+
+        # Only include max_points fields if there was a disagreement
+        if max_points_disagreement:
+            result['llm1_final_max_points'] = llm1_resolved_mp
+            result['llm2_final_max_points'] = llm2_resolved_mp
+            result['max_points_disagreement'] = True
+            result['resolved_max_points'] = max(llm1_resolved_mp, llm2_resolved_mp)
+        else:
+            # Include resolved max_points even when agreed
+            result['resolved_max_points'] = max(llm1_resolved_mp, llm2_resolved_mp)
+
+        results[key] = result
+
+    # Add overall parse status
+    results['_parse_status'] = {
+        'llm1_parse_failed': llm1_parse_failed,
+        'llm2_parse_failed': llm2_parse_failed
+    }
 
     return results
 
@@ -759,172 +1051,228 @@ def _parse_ultimatum_response(raw_response: str) -> Dict[str, Dict]:
     if not raw_response:
         return results
 
+    data = extract_json_from_response(raw_response)
+    if data is None:
+        logger.error("Failed to extract JSON from ultimatum response")
+        return results
+
     try:
-        json_match = raw_response
-        if '```json' in raw_response:
-            json_start = raw_response.find('```json') + 7
-            json_end = raw_response.find('```', json_start)
-            json_match = raw_response[json_start:json_end].strip()
-        elif '```' in raw_response:
-            json_start = raw_response.find('```') + 3
-            json_end = raw_response.find('```', json_start)
-            json_match = raw_response[json_start:json_end].strip()
-
-        brace_start = json_match.find('{')
-        brace_end = json_match.rfind('}') + 1
-        if brace_start >= 0 and brace_end > brace_start:
-            json_str = json_match[brace_start:brace_end]
-            data = json.loads(json_str)
-
-            for u in data.get('ultimatum_decisions', []):
-                key = f"copy_{u.get('copy_index')}_{u.get('question_id')}"
-                results[key] = {
-                    'my_final_grade': float(u.get('my_final_grade', 0)),
-                    'decision': u.get('decision', 'unknown'),
-                    'reasoning': u.get('reasoning', ''),
-                    'confidence': float(u.get('confidence', 0.8))
-                }
-    except Exception as e:
+        for u in data.get('ultimatum_decisions', []):
+            key = f"copy_{u.get('copy_index')}_{u.get('question_id')}"
+            results[key] = {
+                'my_final_grade': float(u.get('my_final_grade', 0)),
+                'my_final_max_points': float(u.get('my_final_max_points')) if u.get('my_final_max_points') else None,
+                'decision': u.get('decision', 'unknown'),
+                'reasoning': u.get('reasoning', ''),
+                'feedback': u.get('feedback', ''),
+                'confidence': float(u.get('confidence', 0.8))
+            }
+    except (KeyError, TypeError, ValueError) as e:
         logger.error(f"Failed to parse ultimatum response: {e}")
 
     return results
 
 
-# Keep the old functions for backward compatibility but mark as deprecated
-async def run_grouped_verification(
-    provider,
-    disagreements: List[Disagreement],
+# ═══════════════════════════════════════════════════════════════════════════════
+# STUDENT NAME VERIFICATION & ULTIMATUM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+async def run_student_name_verification(
+    providers: List[tuple],
+    name_disagreements: List[Dict[str, Any]],
+    image_paths: List[str],
     language: str = "fr"
-) -> Dict[str, Dict[str, Any]]:
+) -> Dict[int, Dict[str, Any]]:
     """
-    Run verification for all disagreements in a single API call.
+    Run verification round for student name disagreements.
 
     Args:
-        provider: LLM provider
-        disagreements: List of disagreements to verify
+        providers: List of (name, provider) tuples
+        name_disagreements: List of dicts with copy_index, llm1_name, llm2_name
+        image_paths: List of image paths for the copies
         language: Language for prompts
 
     Returns:
-        Dict mapping "copy_{idx}_{qid}" -> {final_grade, reasoning, confidence}
+        Dict mapping copy_index -> {llm1_new_name, llm2_new_name, resolved_name}
     """
-    if not disagreements:
+    if not name_disagreements:
         return {}
 
-    # Collect all unique image paths
-    all_images = []
-    seen = set()
-    for d in disagreements:
-        for img in d.image_paths:
-            if img not in seen:
-                all_images.append(img)
-                seen.add(img)
+    from prompts.batch import build_student_name_verification_prompt
 
-    # Build prompt
-    prompt = build_grouped_verification_prompt(disagreements, language)
+    llm1_name, llm1_provider = providers[0]
+    llm2_name, llm2_provider = providers[1]
 
-    # Call LLM
-    try:
-        raw_response = provider.call_vision(prompt, image_path=all_images)
-        if not isinstance(raw_response, str):
-            raw_response = str(raw_response)
-    except Exception as e:
-        logger.error(f"Grouped verification failed: {e}")
-        return {}
+    # Build prompts for each LLM
+    llm1_prompt = build_student_name_verification_prompt(
+        name_disagreements, llm1_name, llm2_name, language=language
+    )
+    llm2_prompt = build_student_name_verification_prompt(
+        name_disagreements, llm2_name, llm1_name, language=language
+    )
 
-    # Parse response
+    # Call both LLMs in parallel
+    llm1_response, llm2_response = await asyncio.gather(
+        _call_provider_vision(llm1_provider, llm1_prompt, image_paths),
+        _call_provider_vision(llm2_provider, llm2_prompt, image_paths)
+    )
+
+    # Parse responses
+    llm1_results = _parse_student_name_verification_response(llm1_response)
+    llm2_results = _parse_student_name_verification_response(llm2_response)
+
+    # Merge results
     results = {}
-    try:
-        # Extract JSON
-        json_match = raw_response
-        if '```json' in raw_response:
-            json_start = raw_response.find('```json') + 7
-            json_end = raw_response.find('```', json_start)
-            json_match = raw_response[json_start:json_end].strip()
-        elif '```' in raw_response:
-            json_start = raw_response.find('```') + 3
-            json_end = raw_response.find('```', json_start)
-            json_match = raw_response[json_start:json_end].strip()
+    for d in name_disagreements:
+        copy_idx = d['copy_index']
 
-        brace_start = json_match.find('{')
-        brace_end = json_match.rfind('}') + 1
-        if brace_start >= 0 and brace_end > brace_start:
-            json_str = json_match[brace_start:brace_end]
-            data = json.loads(json_str)
+        llm1_new = llm1_results.get(copy_idx, {}).get('my_new_name', d['llm1_name'])
+        llm2_new = llm2_results.get(copy_idx, {}).get('my_new_name', d['llm2_name'])
 
-            for resolution in data.get('resolutions', []):
-                key = f"copy_{resolution.get('copy_index')}_{resolution.get('question_id')}"
-                results[key] = {
-                    'final_grade': float(resolution.get('final_grade', 0)),
-                    'reasoning': resolution.get('reasoning', ''),
-                    'confidence': float(resolution.get('confidence', 0.8))
-                }
-    except Exception as e:
-        logger.error(f"Failed to parse grouped verification response: {e}")
+        # Check if names now agree (case-insensitive)
+        n1_normalized = llm1_new.lower().strip() if llm1_new else ""
+        n2_normalized = llm2_new.lower().strip() if llm2_new else ""
+
+        if n1_normalized == n2_normalized:
+            resolved = llm1_new  # They agree
+            agreement = True
+        else:
+            # Still disagree - use LLM1 as base for now
+            resolved = llm1_new
+            agreement = False
+
+        results[copy_idx] = {
+            'llm1_new_name': llm1_new,
+            'llm2_new_name': llm2_new,
+            'resolved_name': resolved,
+            'agreement': agreement,
+            'llm1_confidence': llm1_results.get(copy_idx, {}).get('confidence', 0.8),
+            'llm2_confidence': llm2_results.get(copy_idx, {}).get('confidence', 0.8)
+        }
 
     return results
 
 
-async def run_per_question_verification(
-    provider,
-    disagreement: Disagreement,
+def _parse_student_name_verification_response(raw_response: str) -> Dict[int, Dict]:
+    """Parse a student name verification response from an LLM."""
+    results = {}
+    if not raw_response:
+        return results
+
+    data = extract_json_from_response(raw_response)
+    if data is None:
+        logger.error("Failed to extract JSON from student name verification response")
+        return results
+
+    try:
+        for v in data.get('name_verifications', []):
+            copy_idx = v.get('copy_index')
+            results[copy_idx] = {
+                'my_new_name': v.get('my_new_name'),
+                'confidence': float(v.get('confidence', 0.8))
+            }
+    except (KeyError, TypeError, ValueError) as e:
+        logger.error(f"Failed to parse student name verification response: {e}")
+
+    return results
+
+
+async def run_student_name_ultimatum(
+    providers: List[tuple],
+    persistent_disagreements: List[Dict[str, Any]],
+    image_paths: List[str],
     language: str = "fr"
-) -> Dict[str, Any]:
+) -> Dict[int, Dict[str, Any]]:
     """
-    Run verification for a single disagreement.
+    Run ultimatum round for persistent student name disagreements.
 
     Args:
-        provider: LLM provider
-        disagreement: The disagreement to verify
+        providers: List of (name, provider) tuples
+        persistent_disagreements: List of disagreements that persist after verification
+        image_paths: List of image paths for the copies
         language: Language for prompts
 
     Returns:
-        Dict with final_grade, reasoning, confidence, student_answer_read
+        Dict mapping copy_index -> {llm1_final_name, llm2_final_name, resolved_name}
     """
-    # Build prompt
-    prompt = build_per_question_verification_prompt(disagreement, language)
+    if not persistent_disagreements:
+        return {}
 
-    # Call LLM with only this copy's images
-    try:
-        raw_response = provider.call_vision(prompt, image_path=disagreement.image_paths)
-        if not isinstance(raw_response, str):
-            raw_response = str(raw_response)
-    except Exception as e:
-        logger.error(f"Per-question verification failed for copy {disagreement.copy_index}, {disagreement.question_id}: {e}")
-        return {
-            'final_grade': (disagreement.llm1_grade + disagreement.llm2_grade) / 2,
-            'reasoning': 'Verification failed, using average',
-            'confidence': 0.5
+    from prompts.batch import build_student_name_ultimatum_prompt
+
+    llm1_name, llm1_provider = providers[0]
+    llm2_name, llm2_provider = providers[1]
+
+    # Build prompts for each LLM
+    llm1_prompt = build_student_name_ultimatum_prompt(
+        persistent_disagreements, llm1_name, llm2_name, language=language
+    )
+    llm2_prompt = build_student_name_ultimatum_prompt(
+        persistent_disagreements, llm2_name, llm1_name, language=language
+    )
+
+    # Call both LLMs in parallel
+    llm1_response, llm2_response = await asyncio.gather(
+        _call_provider_vision(llm1_provider, llm1_prompt, image_paths),
+        _call_provider_vision(llm2_provider, llm2_prompt, image_paths)
+    )
+
+    # Parse responses
+    llm1_results = _parse_student_name_ultimatum_response(llm1_response)
+    llm2_results = _parse_student_name_ultimatum_response(llm2_response)
+
+    # Merge results
+    results = {}
+    for d in persistent_disagreements:
+        copy_idx = d['copy_index']
+
+        llm1_final = llm1_results.get(copy_idx, {}).get('my_final_name', d['llm1_name'])
+        llm2_final = llm2_results.get(copy_idx, {}).get('my_final_name', d['llm2_name'])
+
+        # Check if names now agree (case-insensitive)
+        n1_normalized = llm1_final.lower().strip() if llm1_final else ""
+        n2_normalized = llm2_final.lower().strip() if llm2_final else ""
+
+        if n1_normalized == n2_normalized:
+            resolved = llm1_final
+            agreement = True
+        else:
+            # Still disagree after ultimatum
+            resolved = llm1_final  # Use LLM1 as default
+            agreement = False
+
+        results[copy_idx] = {
+            'llm1_final_name': llm1_final,
+            'llm2_final_name': llm2_final,
+            'resolved_name': resolved,
+            'agreement': agreement,
+            'llm1_confidence': llm1_results.get(copy_idx, {}).get('confidence', 0.8),
+            'llm2_confidence': llm2_results.get(copy_idx, {}).get('confidence', 0.8),
+            'needs_user_resolution': not agreement
         }
 
-    # Parse response
+    return results
+
+
+def _parse_student_name_ultimatum_response(raw_response: str) -> Dict[int, Dict]:
+    """Parse a student name ultimatum response from an LLM."""
+    results = {}
+    if not raw_response:
+        return results
+
+    data = extract_json_from_response(raw_response)
+    if data is None:
+        logger.error("Failed to extract JSON from student name ultimatum response")
+        return results
+
     try:
-        json_match = raw_response
-        if '```json' in raw_response:
-            json_start = raw_response.find('```json') + 7
-            json_end = raw_response.find('```', json_start)
-            json_match = raw_response[json_start:json_end].strip()
-        elif '```' in raw_response:
-            json_start = raw_response.find('```') + 3
-            json_end = raw_response.find('```', json_start)
-            json_match = raw_response[json_start:json_end].strip()
-
-        brace_start = json_match.find('{')
-        brace_end = json_match.rfind('}') + 1
-        if brace_start >= 0 and brace_end > brace_start:
-            json_str = json_match[brace_start:brace_end]
-            data = json.loads(json_str)
-            return {
-                'final_grade': float(data.get('final_grade', 0)),
-                'reasoning': data.get('reasoning', ''),
-                'confidence': float(data.get('confidence', 0.8)),
-                'student_answer_read': data.get('student_answer_read', ''),
-                'preferred_llm': data.get('preferred_llm', 'neither')
+        for u in data.get('name_ultimatum_decisions', []):
+            copy_idx = u.get('copy_index')
+            results[copy_idx] = {
+                'my_final_name': u.get('my_final_name'),
+                'confidence': float(u.get('confidence', 0.8))
             }
-    except Exception as e:
-        logger.error(f"Failed to parse per-question verification response: {e}")
+    except (KeyError, TypeError, ValueError) as e:
+        logger.error(f"Failed to parse student name ultimatum response: {e}")
 
-    return {
-        'final_grade': (disagreement.llm1_grade + disagreement.llm2_grade) / 2,
-        'reasoning': 'Parse failed, using average',
-        'confidence': 0.5
-    }
+    return results

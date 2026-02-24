@@ -43,13 +43,6 @@ class GeminiProvider(BaseProvider):
     Implements Gemini-specific API calls.
     """
 
-    # Available Gemini models
-    MODEL_PRO = "models/gemini-3-pro-preview"
-    MODEL_FLASH = "models/gemini-2.5-flash"
-    MODEL_EMBEDDING = "models/gemini-embedding-001"
-    DEFAULT_VISION_MODEL = MODEL_FLASH
-    DEFAULT_TEXT_MODEL = MODEL_FLASH
-
     def __init__(
         self,
         api_key: str = None,
@@ -63,9 +56,9 @@ class GeminiProvider(BaseProvider):
 
         Args:
             api_key: Google API key (default: from settings)
-            model: Model for text operations
-            vision_model: Model for vision operations
-            embedding_model: Model for embeddings
+            model: Model for text operations (required in .env)
+            vision_model: Model for vision operations (required in .env)
+            embedding_model: Model for embeddings (required in .env)
             mock_mode: If True, skip API key check for testing
         """
         super().__init__(mock_mode=mock_mode)
@@ -76,15 +69,21 @@ class GeminiProvider(BaseProvider):
         if not self.api_key and not mock_mode:
             raise ValueError(
                 "Gemini API key is required. "
-                "Set AI_CORRECTION_GEMINI_API_KEY."
+                "Set AI_CORRECTION_GEMINI_API_KEY in .env"
             )
 
         if not mock_mode:
             self.client = genai.Client(api_key=self.api_key)
 
-        self.model = model or settings.gemini_model or self.DEFAULT_TEXT_MODEL
-        self.vision_model = vision_model or settings.gemini_vision_model or self.DEFAULT_VISION_MODEL
-        self.embedding_model = embedding_model or settings.gemini_embedding_model or self.MODEL_EMBEDDING
+        self.model = model or settings.gemini_model
+        self.vision_model = vision_model or settings.gemini_vision_model
+        self.embedding_model = embedding_model or settings.gemini_embedding_model
+
+        if not self.model:
+            raise ValueError(
+                "Gemini model is required. "
+                "Set AI_CORRECTION_GEMINI_MODEL in .env"
+            )
 
     def _prepare_image(
         self,
