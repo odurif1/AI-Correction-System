@@ -2067,9 +2067,15 @@ class GradingSessionOrchestrator:
                 if student_detection.get("copy_index"):
                     student_name_section["copy_index"] = student_detection["copy_index"]
 
+                # Build copy_comparison with correct structure for build_audit_from_llm_comparison
+                # The function expects: llm_comparison[copy_key]["questions"][qid]
                 copy_comparison = {
                     "options": llm_comparison_data["options"],
-                    "llm_comparison": copy_data.get("questions", {}),
+                    "llm_comparison": {
+                        copy_key: {
+                            "questions": copy_data.get("questions", {})
+                        }
+                    },
                     "student_name": student_name_section
                 }
             elif llm_comparison_data and "student_detection" in llm_comparison_data:
