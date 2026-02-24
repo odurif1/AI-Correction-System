@@ -1041,7 +1041,8 @@ class GradingSessionOrchestrator:
 
                     if caching_supported:
                         logger.info("Creating chat sessions with cached context for verification/ultimatum")
-                        chat_manager = ChatContinuationManager(self.ai.providers)
+                        # Use shared cache in batch mode (all copies in one cache)
+                        chat_manager = ChatContinuationManager(self.ai.providers, cache_mode="shared")
 
                         # Build copies data for sessions
                         copies_for_session = []

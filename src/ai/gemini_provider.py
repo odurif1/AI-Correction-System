@@ -405,21 +405,36 @@ class GeminiProvider(BaseProvider):
         if self.mock_mode:
             return "Mock chat response"
 
-        # Build content with optional images
-        content = [prompt]
+        # Build content using types.Part for Chat API compatibility
+        from google.genai import types
+
+        parts = [types.Part(text=prompt)]
+
         if images:
             if isinstance(images, list):
                 for i, img_path in enumerate(images):
                     image_data = self._prepare_image(image_path=img_path)
-                    if image_data:
-                        content.append(f"\n--- IMAGE {i + 1} ---")
-                        content.append(image_data)
+                    if image_data and 'inline_data' in image_data:
+                        parts.append(types.Part(
+                            text=f"\n--- IMAGE {i + 1} ---"
+                        ))
+                        parts.append(types.Part(
+                            inline_data=types.Blob(
+                                mime_type=image_data['inline_data']['mime_type'],
+                                data=image_data['inline_data']['data']
+                            )
+                        ))
             else:
                 image_data = self._prepare_image(image_path=images)
-                if image_data:
-                    content.append(image_data)
+                if image_data and 'inline_data' in image_data:
+                    parts.append(types.Part(
+                        inline_data=types.Blob(
+                            mime_type=image_data['inline_data']['mime_type'],
+                            data=image_data['inline_data']['data']
+                        )
+                    ))
 
-        response = chat_session.send_message(content)
+        response = chat_session.send_message(types.Content(parts=parts))
         result = response.text or ""
 
         # Extract token usage (including cached tokens if using cached context)
@@ -457,6 +472,11 @@ class GeminiProvider(BaseProvider):
 
     # ==================== CONTEXT CACHING (OPTIONAL) ====================
 
+    # Gemini minimum tokens for context caching
+    MIN_CACHE_TOKENS = 2048
+    # Approximate tokens per image (varies by size, this is conservative)
+    TOKENS_PER_IMAGE = 258
+
     def supports_context_caching(self) -> bool:
         """
         Check if context caching is available for this provider.
@@ -467,6 +487,22 @@ class GeminiProvider(BaseProvider):
         if self.mock_mode:
             return True  # Mock mode supports it for testing
         return HAS_GENAI_TYPES
+
+    def _estimate_tokens(self, text: str, num_images: int) -> int:
+        """
+        Estimate token count for text + images.
+
+        Args:
+            text: Text content
+            num_images: Number of images
+
+        Returns:
+            Estimated token count
+        """
+        # ~4 chars per token for most languages
+        text_tokens = len(text) // 4 if text else 0
+        image_tokens = num_images * self.TOKENS_PER_IMAGE
+        return text_tokens + image_tokens
 
     def create_cached_context(
         self,
@@ -479,6 +515,9 @@ class GeminiProvider(BaseProvider):
 
         This is useful for reducing costs when the same context
         (system prompt + images) is used repeatedly.
+
+        Note: Gemini requires minimum 2048 tokens for caching.
+        If content is too small, returns None (no error).
 
         Args:
             system_prompt: System instruction
@@ -497,6 +536,18 @@ class GeminiProvider(BaseProvider):
                 "Context caching NOT AVAILABLE: google.genai.types not found. "
                 "Install the latest google-genai package for caching support. "
                 "Falling back to regular API calls (higher cost)."
+            )
+            return None
+
+        # Estimate token count before attempting to cache
+        num_images = len(images) if images else 0
+        estimated_tokens = self._estimate_tokens(system_prompt or "", num_images)
+
+        if estimated_tokens < self.MIN_CACHE_TOKENS:
+            logger.info(
+                f"Context caching SKIPPED: Estimated {estimated_tokens} tokens "
+                f"(minimum {self.MIN_CACHE_TOKENS} required). "
+                f"Using regular API calls."
             )
             return None
 
@@ -533,8 +584,8 @@ class GeminiProvider(BaseProvider):
             )
 
             logger.info(
-                f"Context caching: Successfully created cache '{cached_content.name}' "
-                f"with TTL {ttl_seconds}s for {len(parts)} parts"
+                f"Context caching: Created cache '{cached_content.name}' "
+                f"(~{estimated_tokens} tokens, {len(parts)} parts, TTL {ttl_seconds}s)"
             )
 
             return cached_content.name

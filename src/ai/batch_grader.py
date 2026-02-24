@@ -113,6 +113,42 @@ def get_agreement_threshold(max_points: float) -> float:
     return max_points * get_settings().grade_agreement_threshold
 
 
+def _parse_grade_value(value) -> float:
+    """
+    Parse a grade value that may be in various formats.
+
+    Handles:
+    - float/int: 1.0, 1
+    - string with fraction: "1/1", "0.5/2"
+    - string with just number: "1.0", "1"
+
+    Args:
+        value: The grade value to parse
+
+    Returns:
+        Float value of the grade (numerator only, not the fraction result)
+    """
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    if isinstance(value, str):
+        value = value.strip()
+        # Handle fraction format like "1/1" or "0.5/2"
+        if '/' in value:
+            try:
+                numerator = value.split('/')[0].strip()
+                return float(numerator)
+            except (ValueError, IndexError):
+                pass
+        # Try direct float conversion
+        try:
+            return float(value)
+        except ValueError:
+            pass
+
+    return 0.0
+
+
 def get_flip_flop_threshold(max_points: float) -> float:
     """
     Calculate the relative flip-flop detection threshold based on max_points.
@@ -357,8 +393,8 @@ class BatchGrader:
                     for qid, qdata in copy_data.get('questions', {}).items():
                         questions[qid] = {
                             'student_answer_read': qdata.get('student_answer_read', ''),
-                            'grade': float(qdata.get('grade', 0)),
-                            'max_points': float(qdata.get('max_points', 1)),
+                            'grade': _parse_grade_value(qdata.get('grade', 0)),
+                            'max_points': _parse_grade_value(qdata.get('max_points', 1)),
                             'confidence': float(qdata.get('confidence', 0.8)),
                             'reasoning': qdata.get('reasoning', ''),
                             'feedback': qdata.get('feedback', '')
@@ -1777,13 +1813,21 @@ def _parse_student_name_ultimatum_response(raw_response: str) -> Dict[int, Dict]
 # CONTEXT CACHING + CHAT API FOR VERIFICATION/ULTIMATUM
 # ═══════════════════════════════════════════════════════════════════════════════
 
+# Minimum tokens required for Gemini context caching
+MIN_CACHE_TOKENS = 2048
+
+
 class ChatContinuationManager:
     """
     Combines Context Caching + Chat API for cost-efficient multi-phase grading.
 
+    Supports two caching modes:
+    - shared (batch mode): ONE cache for ALL copies (guarantees 2048+ tokens)
+    - per_copy (individual mode): ONE cache PER copy (may fail if too small)
+
     Flow:
-    1. Create cached context with initial prompt + images
-    2. Start chat sessions that reference the cached context
+    1. Create cached context(s) based on mode
+    2. Start chat sessions that reference the cache
     3. Verification: send message in chat (LLM sees cached context)
     4. Ultimatum: continue chat (LLM sees cached context + verification)
 
@@ -1792,14 +1836,23 @@ class ChatContinuationManager:
     - Chat history = LLM remembers verification during ultimatum
     """
 
-    def __init__(self, providers: List[Tuple[str, Any]]):
+    def __init__(self, providers: List[Tuple[str, Any]], cache_mode: str = "shared"):
+        """
+        Initialize ChatContinuationManager.
+
+        Args:
+            providers: List of (name, provider) tuples
+            cache_mode: "shared" for batch mode, "per_copy" for individual mode
+        """
         self.providers = providers
-        # Cached context IDs: {provider_name: {session_id: cache_id}}
+        self.cache_mode = cache_mode
+        # Cache IDs: {provider_name: {session_id: cache_id}} or {provider_name: cache_id} for shared
         self.caches_by_provider: Dict[str, Dict[str, str]] = {name: {} for name, _ in providers}
         # Chat sessions: {provider_name: {session_id: chat_session}}
         self.chats_by_provider: Dict[str, Dict[str, Any]] = {name: {} for name, _ in providers}
         self._caching_supported: Dict[str, bool] = {}
         self._images_by_copy: Dict[int, List[str]] = {}
+        self._initial_prompt: str = ""
 
     def _check_caching_support(self, provider_name: str, provider: Any) -> bool:
         if provider_name not in self._caching_supported:
@@ -1812,39 +1865,87 @@ class ChatContinuationManager:
         initial_prompt: str
     ):
         """
-        Create cached context + start chat sessions for each copy.
+        Create cached context(s) + start chat sessions.
+
+        In "shared" mode: ONE cache for ALL copies
+        In "per_copy" mode: ONE cache PER copy (if large enough)
 
         Args:
             copies_data: List with 'copy_index' and 'image_paths'
             initial_prompt: The batch grading prompt (will be cached)
         """
+        self._initial_prompt = initial_prompt
+
+        # Store images by copy
+        for copy_data in copies_data:
+            copy_idx = copy_data.get('copy_index', 0)
+            images = copy_data.get('image_paths', [])
+            self._images_by_copy[copy_idx] = images
+
+        if self.cache_mode == "shared":
+            await self._create_shared_cache(copies_data, initial_prompt)
+        else:
+            await self._create_per_copy_cache(copies_data, initial_prompt)
+
+    async def _create_shared_cache(self, copies_data: List[Dict[str, Any]], initial_prompt: str):
+        """Create ONE shared cache for all copies (batch mode)."""
+        # Collect ALL images from ALL copies
+        all_images = []
+        for copy_data in copies_data:
+            all_images.extend(copy_data.get('image_paths', []))
+
+        # Create ONE shared cache per provider
+        for name, provider in self.providers:
+            cache_id = None
+            if self._check_caching_support(name, provider):
+                cache_id = provider.create_cached_context(
+                    system_prompt=initial_prompt,
+                    images=all_images,
+                    ttl_seconds=3600
+                )
+                if cache_id:
+                    self.caches_by_provider[name]["shared"] = cache_id
+                    logger.info(f"Created shared cache for {name} ({len(all_images)} images)")
+
+            # Start chat sessions for each copy (all reference the same cache)
+            for copy_data in copies_data:
+                copy_idx = copy_data.get('copy_index', 0)
+                session_id = f"copy_{copy_idx}"
+
+                try:
+                    chat = provider.start_chat(
+                        system_prompt=initial_prompt,
+                        cached_context=cache_id
+                    )
+                    self.chats_by_provider[name][session_id] = chat
+                except Exception as e:
+                    logger.warning(f"Chat creation failed for {name}/{session_id}: {e}")
+
+    async def _create_per_copy_cache(self, copies_data: List[Dict[str, Any]], initial_prompt: str):
+        """Create ONE cache PER copy (individual mode)."""
         for copy_data in copies_data:
             copy_idx = copy_data.get('copy_index', 0)
             images = copy_data.get('image_paths', [])
             session_id = f"copy_{copy_idx}"
-            self._images_by_copy[copy_idx] = images
 
             for name, provider in self.providers:
-                # Try context caching first
                 cache_id = None
                 if self._check_caching_support(name, provider):
-                    try:
-                        cache_id = provider.create_cached_context(
-                            system_prompt=initial_prompt,
-                            images=images,
-                            ttl_seconds=3600
-                        )
-                        if cache_id:
-                            self.caches_by_provider[name][session_id] = cache_id
-                            logger.info(f"Created cache+chat for {name}/{session_id}")
-                    except Exception as e:
-                        logger.warning(f"Caching failed for {name}/{session_id}: {e}")
+                    # Try to create cache for this copy only
+                    cache_id = provider.create_cached_context(
+                        system_prompt=initial_prompt,
+                        images=images,
+                        ttl_seconds=3600
+                    )
+                    if cache_id:
+                        self.caches_by_provider[name][session_id] = cache_id
+                        logger.info(f"Created per-copy cache for {name}/{session_id}")
 
                 # Start chat session (with or without cache)
                 try:
                     chat = provider.start_chat(
                         system_prompt=initial_prompt,
-                        cached_context=cache_id  # Gemini-specific: chat references cache
+                        cached_context=cache_id
                     )
                     self.chats_by_provider[name][session_id] = chat
                 except Exception as e:
