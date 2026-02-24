@@ -170,16 +170,28 @@ class BatchGrader:
     Usage:
         grader = BatchGrader(provider)
         result = await grader.grade_batch(copies, questions, language="fr")
+
+    With chat continuation:
+        grader = BatchGrader(provider, use_chat=True)
+        result = await grader.grade_batch(copies, questions, language="fr")
+        # Subsequent verification/ultimatum calls use same session
     """
 
-    def __init__(self, provider):
+    def __init__(self, provider, use_chat: bool = False):
         """
         Initialize batch grader.
 
         Args:
             provider: LLM provider (must support multi-image calls)
+            use_chat: If True, use chat sessions for conversation continuity
         """
         self.provider = provider
+        self.use_chat = use_chat and provider.supports_chat()
+        # Chat sessions: {session_id: chat_session}
+        # session_id format: "batch_{batch_idx}" or "copy_{copy_idx}"
+        self.chat_sessions: Dict[str, Any] = {}
+        # Store initial results for continuation
+        self._initial_results: Dict[str, BatchResult] = {}
 
     async def grade_batch(
         self,
@@ -235,6 +247,87 @@ class BatchGrader:
         result = self._parse_batch_response(raw_response, copies, start_time)
 
         return result
+
+    async def grade_batch_with_chat(
+        self,
+        copies: List[Dict[str, Any]],
+        questions: Dict[str, Dict[str, Any]],
+        language: str = "fr",
+        detect_students: bool = False,
+        session_id: str = None
+    ) -> Tuple[BatchResult, str]:
+        """
+        Grade a batch using chat continuation.
+
+        This method starts or continues a chat session, allowing the LLM
+        to remember previous context for verification/ultimatum phases.
+
+        Args:
+            copies: List of copy data dicts
+            questions: Dict of {question_id: {text, criteria, max_points}}
+            language: Language for prompts
+            detect_students: If True, ask LLM to detect multiple students
+            session_id: Optional session ID (default: auto-generated)
+
+        Returns:
+            Tuple of (BatchResult, session_id)
+        """
+        start_time = time.time()
+
+        # Generate session ID if not provided
+        if session_id is None:
+            session_id = f"batch_{len(self.chat_sessions)}"
+
+        # Build prompt
+        prompt = build_batch_grading_prompt(copies, questions, language, detect_students)
+
+        # Collect all images
+        all_images = []
+        for copy in copies:
+            all_images.extend(copy.get('image_paths', []))
+
+        # Start or continue chat session
+        if session_id not in self.chat_sessions:
+            self.chat_sessions[session_id] = self.provider.start_chat()
+
+        chat = self.chat_sessions[session_id]
+
+        # Send message in chat
+        try:
+            raw_response = self.provider.send_chat_message(chat, prompt, all_images)
+            if not isinstance(raw_response, str):
+                raw_response = str(raw_response)
+        except Exception as e:
+            logger.error(f"Chat batch grading failed: {e}")
+            return BatchResult(
+                copies=[],
+                patterns={},
+                raw_response=str(e),
+                parse_success=False,
+                parse_errors=[f"Chat API call failed: {str(e)}"],
+                duration_ms=(time.time() - start_time) * 1000
+            ), session_id
+
+        # Parse response
+        result = self._parse_batch_response(raw_response, copies, start_time)
+
+        # Store for continuation
+        self._initial_results[session_id] = result
+
+        return result, session_id
+
+    def get_chat_session(self, session_id: str) -> Optional[Any]:
+        """Get an existing chat session by ID."""
+        return self.chat_sessions.get(session_id)
+
+    def has_chat_session(self, session_id: str) -> bool:
+        """Check if a chat session exists."""
+        return session_id in self.chat_sessions
+
+    def clear_chat_sessions(self):
+        """Clear all chat sessions."""
+        self.chat_sessions.clear()
+        self._initial_results.clear()
 
     def _parse_batch_response(
         self,
@@ -550,7 +643,8 @@ async def run_dual_llm_verification(
     disagreements: List[Disagreement],
     language: str = "fr",
     name_disagreements: List[Dict[str, Any]] = None,
-    extra_images: List[str] = None
+    extra_images: List[str] = None,
+    chat_manager: 'ChatContinuationManager' = None
 ) -> Dict[str, Dict[str, Any]]:
     """
     Run verification with BOTH LLMs seeing each other's work (grouped mode).
@@ -563,6 +657,7 @@ async def run_dual_llm_verification(
         language: Language for prompts
         name_disagreements: Optional list of student name disagreements (for grouped mode)
         extra_images: Optional list of additional images (for name-only cases)
+        chat_manager: Optional ChatContinuationManager for chat continuation mode
 
     Returns:
         Dict with:
@@ -576,14 +671,16 @@ async def run_dual_llm_verification(
         mode="verification",
         batching="grouped",
         name_disagreements=name_disagreements,
-        extra_images=extra_images
+        extra_images=extra_images,
+        chat_manager=chat_manager
     )
 
 
 async def run_per_question_dual_verification(
     providers: List[tuple],
     disagreements: List[Disagreement],
-    language: str = "fr"
+    language: str = "fr",
+    chat_manager: 'ChatContinuationManager' = None
 ) -> Dict[str, Dict[str, Any]]:
     """
     Run verification for each disagreement separately with BOTH LLMs.
@@ -595,6 +692,7 @@ async def run_per_question_dual_verification(
         providers: List of (name, provider) tuples
         disagreements: List of disagreements to verify
         language: Language for prompts
+        chat_manager: Optional ChatContinuationManager for chat continuation mode
 
     Returns:
         Dict mapping "copy_{idx}_{qid}" -> {final_grade, llm1_grade, llm2_grade, method, ...}
@@ -604,7 +702,8 @@ async def run_per_question_dual_verification(
         disagreements=disagreements,
         language=language,
         mode="verification",
-        batching="per_question"
+        batching="per_question",
+        chat_manager=chat_manager
     )
 
 
@@ -1056,7 +1155,8 @@ async def _run_dual_llm_phase(
     mode: str,
     batching: str,
     name_disagreements: List[Dict] = None,
-    extra_images: List[str] = None
+    extra_images: List[str] = None,
+    chat_manager: 'ChatContinuationManager' = None
 ) -> Dict[str, Dict[str, Any]]:
     """
     Unified function for all verification/ultimatum phases.
@@ -1072,6 +1172,7 @@ async def _run_dual_llm_phase(
         batching: "grouped", "per_question", or "per_copy"
         name_disagreements: Optional name disagreements (verification grouped mode only)
         extra_images: Optional extra images (verification grouped mode only)
+        chat_manager: Optional ChatContinuationManager for chat continuation mode
 
     Returns:
         Dict with results and optional metadata
@@ -1088,6 +1189,22 @@ async def _run_dual_llm_phase(
     # Track parsing failures for ultimatum
     llm1_parse_failed = False
     llm2_parse_failed = False
+
+    # Check if we should use chat continuation
+    use_chat = chat_manager is not None
+
+    # If chat continuation is enabled, delegate to the chat manager
+    if use_chat:
+        logger.info(f"Using chat continuation for {mode} phase ({batching} mode)")
+
+        if mode == "verification":
+            return await chat_manager.run_dual_llm_verification_with_chat(
+                disagreements, language
+            )
+        else:  # ultimatum
+            return await chat_manager.run_dual_llm_ultimatum_with_chat(
+                disagreements, language
+            )
 
     if batching == "grouped":
         # ===== GROUPED: All disagreements in one call =====
@@ -1294,7 +1411,8 @@ async def run_per_copy_dual_verification(
     providers: List[tuple],
     disagreements: List[Disagreement],
     language: str = "fr",
-    name_disagreements: List[Dict] = None
+    name_disagreements: List[Dict] = None,
+    chat_manager: 'ChatContinuationManager' = None
 ) -> Dict[str, Dict[str, Any]]:
     """
     Run verification grouped by copy with BOTH LLMs.
@@ -1308,6 +1426,7 @@ async def run_per_copy_dual_verification(
         disagreements: List of disagreements to verify
         language: Language for prompts
         name_disagreements: Optional list of student name disagreements
+        chat_manager: Optional ChatContinuationManager for chat continuation mode
 
     Returns:
         Dict mapping "copy_{idx}_{qid}" -> {final_grade, llm1_grade, llm2_grade, method, ...}
@@ -1319,7 +1438,8 @@ async def run_per_copy_dual_verification(
         language=language,
         mode="verification",
         batching="per_copy",
-        name_disagreements=name_disagreements
+        name_disagreements=name_disagreements,
+        chat_manager=chat_manager
     )
 
 
@@ -1330,7 +1450,8 @@ async def run_per_copy_dual_verification(
 async def run_dual_llm_ultimatum(
     providers: List[tuple],
     persistent_disagreements: List[Dict[str, Any]],
-    language: str = "fr"
+    language: str = "fr",
+    chat_manager: 'ChatContinuationManager' = None
 ) -> Dict[str, Dict[str, Any]]:
     """
     Run ultimatum round with BOTH LLMs for persistent disagreements (grouped mode).
@@ -1341,6 +1462,7 @@ async def run_dual_llm_ultimatum(
         providers: List of (name, provider) tuples
         persistent_disagreements: List of disagreements that persist after verification
         language: Language for prompts
+        chat_manager: Optional ChatContinuationManager for chat continuation mode
 
     Returns:
         Dict mapping "copy_{idx}_{qid}" -> {final_grade, llm1_grade, llm2_grade, method, ...}
@@ -1350,14 +1472,16 @@ async def run_dual_llm_ultimatum(
         disagreements=persistent_disagreements,
         language=language,
         mode="ultimatum",
-        batching="grouped"
+        batching="grouped",
+        chat_manager=chat_manager
     )
 
 
 async def run_per_question_dual_ultimatum(
     providers: List[tuple],
     persistent_disagreements: List[Dict[str, Any]],
-    language: str = "fr"
+    language: str = "fr",
+    chat_manager: 'ChatContinuationManager' = None
 ) -> Dict[str, Dict[str, Any]]:
     """
     Run ultimatum for each disagreement separately with BOTH LLMs.
@@ -1369,6 +1493,7 @@ async def run_per_question_dual_ultimatum(
         providers: List of (name, provider) tuples
         persistent_disagreements: List of disagreements that persist after verification
         language: Language for prompts
+        chat_manager: Optional ChatContinuationManager for chat continuation mode
 
     Returns:
         Dict mapping "copy_{idx}_{qid}" -> {final_grade, llm1_grade, llm2_grade, method, ...}
@@ -1378,14 +1503,16 @@ async def run_per_question_dual_ultimatum(
         disagreements=persistent_disagreements,
         language=language,
         mode="ultimatum",
-        batching="per_question"
+        batching="per_question",
+        chat_manager=chat_manager
     )
 
 
 async def run_per_copy_dual_ultimatum(
     providers: List[tuple],
     persistent_disagreements: List[Dict[str, Any]],
-    language: str = "fr"
+    language: str = "fr",
+    chat_manager: 'ChatContinuationManager' = None
 ) -> Dict[str, Dict[str, Any]]:
     """
     Run ultimatum grouped by copy with BOTH LLMs.
@@ -1398,6 +1525,7 @@ async def run_per_copy_dual_ultimatum(
         providers: List of (name, provider) tuples
         persistent_disagreements: List of disagreements that persist after verification
         language: Language for prompts
+        chat_manager: Optional ChatContinuationManager for chat continuation mode
 
     Returns:
         Dict mapping "copy_{idx}_{qid}" -> {final_grade, llm1_grade, llm2_grade, method, ...}
@@ -1407,7 +1535,8 @@ async def run_per_copy_dual_ultimatum(
         disagreements=persistent_disagreements,
         language=language,
         mode="ultimatum",
-        batching="per_copy"
+        batching="per_copy",
+        chat_manager=chat_manager
     )
 
 
@@ -1642,3 +1771,213 @@ def _parse_student_name_ultimatum_response(raw_response: str) -> Dict[int, Dict]
         logger.error(f"Failed to parse student name ultimatum response: {e}")
 
     return results
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONTEXT CACHING + CHAT API FOR VERIFICATION/ULTIMATUM
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ChatContinuationManager:
+    """
+    Combines Context Caching + Chat API for cost-efficient multi-phase grading.
+
+    Flow:
+    1. Create cached context with initial prompt + images
+    2. Start chat sessions that reference the cached context
+    3. Verification: send message in chat (LLM sees cached context)
+    4. Ultimatum: continue chat (LLM sees cached context + verification)
+
+    Benefits:
+    - Images cached = ~10x cheaper
+    - Chat history = LLM remembers verification during ultimatum
+    """
+
+    def __init__(self, providers: List[Tuple[str, Any]]):
+        self.providers = providers
+        # Cached context IDs: {provider_name: {session_id: cache_id}}
+        self.caches_by_provider: Dict[str, Dict[str, str]] = {name: {} for name, _ in providers}
+        # Chat sessions: {provider_name: {session_id: chat_session}}
+        self.chats_by_provider: Dict[str, Dict[str, Any]] = {name: {} for name, _ in providers}
+        self._caching_supported: Dict[str, bool] = {}
+        self._images_by_copy: Dict[int, List[str]] = {}
+
+    def _check_caching_support(self, provider_name: str, provider: Any) -> bool:
+        if provider_name not in self._caching_supported:
+            self._caching_supported[provider_name] = provider.supports_context_caching()
+        return self._caching_supported[provider_name]
+
+    async def create_sessions(
+        self,
+        copies_data: List[Dict[str, Any]],
+        initial_prompt: str
+    ):
+        """
+        Create cached context + start chat sessions for each copy.
+
+        Args:
+            copies_data: List with 'copy_index' and 'image_paths'
+            initial_prompt: The batch grading prompt (will be cached)
+        """
+        for copy_data in copies_data:
+            copy_idx = copy_data.get('copy_index', 0)
+            images = copy_data.get('image_paths', [])
+            session_id = f"copy_{copy_idx}"
+            self._images_by_copy[copy_idx] = images
+
+            for name, provider in self.providers:
+                # Try context caching first
+                cache_id = None
+                if self._check_caching_support(name, provider):
+                    try:
+                        cache_id = provider.create_cached_context(
+                            system_prompt=initial_prompt,
+                            images=images,
+                            ttl_seconds=3600
+                        )
+                        if cache_id:
+                            self.caches_by_provider[name][session_id] = cache_id
+                            logger.info(f"Created cache+chat for {name}/{session_id}")
+                    except Exception as e:
+                        logger.warning(f"Caching failed for {name}/{session_id}: {e}")
+
+                # Start chat session (with or without cache)
+                try:
+                    chat = provider.start_chat(
+                        system_prompt=initial_prompt,
+                        cached_context=cache_id  # Gemini-specific: chat references cache
+                    )
+                    self.chats_by_provider[name][session_id] = chat
+                except Exception as e:
+                    logger.warning(f"Chat creation failed for {name}/{session_id}: {e}")
+
+    async def send_in_chat(
+        self,
+        provider_name: str,
+        provider: Any,
+        session_id: str,
+        prompt: str,
+        images: List[str] = None
+    ) -> Optional[str]:
+        """Send message in chat session."""
+        chat = self.chats_by_provider.get(provider_name, {}).get(session_id)
+
+        if chat:
+            try:
+                return provider.send_chat_message(chat, prompt, images)
+            except Exception as e:
+                logger.warning(f"Chat message failed: {e}")
+
+        # Fallback: regular call with all images
+        copy_idx = int(session_id.replace("copy_", ""))
+        all_images = self._images_by_copy.get(copy_idx, [])
+        return await _call_provider_vision(provider, prompt, all_images)
+
+    async def send_to_all_chats(
+        self,
+        session_id: str,
+        prompt1: str,
+        prompt2: str,
+        images: List[str] = None
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """Send to both providers' chat sessions."""
+        name1, provider1 = self.providers[0]
+        name2, provider2 = self.providers[1]
+
+        return await asyncio.gather(
+            self.send_in_chat(name1, provider1, session_id, prompt1, images),
+            self.send_in_chat(name2, provider2, session_id, prompt2, images)
+        )
+
+    async def run_dual_llm_verification_with_chat(
+        self,
+        disagreements: List[Disagreement],
+        language: str = "fr"
+    ) -> Dict[str, Dict[str, Any]]:
+        """Run verification using chat sessions."""
+        if not disagreements:
+            return {}
+
+        llm1_name, _ = self.providers[0]
+        llm2_name, _ = self.providers[1]
+        results = {}
+
+        from collections import defaultdict
+        by_copy = defaultdict(list)
+        for d in disagreements:
+            by_copy[d.copy_index].append(d)
+
+        for copy_idx, copy_disagreements in by_copy.items():
+            session_id = f"copy_{copy_idx}"
+            images = _collect_disagreement_images(copy_disagreements, copy_filter=copy_idx)
+
+            prompt1 = build_dual_llm_verification_prompt(
+                copy_disagreements, llm1_name, llm2_name, True, language
+            )
+            prompt2 = build_dual_llm_verification_prompt(
+                copy_disagreements, llm2_name, llm1_name, True, language
+            )
+
+            response1, response2 = await self.send_to_all_chats(session_id, prompt1, prompt2, images)
+
+            (llm1_q, _), (llm2_q, _) = _parse_dual_responses(response1, response2, "verification")
+
+            for d in copy_disagreements:
+                key = f"copy_{d.copy_index}_{d.question_id}"
+                results[key] = _resolve_verification_grade(d, llm1_q, llm2_q, key)
+                results[key]['chat_continuation'] = True
+
+        return results
+
+    async def run_dual_llm_ultimatum_with_chat(
+        self,
+        persistent_disagreements: List[Dict[str, Any]],
+        language: str = "fr"
+    ) -> Dict[str, Dict[str, Any]]:
+        """Run ultimatum using same chat sessions (sees verification history)."""
+        if not persistent_disagreements:
+            return {}
+
+        llm1_name, _ = self.providers[0]
+        llm2_name, _ = self.providers[1]
+        results = {}
+
+        from collections import defaultdict
+        by_copy = defaultdict(list)
+        for d in persistent_disagreements:
+            by_copy[d['copy_index']].append(d)
+
+        llm1_parse_failed = False
+        llm2_parse_failed = False
+
+        for copy_idx, copy_disagreements in by_copy.items():
+            session_id = f"copy_{copy_idx}"
+            images = _collect_disagreement_images(copy_disagreements, copy_filter=copy_idx)
+
+            prompt1 = build_ultimatum_prompt(copy_disagreements, llm1_name, llm2_name, language)
+            prompt2 = build_ultimatum_prompt(copy_disagreements, llm2_name, llm1_name, language)
+
+            # Same chat session - LLM sees verification history
+            response1, response2 = await self.send_to_all_chats(session_id, prompt1, prompt2, images)
+
+            llm1_results, llm2_results = _parse_dual_responses(response1, response2, "ultimatum")
+
+            if len(llm1_results) == 0 and response1:
+                llm1_parse_failed = True
+            if len(llm2_results) == 0 and response2:
+                llm2_parse_failed = True
+
+            for d in copy_disagreements:
+                key = f"copy_{d['copy_index']}_{d['question_id']}"
+                results[key] = _resolve_ultimatum_grade(d, llm1_results, llm2_results, key)
+                results[key]['chat_continuation'] = True
+
+        results['_parse_status'] = {'llm1_parse_failed': llm1_parse_failed, 'llm2_parse_failed': llm2_parse_failed}
+        return results
+
+    def clear(self):
+        """Clear all caches and sessions."""
+        for name in self.caches_by_provider:
+            self.caches_by_provider[name].clear()
+        for name in self.chats_by_provider:
+            self.chats_by_provider[name].clear()
+        self._images_by_copy.clear()

@@ -59,6 +59,7 @@ class GradingSessionOrchestrator:
         grading_mode: str = None,  # "individual", "batch", or "hybrid" (required)
         batch_verify: str = None,  # "per-question" or "grouped" (required for batch dual)
         auto_detect_structure: bool = False,  # Pre-analyze PDF structure with both LLMs
+        use_chat_continuation: bool = False,  # Enable chat continuation for verification/ultimatum
         workflow_state: CorrectionState = None
     ):
         """
@@ -85,6 +86,7 @@ class GradingSessionOrchestrator:
             grading_mode: "individual" (each copy separately) or "batch" (all copies in one call)
             batch_verify: "per-question" or "grouped" for batch verification
             auto_detect_structure: If True, pre-analyze PDF with both LLMs to detect structure (copies, pages, names, barème)
+            use_chat_continuation: If True, use chat sessions for verification/ultimatum (LLM remembers context)
             workflow_state: Optional CorrectionState for tracking workflow state
         """
         from config.constants import DATA_DIR
@@ -102,6 +104,7 @@ class GradingSessionOrchestrator:
         self._grading_mode = grading_mode
         self._batch_verify = batch_verify
         self._auto_detect_structure = auto_detect_structure
+        self._use_chat_continuation = use_chat_continuation
         self._structure_pre_detected = False  # Set to True after auto-detect-structure phase
 
         # Store names and barème detected during grading (for cross-verification)
@@ -1021,12 +1024,59 @@ class GradingSessionOrchestrator:
                         'mode': self._batch_verify
                     })
 
+                # ===== CONTEXT CACHING + CHAT SESSIONS SETUP =====
+                # Create chat sessions with cached context for verification/ultimatum
+                chat_manager = None
+                if self._use_chat_continuation:
+                    from ai.batch_grader import ChatContinuationManager
+                    from prompts.batch import build_batch_grading_prompt
+
+                    _, provider1 = self.ai.providers[0]
+                    _, provider2 = self.ai.providers[1]
+
+                    caching_supported = (
+                        provider1.supports_context_caching() or
+                        provider2.supports_context_caching()
+                    )
+
+                    if caching_supported:
+                        logger.info("Creating chat sessions with cached context for verification/ultimatum")
+                        chat_manager = ChatContinuationManager(self.ai.providers)
+
+                        # Build copies data for sessions
+                        copies_for_session = []
+                        copy_indices_with_disagreements = set(d.copy_index for d in disagreements)
+
+                        for copy_result in batch_result.copies:
+                            if copy_result.copy_index in copy_indices_with_disagreements:
+                                copies_for_session.append({
+                                    'copy_index': copy_result.copy_index,
+                                    'image_paths': getattr(copy_result, 'image_paths', [])
+                                })
+
+                        # Build initial prompt (same as batch grading)
+                        initial_prompt = build_batch_grading_prompt(
+                            copies_data, questions, language
+                        )
+
+                        # Create sessions with cache + chat
+                        await chat_manager.create_sessions(copies_for_session, initial_prompt)
+
+                        logger.info(
+                            f"Created {len(copies_for_session)} chat sessions with cached context"
+                        )
+                    else:
+                        logger.warning(
+                            "Context caching not supported. Using regular calls."
+                        )
+
                 # ===== PHASE 1: Dual LLM Verification =====
                 # Both LLMs see each other's work and can adjust their grades
                 if self._batch_verify == "per-question":
                     # One call per disagreement per LLM (more granular)
                     verification_results = await run_per_question_dual_verification(
-                        self.ai.providers, disagreements, language
+                        self.ai.providers, disagreements, language,
+                        chat_manager=chat_manager
                     )
                 elif self._batch_verify == "per-copy":
                     # One call per copy per LLM (middle ground)
@@ -1034,7 +1084,8 @@ class GradingSessionOrchestrator:
                     from ai.batch_grader import run_per_copy_dual_verification
                     verification_results = await run_per_copy_dual_verification(
                         self.ai.providers, disagreements, language,
-                        name_disagreements=name_disagreements if name_disagreements else None
+                        name_disagreements=name_disagreements if name_disagreements else None,
+                        chat_manager=chat_manager
                     )
                 else:
                     # Grouped: one call per LLM (all disagreements in one prompt)
@@ -1053,7 +1104,8 @@ class GradingSessionOrchestrator:
                     verification_results = await run_dual_llm_verification(
                         self.ai.providers, disagreements, language,
                         name_disagreements=name_disagreements if name_disagreements else None,
-                        extra_images=extra_images if extra_images else None
+                        extra_images=extra_images if extra_images else None,
+                        chat_manager=chat_manager
                     )
 
                 # Apply verification results to batch_result
@@ -1311,18 +1363,22 @@ class GradingSessionOrchestrator:
 
                     # Run ultimatum round with both LLMs
                     # Use per-question or per-copy mode if that's what was configured
+                    # Pass chat_manager for continuation (same sessions as verification)
                     if self._batch_verify == "per-question":
                         ultimatum_results = await run_per_question_dual_ultimatum(
-                            self.ai.providers, persistent_disagreements, language
+                            self.ai.providers, persistent_disagreements, language,
+                            chat_manager=chat_manager
                         )
                     elif self._batch_verify == "per-copy":
                         from ai.batch_grader import run_per_copy_dual_ultimatum
                         ultimatum_results = await run_per_copy_dual_ultimatum(
-                            self.ai.providers, persistent_disagreements, language
+                            self.ai.providers, persistent_disagreements, language,
+                            chat_manager=chat_manager
                         )
                     else:
                         ultimatum_results = await run_dual_llm_ultimatum(
-                            self.ai.providers, persistent_disagreements, language
+                            self.ai.providers, persistent_disagreements, language,
+                            chat_manager=chat_manager
                         )
 
                     # Check for parsing failures
@@ -1493,6 +1549,11 @@ class GradingSessionOrchestrator:
                                     for copy_result in batch_result.copies:
                                         if copy_result.copy_index == mpd['copy_index'] and qid in copy_result.questions:
                                             copy_result.questions[qid]['max_points'] = resolved_max_points
+
+                # ===== CLEANUP: Close chat sessions and caches =====
+                if chat_manager:
+                    chat_manager.clear()
+                    logger.info("Closed chat sessions and cached contexts after ultimatum")
 
                 # ===== NAME ULTIMATUM (grouped mode) =====
                 # If name disagreements persist after combined verification in grouped mode

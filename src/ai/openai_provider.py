@@ -13,9 +13,12 @@ import httpx
 from openai import OpenAI, OpenAIError
 from tenacity import retry, stop_after_attempt, retry_if_exception_type
 from PIL import Image
+import logging
 
 from ai.base_provider import BaseProvider
 from config.constants import MAX_RETRIES, MAX_TOKENS, TEMPERATURE, API_CONNECT_TIMEOUT, API_READ_TIMEOUT
+
+logger = logging.getLogger(__name__)
 
 ImageInput = Union[str, Path, bytes, Image.Image, List[Union[str, Path, bytes, Image.Image]]]
 
@@ -135,13 +138,25 @@ class OpenAIProvider(BaseProvider):
 
         result = response.choices[0].message.content or ""
 
+        # Prepare images list for debug capture
+        images_list = None
+        if images:
+            if isinstance(images, list):
+                images_list = [str(img) if isinstance(img, (str, Path)) else "<bytes>" for img in images]
+            else:
+                images_list = [str(images) if isinstance(images, (str, Path)) else "<bytes>"]
+
         self._log_call(
             prompt_type="vision",
             input_summary=f"Vision: {prompt[:80]}...",
             response_summary=result[:200],
             duration_ms=(time.time() - start_time) * 1000,
             prompt_tokens=response.usage.prompt_tokens if response.usage else None,
-            completion_tokens=response.usage.completion_tokens if response.usage else None
+            completion_tokens=response.usage.completion_tokens if response.usage else None,
+            full_prompt=prompt,
+            full_response=result,
+            images=images_list,
+            model_name=self.vision_model
         )
 
         return result
@@ -180,7 +195,10 @@ class OpenAIProvider(BaseProvider):
             response_summary=result[:200],
             duration_ms=(time.time() - start_time) * 1000,
             prompt_tokens=response.usage.prompt_tokens if response.usage else None,
-            completion_tokens=response.usage.completion_tokens if response.usage else None
+            completion_tokens=response.usage.completion_tokens if response.usage else None,
+            full_prompt=prompt,
+            full_response=result,
+            model_name=self.model
         )
 
         return result
@@ -196,3 +214,215 @@ class OpenAIProvider(BaseProvider):
         """Get embeddings for multiple texts."""
         response = self.client.embeddings.create(model=self.embedding_model, input=texts)
         return [item.embedding for item in response.data]
+
+    # ==================== CHAT SESSION METHODS ====================
+
+    def start_chat(self, system_prompt: str = None, cached_context: str = None) -> Dict[str, Any]:
+        """
+        Start a new chat session for multi-turn conversations.
+
+        OpenAI doesn't have native chat sessions, so we simulate it
+        by maintaining a message history.
+
+        Args:
+            system_prompt: Optional system prompt for the session
+            cached_context: Ignored (OpenAI doesn't support context caching)
+
+        Returns:
+            A dict with messages history
+        """
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        return {"messages": messages, "model": self.vision_model}
+
+    def send_chat_message(
+        self,
+        chat_session: Dict[str, Any],
+        prompt: str,
+        images: List[str] = None
+    ) -> str:
+        """
+        Send a message in an existing chat session.
+
+        Args:
+            chat_session: Session dict with messages history
+            prompt: User message
+            images: Optional list of image paths
+
+        Returns:
+            Model response text
+        """
+        start_time = time.time()
+
+        # Build user message
+        if images:
+            content = [{"type": "text", "text": prompt}]
+            content.extend(self._prepare_images(images))
+        else:
+            content = prompt
+
+        # Add to history
+        chat_session["messages"].append({"role": "user", "content": content})
+
+        # Handle mock mode
+        if self.mock_mode:
+            result = "Mock chat response"
+            chat_session["messages"].append({"role": "assistant", "content": result})
+            self._log_call(
+                prompt_type="chat",
+                input_summary=f"Chat (mock): {prompt[:80]}...",
+                response_summary=result,
+                duration_ms=(time.time() - start_time) * 1000,
+                full_prompt=prompt,
+                full_response=result,
+                model_name=chat_session["model"]
+            )
+            return result
+
+        # Call API with full history
+        response = self.client.chat.completions.create(
+            model=chat_session["model"],
+            messages=chat_session["messages"],
+            max_tokens=MAX_TOKENS,
+            temperature=TEMPERATURE
+        )
+
+        result = response.choices[0].message.content or ""
+
+        # Add assistant response to history
+        chat_session["messages"].append({"role": "assistant", "content": result})
+
+        # Prepare images list for debug capture
+        images_list = None
+        if images:
+            if isinstance(images, list):
+                images_list = [str(img) if isinstance(img, (str, Path)) else "<bytes>" for img in images]
+            else:
+                images_list = [str(images) if isinstance(images, (str, Path)) else "<bytes>"]
+
+        self._log_call(
+            prompt_type="chat",
+            input_summary=f"Chat: {prompt[:80]}... (history: {len(chat_session['messages'])} msgs)",
+            response_summary=result[:200],
+            duration_ms=(time.time() - start_time) * 1000,
+            prompt_tokens=response.usage.prompt_tokens if response.usage else None,
+            completion_tokens=response.usage.completion_tokens if response.usage else None,
+            full_prompt=prompt,
+            full_response=result,
+            images=images_list,
+            model_name=chat_session["model"]
+        )
+
+        return result
+
+    def supports_chat(self) -> bool:
+        """OpenAI supports chat sessions (simulated via message history)."""
+        return True
+
+    def supports_context_caching(self) -> bool:
+        """
+        Check if context caching is available.
+
+        Note: OpenAI doesn't have native context caching like Gemini.
+        Conversation history is re-sent with each call, so there's no
+        cost savings from "caching".
+
+        Returns:
+            False - OpenAI doesn't support native context caching
+        """
+        return False
+
+    def create_cached_context(
+        self,
+        system_prompt: str,
+        images: List[str] = None,
+        ttl_seconds: int = 3600
+    ) -> Optional[str]:
+        """
+        Create a cached context - NOT SUPPORTED by OpenAI.
+
+        OpenAI doesn't have native context caching. This method logs a warning
+        and returns None to indicate caching is not available.
+
+        Args:
+            system_prompt: System instruction (ignored)
+            images: Optional list of image paths (ignored)
+            ttl_seconds: Time-to-live (ignored)
+
+        Returns:
+            None - caching not supported
+        """
+        logger.warning(
+            "Context caching NOT AVAILABLE: OpenAI does not support native context caching. "
+            "Conversation history is re-sent with each call, resulting in full token costs. "
+            "Consider using Gemini for context caching support to reduce costs."
+        )
+        return None
+
+    def get_effective_token_cost(
+        self,
+        prompt_tokens: int,
+        completion_tokens: int
+    ) -> Dict[str, float]:
+        """
+        Calculate effective token costs for OpenAI.
+
+        Note: OpenAI charges full price for all tokens in conversation history,
+        which is re-sent with each call in chat mode.
+
+        Args:
+            prompt_tokens: Number of prompt/input tokens
+            completion_tokens: Number of completion/output tokens
+
+        Returns:
+            Dict with cost breakdown in USD
+        """
+        from config.constants import OPENAI_PRICING
+
+        # Determine which model we're using
+        model_lower = self.model.lower() if self.model else ""
+        if "mini" in model_lower:
+            input_price = OPENAI_PRICING.get("gpt4o_mini_input", 0.15)
+            output_price = OPENAI_PRICING.get("gpt4o_mini_output", 0.60)
+        else:
+            input_price = OPENAI_PRICING.get("gpt4o_input", 2.50)
+            output_price = OPENAI_PRICING.get("gpt4o_output", 10.00)
+
+        input_cost = (prompt_tokens / 1_000_000) * input_price
+        output_cost = (completion_tokens / 1_000_000) * output_price
+
+        return {
+            "input_cost": input_cost,
+            "output_cost": output_cost,
+            "total_cost": input_cost + output_cost,
+            "cached_savings": 0.0  # No caching for OpenAI
+        }
+
+    def get_estimated_cost(self) -> Dict[str, Any]:
+        """
+        Get estimated cost based on accumulated token usage.
+
+        Returns:
+            Dict with cost breakdown in USD
+        """
+        usage = self.get_token_usage()
+        cost = self.get_effective_token_cost(
+            prompt_tokens=usage["prompt_tokens"],
+            completion_tokens=usage["completion_tokens"]
+        )
+        return {
+            "provider": self._name,
+            "model": self.model,
+            "prompt_tokens": usage["prompt_tokens"],
+            "completion_tokens": usage["completion_tokens"],
+            "cached_tokens": 0,  # No caching for OpenAI
+            "total_tokens": usage["total_tokens"],
+            "calls": usage["calls"],
+            "estimated_cost_usd": round(cost["total_cost"], 4),
+            "input_cost_usd": round(cost["input_cost"], 4),
+            "output_cost_usd": round(cost["output_cost"], 4),
+            "cached_savings_usd": 0.0,
+            "warning": "OpenAI doesn't support context caching. "
+                       "Conversation history is re-sent with each call."
+        }

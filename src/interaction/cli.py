@@ -828,7 +828,7 @@ class CLI:
         max_score: float,
         confidence: float,
         language: str = 'fr',
-        llm_comparison: Dict = None
+        grading_audit = None
     ):
         """
         Display grading results for a single copy - simple and clean.
@@ -842,7 +842,7 @@ class CLI:
             max_score: Maximum possible points
             confidence: Overall confidence
             language: Language for display
-            llm_comparison: Optional comparison data from dual-LLM mode
+            grading_audit: Optional unified audit from grading
         """
         percentage = (total_score / max_score * 100) if max_score > 0 else 0
 
@@ -872,18 +872,6 @@ class CLI:
 
         for q_id in sorted(grades.keys()):
             grade = grades[q_id]
-            # Find max points for this question from comparison data or estimate
-            if llm_comparison and q_id in llm_comparison:
-                comp = llm_comparison[q_id]
-                max_q = comp.get('llm1', {}).get('grade', 0)
-                if max_q is None:
-                    max_q = 1
-                # Try to get actual max from the data
-                g1 = comp.get('llm1', {}).get('grade', 0) or 0
-                g2 = comp.get('llm2', {}).get('grade', 0) or 0
-                # Use higher grade as reference to guess max (imperfect but works)
-            else:
-                pass
 
             # Color code individual grades
             if grade >= 1.5:

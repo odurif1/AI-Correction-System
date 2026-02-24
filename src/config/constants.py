@@ -70,6 +70,11 @@ DEFAULT_QUESTION_POINTS: Final[float] = 1.0
 # Retry Configuration
 MAX_RETRIES: Final[int] = 3
 RETRY_DELAY_MS: Final[int] = 1000
+RETRY_BASE_DELAY: Final[float] = 1.0  # Base delay for exponential backoff (seconds)
+
+# Dual LLM Thresholds
+READING_SIMILARITY_THRESHOLD: Final[float] = 0.8  # Similarity for considering readings compatible
+GRADE_AGREEMENT_THRESHOLD: Final[float] = 0.5  # Max difference to consider grades in agreement
 
 # UI/CLI
 PROGRESS_BAR_WIDTH: Final[int] = 50
@@ -107,3 +112,68 @@ LANGUAGE_KEYWORDS: Final[Dict[str, list]] = {
     "fr": ["le", "la", "les", "des", "du", "de", "et", "est", "en", "un", "une"],
     "en": ["the", "a", "an", "is", "are", "of", "to", "in", "and", "or", "but"],
 }
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TOKEN PRICING (USD per 1M tokens)
+# Sources:
+# - Gemini: https://ai.google.dev/gemini-api/docs/pricing (updated 2025-02)
+# - OpenAI: https://openai.com/api/pricing (updated 2025-02)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Gemini 2.5 Flash pricing (Standard API)
+# Most commonly used for grading tasks
+GEMINI_25_FLASH_PRICING: Final[Dict[str, float]] = {
+    # Input tokens (text/image/video)
+    "input": 0.30,              # $0.30 per 1M input tokens
+    # Output tokens (includes thinking tokens)
+    "output": 2.50,             # $2.50 per 1M output tokens
+    # Context caching (text/image/video)
+    "cached": 0.03,             # $0.03 per 1M cached tokens
+    # Context caching storage
+    "cached_storage": 1.00,     # $1.00 per 1M tokens per hour
+}
+
+# Gemini 2.5 Flash-Lite pricing (Standard API)
+# Cheaper option for simpler tasks
+GEMINI_25_FLASH_LITE_PRICING: Final[Dict[str, float]] = {
+    "input": 0.10,              # $0.10 per 1M input tokens
+    "output": 0.40,             # $0.40 per 1M output tokens
+    "cached": 0.01,             # $0.01 per 1M cached tokens
+    "cached_storage": 1.00,     # $1.00 per 1M tokens per hour
+}
+
+# Gemini 3 Pro pricing (Standard API)
+# Premium model for complex tasks
+GEMINI_3_PRO_PRICING: Final[Dict[str, float]] = {
+    # Input tokens (tiered by request size)
+    "input_short": 2.00,        # $2.00 per 1M (requests <= 200k tokens)
+    "input_long": 4.00,         # $4.00 per 1M (requests > 200k tokens)
+    # Output tokens (includes thinking tokens)
+    "output_short": 12.00,      # $12.00 per 1M (requests <= 200k tokens)
+    "output_long": 18.00,       # $18.00 per 1M (requests > 200k tokens)
+    # Context caching
+    "cached_short": 0.20,       # $0.20 per 1M (requests <= 200k tokens)
+    "cached_long": 0.40,        # $0.40 per 1M (requests > 200k tokens)
+    "cached_storage": 4.50,     # $4.50 per 1M tokens per hour
+}
+
+# Legacy alias for backward compatibility
+GEMINI_PRICING: Final[Dict[str, float]] = GEMINI_25_FLASH_PRICING
+
+# OpenAI pricing
+# Note: OpenAI doesn't have native context caching - conversation history is re-sent
+OPENAI_PRICING: Final[Dict[str, float]] = {
+    # GPT-4o
+    "gpt4o_input": 2.50,        # $2.50 per 1M input tokens
+    "gpt4o_output": 10.00,      # $10.00 per 1M output tokens
+    # GPT-4o mini
+    "gpt4o_mini_input": 0.15,   # $0.15 per 1M input tokens
+    "gpt4o_mini_output": 0.60,  # $0.60 per 1M output tokens
+}
+
+# Context Caching Configuration
+CONTEXT_CACHE_TTL_SECONDS: Final[int] = 3600  # 1 hour default TTL
+CONTEXT_CACHE_MIN_TOKENS: Final[int] = 2048   # Minimum tokens for caching to be worthwhile
+
+# Token threshold for long context pricing
+LONG_CONTEXT_THRESHOLD: Final[int] = 200000  # 200k tokens

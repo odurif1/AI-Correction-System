@@ -377,6 +377,10 @@ async def command_correct(args):
             )
             return 1
 
+    # In batch mode, --parallel has no effect (all copies in one call)
+    if args.grading_method == "batch":
+        args.parallel = 1  # No parallelism needed in batch mode
+
     # Initialize workflow state (replaces mutable dicts)
     state = CorrectionState(
         language='fr',
@@ -402,6 +406,7 @@ async def command_correct(args):
         grading_mode=args.grading_method,
         batch_verify=args.batch_verify,
         auto_detect_structure=args.auto_detect_structure,
+        use_chat_continuation=args.chat_continuation,
         workflow_state=state  # Pass the workflow state with auto_mode
     )
 
@@ -414,6 +419,13 @@ async def command_correct(args):
     orchestrator.disagreement_callback = disagreement_callback
     orchestrator.name_disagreement_callback = name_disagreement_callback
     orchestrator.reading_disagreement_callback = reading_disagreement_callback
+
+    # Initialize debug capture if --debug flag is set
+    if args.debug:
+        from utils.debug_capture import init_debug
+        debug_dir = Path(args.output) / orchestrator.session_id / "debug"
+        init_debug(debug_dir)
+        cli.console.print("[yellow]🐛 Debug mode enabled - capturing prompts to debug/debug_log.json[/yellow]")
 
     # Determine mode and LLM names for startup display
     is_comparison_mode = hasattr(orchestrator.ai, 'providers')
@@ -446,7 +458,8 @@ async def command_correct(args):
             'parallel': args.parallel,
             'second_reading': args.second_reading,
             'auto_detect_structure': args.auto_detect_structure,
-            'skip_reading': args.skip_reading
+            'skip_reading': args.skip_reading,
+            'chat_continuation': args.chat_continuation
         }
     )
 
@@ -686,7 +699,11 @@ async def command_correct(args):
                 q = questions_to_display[qid]
                 grade = q.get('grade', 0)
                 max_pts = q.get('max_points', q.get('max_pts', 1))
-                grades_str += f"{qid}: [bold]{grade:.0f}/{max_pts:.0f}[/bold]  "
+                # Show decimals for max_points if needed
+                if max_pts == int(max_pts):
+                    grades_str += f"{qid}: [bold]{grade:.0f}/{int(max_pts)}[/bold]  "
+                else:
+                    grades_str += f"{qid}: [bold]{grade:.0f}/{max_pts}[/bold]  "
             console.print(grades_str)
 
             # Calculate tokens used for this copy
@@ -862,16 +879,18 @@ async def command_correct(args):
                     llm2_max = q.get('llm2_max_points', 1)
                     agreement = q.get('agreement', True)
 
-                    # Format grades
-                    if llm1_grade is not None:
-                        g1_str = f"{llm1_grade:.1f}/{llm1_max:.0f}"
-                    else:
-                        g1_str = "erreur"
+                    # Format grades (show decimals for max_points if needed: 1.5 not 2)
+                    def format_grade(g, max_pts):
+                        if g is None:
+                            return "erreur"
+                        # Show max_points with decimals only if not a whole number
+                        if max_pts == int(max_pts):
+                            return f"{g:.1f}/{int(max_pts)}"
+                        else:
+                            return f"{g:.1f}/{max_pts}"
 
-                    if llm2_grade is not None:
-                        g2_str = f"{llm2_grade:.1f}/{llm2_max:.0f}"
-                    else:
-                        g2_str = "erreur"
+                    g1_str = format_grade(llm1_grade, llm1_max)
+                    g2_str = format_grade(llm2_grade, llm2_max)
 
                     # Status
                     if agreement:
@@ -1001,32 +1020,41 @@ async def command_correct(args):
             name_disagreements = []
 
             for g in graded:
-                llm_comp = g.llm_comparison or {}
-                llm_comparison = llm_comp.get('llm_comparison', {})
+                audit = g.grading_audit
+                if not audit:
+                    continue
 
-                # Check for max_points disagreements
-                for qid, qdata in llm_comparison.items():
-                    if isinstance(qdata, dict) and 'max_points_disagreement' in qdata:
-                        mpd = qdata['max_points_disagreement']
-                        max_points_disagreements.append({
-                            'copy_index': llm_comp.get('student_detection', {}).get('copy_index', '?'),
-                            'question_id': qid,
-                            'llm1_max_points': mpd.get('llm1_max_points'),
-                            'llm2_max_points': mpd.get('llm2_max_points'),
-                            'resolved': mpd.get('resolved_max_points'),
-                            'persisted_after_ultimatum': mpd.get('persisted_after_ultimatum', False)
-                        })
+                # Check for max_points disagreements in questions
+                for qid, qdata in audit.questions.items():
+                    # Check if there was a max_points disagreement (different values in llm_results)
+                    llm_results = qdata.llm_results
+                    if len(llm_results) >= 2:
+                        max_points_values = [r.max_points for r in llm_results.values()]
+                        if len(set(max_points_values)) > 1:  # Different values
+                            # Get the LLM IDs
+                            llm_ids = list(llm_results.keys())
+                            max_points_disagreements.append({
+                                'copy_index': audit.student_detection.resolution.method if audit.student_detection else '?',
+                                'question_id': qid,
+                                'llm1_max_points': llm_results[llm_ids[0]].max_points,
+                                'llm2_max_points': llm_results[llm_ids[1]].max_points if len(llm_ids) > 1 else None,
+                                'resolved': qdata.resolution.final_max_points,
+                                'persisted_after_ultimatum': 'ultimatum' in qdata.resolution.phases
+                            })
 
                 # Check for name disagreements
-                student_detection = llm_comp.get('student_detection', {})
-                if 'name_disagreement' in student_detection:
-                    nd = student_detection['name_disagreement']
-                    name_disagreements.append({
-                        'copy_index': student_detection.get('copy_index', '?'),
-                        'llm1_name': nd.get('llm1_name'),
-                        'llm2_name': nd.get('llm2_name'),
-                        'resolved_name': nd.get('resolved_name')
-                    })
+                if audit.student_detection:
+                    sd = audit.student_detection
+                    # Check if LLMs disagreed on the name
+                    llm_names = list(sd.llm_results.values())
+                    if len(llm_names) >= 2 and llm_names[0] != llm_names[1]:
+                        llm_ids = list(sd.llm_results.keys())
+                        name_disagreements.append({
+                            'copy_index': '?',
+                            'llm1_name': sd.llm_results.get(llm_ids[0], ''),
+                            'llm2_name': sd.llm_results.get(llm_ids[1], ''),
+                            'resolved_name': sd.final_name
+                        })
 
             # Display max_points disagreements
             if max_points_disagreements:
@@ -1182,6 +1210,16 @@ async def command_correct(args):
     from core.models import SessionStatus
     orchestrator.session.status = SessionStatus.COMPLETE
     orchestrator._save_sync()
+
+    # Save debug log if debug mode was enabled
+    if args.debug:
+        from utils.debug_capture import save_debug_log, get_debug_capture
+        debug = get_debug_capture()
+        if debug:
+            debug_path = debug.save()
+            cli.console.print(f"[green]🐛 Debug log saved to: {debug_path}[/green]")
+            summary = debug.get_summary()
+            cli.console.print(f"[dim]   {summary['total_calls']} API calls captured ({summary['vision_calls']} vision, {summary['text_calls']} text)[/dim]")
 
     # ============================================================
     # Show Summary
@@ -1544,18 +1582,35 @@ Note on --second-reading:
         "--parallel",
         type=int,
         default=DEFAULT_PARALLEL_COPIES,
-        help=f"Nombre de copies traitées en parallèle (défaut: {DEFAULT_PARALLEL_COPIES}). Accélère le traitement en mode individuel (Single ou Dual LLM)"
+        help=f"Nombre de copies traitées en parallèle en mode INDIVIDUAL uniquement (défaut: {DEFAULT_PARALLEL_COPIES}). Ignoré en mode batch."
     )
     correct_parser.add_argument(
         "--batch-verify",
-        choices=["per-question", "grouped"],
+        choices=["per-question", "per-copy", "grouped"],
         default="grouped",
-        help="Mode de vérification post-batch pour les désaccords (dual batch uniquement): 'per-question' (un appel par désaccord) ou 'grouped' (un seul appel groupé)"
+        help="Mode de vérification: 'per-question' (1 appel/désaccord), 'per-copy' (1 appel/copie), 'grouped' (1 appel tout)"
     )
     correct_parser.add_argument(
         "--auto-detect-structure",
         action="store_true",
         help="Analyse le PDF entier en pré-phase pour détecter la structure (copies, pages, noms, barème) avec les 2 LLMs. Cross-vérification automatique des désaccords."
+    )
+    correct_parser.add_argument(
+        "--chat-continuation",
+        action="store_true",
+        default=True,
+        help="Active le context caching pour la vérification et l'ultimatum. Les images sont mises en cache (~10x moins cher) au lieu d'être renvoyées à plein tarif. Disponible uniquement avec Gemini. (défaut: activé)"
+    )
+    correct_parser.add_argument(
+        "--no-chat-continuation",
+        action="store_false",
+        dest="chat_continuation",
+        help="Désactive le context caching pour la vérification et l'ultimatum."
+    )
+    correct_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Active le mode debug: capture tous les prompts et appels API dans debug/debug_log.json"
     )
 
     # Status command

@@ -6,6 +6,7 @@ Handles communication with Google's Gemini models.
 
 import time
 import base64
+import logging
 from typing import Optional, List, Dict, Any
 
 from PIL import Image
@@ -16,6 +17,15 @@ from tenacity import retry, stop_after_attempt, retry_if_exception_type, wait_ex
 from ai.base_provider import BaseProvider
 from config.settings import get_settings
 from config.constants import MAX_RETRIES
+
+logger = logging.getLogger(__name__)
+
+# Import types for context caching (optional)
+try:
+    from google.genai import types as genai_types
+    HAS_GENAI_TYPES = True
+except ImportError:
+    HAS_GENAI_TYPES = False
 
 
 # Define retryable exceptions for Google API
@@ -182,13 +192,23 @@ class GeminiProvider(BaseProvider):
         # Log call
         duration = (time.time() - start_time) * 1000
         num_images = len(image_path) if isinstance(image_path, list) else (1 if image_path else 0)
+
+        # Prepare images list for debug capture
+        images_list = None
+        if image_path:
+            images_list = image_path if isinstance(image_path, list) else [image_path]
+
         self._log_call(
             prompt_type="vision",
             input_summary=f"Vision prompt ({num_images} images): {prompt[:100]}...",
             response_summary=result[:200],
             duration_ms=duration,
             prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens
+            completion_tokens=completion_tokens,
+            full_prompt=prompt,
+            full_response=result,
+            images=images_list,
+            model_name=self.vision_model
         )
 
         return result
@@ -247,7 +267,10 @@ class GeminiProvider(BaseProvider):
             response_summary=result[:200],
             duration_ms=duration,
             prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens
+            completion_tokens=completion_tokens,
+            full_prompt=prompt,
+            full_response=result,
+            model_name=self.model
         )
 
         return result
@@ -325,3 +348,412 @@ class GeminiProvider(BaseProvider):
 
         response = self.call_vision(prompt, image_path=image_path)
         return self._parse_grading_response(response)
+
+    # ==================== CHAT SESSION METHODS ====================
+
+    def start_chat(self, system_prompt: str = None, cached_context: str = None) -> Any:
+        """
+        Start a new chat session for multi-turn conversations.
+
+        Uses Gemini's Chat API which maintains conversation history.
+        Can optionally reference a cached context for cost savings.
+
+        Args:
+            system_prompt: Optional system instruction for the session
+            cached_context: Optional cache ID to reference cached content
+
+        Returns:
+            A Gemini chat session object
+        """
+        if self.mock_mode:
+            return {"mock": True, "messages": []}
+
+        from google.genai import types
+
+        config_kwargs = {}
+        if system_prompt:
+            config_kwargs["system_instruction"] = system_prompt
+        if cached_context:
+            config_kwargs["cached_content"] = cached_context
+
+        config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+
+        return self.client.chats.create(
+            model=self.vision_model,
+            config=config
+        )
+
+    def send_chat_message(
+        self,
+        chat_session: Any,
+        prompt: str,
+        images: List[str] = None
+    ) -> str:
+        """
+        Send a message in an existing chat session.
+
+        Args:
+            chat_session: Session returned by start_chat()
+            prompt: User message
+            images: Optional list of image paths
+
+        Returns:
+            Model response text
+        """
+        start_time = time.time()
+
+        if self.mock_mode:
+            return "Mock chat response"
+
+        # Build content with optional images
+        content = [prompt]
+        if images:
+            if isinstance(images, list):
+                for i, img_path in enumerate(images):
+                    image_data = self._prepare_image(image_path=img_path)
+                    if image_data:
+                        content.append(f"\n--- IMAGE {i + 1} ---")
+                        content.append(image_data)
+            else:
+                image_data = self._prepare_image(image_path=images)
+                if image_data:
+                    content.append(image_data)
+
+        response = chat_session.send_message(content)
+        result = response.text or ""
+
+        # Extract token usage (including cached tokens if using cached context)
+        prompt_tokens = None
+        completion_tokens = None
+        cached_tokens = None
+        if hasattr(response, 'usage_metadata') and response.usage_metadata:
+            prompt_tokens = getattr(response.usage_metadata, 'prompt_token_count', None)
+            completion_tokens = getattr(response.usage_metadata, 'candidates_token_count', None)
+            # Extract cached tokens when chat session references a cached context
+            cached_tokens = getattr(response.usage_metadata, 'cached_content_token_count', None)
+
+        # Log call
+        duration = (time.time() - start_time) * 1000
+        num_images = len(images) if isinstance(images, list) else (1 if images else 0)
+        self._log_call(
+            prompt_type="chat",
+            input_summary=f"Chat message ({num_images} images): {prompt[:100]}...",
+            response_summary=result[:200],
+            duration_ms=duration,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens,
+            full_prompt=prompt,
+            full_response=result,
+            images=images if isinstance(images, list) else [images] if images else None,
+            model_name=self.vision_model
+        )
+
+        return result
+
+    def supports_chat(self) -> bool:
+        """Gemini supports chat sessions."""
+        return True
+
+    # ==================== CONTEXT CACHING (OPTIONAL) ====================
+
+    def supports_context_caching(self) -> bool:
+        """
+        Check if context caching is available for this provider.
+
+        Returns:
+            True if context caching is supported and available
+        """
+        if self.mock_mode:
+            return True  # Mock mode supports it for testing
+        return HAS_GENAI_TYPES
+
+    def create_cached_context(
+        self,
+        system_prompt: str,
+        images: List[str] = None,
+        ttl_seconds: int = 3600
+    ) -> Optional[str]:
+        """
+        Create a cached context for reuse across multiple calls.
+
+        This is useful for reducing costs when the same context
+        (system prompt + images) is used repeatedly.
+
+        Args:
+            system_prompt: System instruction
+            images: Optional list of image paths to cache
+            ttl_seconds: Time-to-live in seconds (default: 1 hour)
+
+        Returns:
+            Cache name/ID if successful, None otherwise
+        """
+        if self.mock_mode:
+            logger.info("Context caching: Mock mode - returning mock cache ID")
+            return "mock_cache_id"
+
+        if not HAS_GENAI_TYPES:
+            logger.warning(
+                "Context caching NOT AVAILABLE: google.genai.types not found. "
+                "Install the latest google-genai package for caching support. "
+                "Falling back to regular API calls (higher cost)."
+            )
+            return None
+
+        try:
+            parts = []
+
+            # Add system prompt only if provided
+            if system_prompt:
+                parts.append(genai_types.Part(text=system_prompt))
+
+            # Add images
+            if images:
+                for img_path in images:
+                    image_data = self._prepare_image(image_path=img_path)
+                    if image_data and 'inline_data' in image_data:
+                        parts.append(genai_types.Part(
+                            inline_data=genai_types.Blob(
+                                mime_type=image_data['inline_data']['mime_type'],
+                                data=image_data['inline_data']['data']
+                            )
+                        ))
+
+            cached_content = self.client.caches.create(
+                model=self.vision_model,
+                config=genai_types.CreateCachedContentConfig(
+                    contents=[
+                        genai_types.Content(
+                            role="user",
+                            parts=parts
+                        )
+                    ],
+                    ttl=f"{ttl_seconds}s"
+                )
+            )
+
+            logger.info(
+                f"Context caching: Successfully created cache '{cached_content.name}' "
+                f"with TTL {ttl_seconds}s for {len(parts)} parts"
+            )
+
+            return cached_content.name
+
+        except Exception as e:
+            logger.warning(
+                f"Context caching FAILED: Could not create cached context: {e}. "
+                "Falling back to regular API calls (higher cost)."
+            )
+            return None
+
+    def use_cached_context(
+        self,
+        cache_name: str,
+        new_prompt: str,
+        images: List[str] = None
+    ) -> str:
+        """
+        Use a cached context with a new prompt.
+
+        Args:
+            cache_name: Cache ID from create_cached_context()
+            new_prompt: New user prompt
+            images: Optional additional images (not cached)
+
+        Returns:
+            Model response text
+        """
+        if self.mock_mode:
+            return "Mock cached response"
+
+        start_time = time.time()
+
+        content = [new_prompt]
+        if images:
+            for img_path in images:
+                image_data = self._prepare_image(image_path=img_path)
+                if image_data:
+                    content.append(image_data)
+
+        try:
+            from google.genai import types
+            response = self.client.models.generate_content(
+                model=self.vision_model,
+                contents=content,
+                config=types.GenerateContentConfig(
+                    cached_content=cache_name
+                )
+            )
+
+            result = response.text or ""
+
+            # Extract token usage - note: cached tokens may be reported differently
+            prompt_tokens = None
+            completion_tokens = None
+            cached_tokens = None
+            if hasattr(response, 'usage_metadata') and response.usage_metadata:
+                prompt_tokens = getattr(response.usage_metadata, 'prompt_token_count', None)
+                completion_tokens = getattr(response.usage_metadata, 'candidates_token_count', None)
+                # Gemini may report cached tokens separately
+                cached_tokens = getattr(response.usage_metadata, 'cached_content_token_count', None)
+
+            # Log call with cached token info
+            duration = (time.time() - start_time) * 1000
+            self._log_call(
+                prompt_type="cached_vision",
+                input_summary=f"Cached context: {new_prompt[:100]}...",
+                response_summary=result[:200],
+                duration_ms=duration,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cached_tokens=cached_tokens,
+                full_prompt=new_prompt,
+                full_response=result,
+                images=images,
+                model_name=self.vision_model
+            )
+
+            if cached_tokens:
+                logger.info(
+                    f"Context caching: Used {cached_tokens} cached tokens "
+                    f"(~${self._estimate_cache_savings(cached_tokens):.4f} saved)"
+                )
+
+            return result
+
+        except Exception as e:
+            logger.warning(
+                f"Context caching FAILED: Could not use cached context: {e}. "
+                "Falling back to regular call (higher cost)."
+            )
+            # Fallback to regular vision call
+            return self.call_vision(new_prompt, image_path=images)
+
+    def _estimate_cache_savings(self, cached_tokens: int) -> float:
+        """
+        Estimate cost savings from using cached tokens.
+
+        Args:
+            cached_tokens: Number of tokens served from cache
+
+        Returns:
+            Estimated savings in USD
+        """
+        from config.constants import (
+            GEMINI_25_FLASH_PRICING,
+            GEMINI_3_PRO_PRICING,
+            LONG_CONTEXT_THRESHOLD
+        )
+
+        model_lower = self.vision_model.lower()
+
+        # Determine which model and pricing tier we're using
+        if "flash" in model_lower:
+            regular_price = GEMINI_25_FLASH_PRICING["input"]
+            cached_price = GEMINI_25_FLASH_PRICING["cached"]
+        elif "pro" in model_lower:
+            # Use short context pricing as default for cache savings estimation
+            regular_price = GEMINI_3_PRO_PRICING["input_short"]
+            cached_price = GEMINI_3_PRO_PRICING["cached_short"]
+        else:
+            # Default to Flash pricing
+            regular_price = GEMINI_25_FLASH_PRICING["input"]
+            cached_price = GEMINI_25_FLASH_PRICING["cached"]
+
+        # Calculate savings per 1M tokens
+        savings_per_million = regular_price - cached_price
+        return (cached_tokens / 1_000_000) * savings_per_million
+
+    def get_effective_token_cost(
+        self,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cached_tokens: int = 0
+    ) -> Dict[str, float]:
+        """
+        Calculate effective token costs for Gemini, accounting for cached tokens.
+
+        Args:
+            prompt_tokens: Total prompt/input tokens
+            completion_tokens: Number of completion/output tokens
+            cached_tokens: Number of tokens served from cache (lower cost)
+
+        Returns:
+            Dict with cost breakdown in USD
+        """
+        from config.constants import (
+            GEMINI_25_FLASH_PRICING,
+            GEMINI_3_PRO_PRICING,
+            LONG_CONTEXT_THRESHOLD
+        )
+
+        model_lower = self.vision_model.lower()
+
+        # Determine which model and pricing tier we're using
+        if "flash" in model_lower:
+            # Flash models have simple pricing
+            input_price = GEMINI_25_FLASH_PRICING["input"]
+            output_price = GEMINI_25_FLASH_PRICING["output"]
+            cached_price = GEMINI_25_FLASH_PRICING["cached"]
+        elif "pro" in model_lower:
+            # Pro models have tiered pricing based on context size
+            is_long_context = prompt_tokens > LONG_CONTEXT_THRESHOLD
+            if is_long_context:
+                input_price = GEMINI_3_PRO_PRICING["input_long"]
+                output_price = GEMINI_3_PRO_PRICING["output_long"]
+                cached_price = GEMINI_3_PRO_PRICING["cached_long"]
+            else:
+                input_price = GEMINI_3_PRO_PRICING["input_short"]
+                output_price = GEMINI_3_PRO_PRICING["output_short"]
+                cached_price = GEMINI_3_PRO_PRICING["cached_short"]
+        else:
+            # Default to Flash pricing
+            input_price = GEMINI_25_FLASH_PRICING["input"]
+            output_price = GEMINI_25_FLASH_PRICING["output"]
+            cached_price = GEMINI_25_FLASH_PRICING["cached"]
+
+        # Calculate costs
+        # Non-cached portion of prompt tokens
+        non_cached_tokens = max(0, prompt_tokens - cached_tokens)
+        non_cached_cost = (non_cached_tokens / 1_000_000) * input_price
+        cached_cost = (cached_tokens / 1_000_000) * cached_price
+        output_cost = (completion_tokens / 1_000_000) * output_price
+
+        # Calculate what it would have cost without caching
+        full_input_cost = (prompt_tokens / 1_000_000) * input_price
+        cached_savings = full_input_cost - (non_cached_cost + cached_cost)
+
+        return {
+            "input_cost": non_cached_cost + cached_cost,
+            "output_cost": output_cost,
+            "total_cost": non_cached_cost + cached_cost + output_cost,
+            "cached_tokens": cached_tokens,
+            "cached_savings": cached_savings
+        }
+
+    def get_estimated_cost(self) -> Dict[str, Any]:
+        """
+        Get estimated cost based on accumulated token usage.
+
+        Returns:
+            Dict with cost breakdown in USD
+        """
+        usage = self.get_token_usage()
+        cost = self.get_effective_token_cost(
+            prompt_tokens=usage["prompt_tokens"],
+            completion_tokens=usage["completion_tokens"],
+            cached_tokens=usage["cached_tokens"]
+        )
+        return {
+            "provider": "Gemini",
+            "model": self.vision_model,
+            "prompt_tokens": usage["prompt_tokens"],
+            "completion_tokens": usage["completion_tokens"],
+            "cached_tokens": usage["cached_tokens"],
+            "total_tokens": usage["total_tokens"],
+            "calls": usage["calls"],
+            "estimated_cost_usd": round(cost["total_cost"], 4),
+            "input_cost_usd": round(cost["input_cost"], 4),
+            "output_cost_usd": round(cost["output_cost"], 4),
+            "cached_savings_usd": round(cost["cached_savings"], 4)
+        }

@@ -72,6 +72,7 @@ def _cached_image_to_base64(image_path: str) -> str:
     Convert an image file to base64 string with caching.
 
     Uses LRU cache to avoid re-reading the same file multiple times.
+    Max 128 items to limit memory usage.
 
     Args:
         image_path: Path to the image file
@@ -81,6 +82,11 @@ def _cached_image_to_base64(image_path: str) -> str:
     """
     with open(image_path, "rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
+
+
+def clear_image_cache():
+    """Clear the image-to-base64 cache to free memory."""
+    _cached_image_to_base64.cache_clear()
 
 
 class APIErrorContext:
@@ -188,6 +194,9 @@ class BaseProvider(ABC):
         """Initialize base provider."""
         self.mock_mode = mock_mode
         self.call_history: List[AICallResult] = []
+        # Running totals for O(1) token tracking
+        self._total_prompt_tokens: int = 0
+        self._total_completion_tokens: int = 0
 
     # ==================== IMAGE UTILITIES ====================
 
@@ -210,7 +219,12 @@ class BaseProvider(ABC):
         response_summary: str,
         duration_ms: float,
         prompt_tokens: int = None,
-        completion_tokens: int = None
+        completion_tokens: int = None,
+        cached_tokens: int = None,
+        full_prompt: str = None,
+        full_response: str = None,
+        images: List[str] = None,
+        model_name: str = None
     ):
         """Log an AI call to audit trail with sanitized output."""
         # Sanitize summaries to remove potential API keys
@@ -223,19 +237,79 @@ class BaseProvider(ABC):
             response_summary=safe_response,
             duration_ms=duration_ms,
             prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens
+            completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens
         ))
 
+        # Update running totals for O(1) tracking
+        if prompt_tokens:
+            self._total_prompt_tokens += prompt_tokens
+        if completion_tokens:
+            self._total_completion_tokens += completion_tokens
+
+        # Track cached tokens separately
+        if not hasattr(self, '_total_cached_tokens'):
+            self._total_cached_tokens = 0
+        if cached_tokens:
+            self._total_cached_tokens += cached_tokens
+
+        # Capture for debug if enabled
+        from utils.debug_capture import get_debug_capture
+        debug = get_debug_capture()
+        if debug and (full_prompt or input_summary):
+            debug.capture_call(
+                provider=self.__class__.__name__,
+                model=model_name or getattr(self, 'model', 'unknown') or getattr(self, 'vision_model', 'unknown'),
+                call_type=prompt_type,
+                prompt=full_prompt or input_summary,
+                images=images,
+                response=full_response or response_summary,
+                duration_ms=duration_ms,
+                tokens={"prompt": prompt_tokens or 0, "completion": completion_tokens or 0, "cached": cached_tokens or 0}
+            )
+
     def get_token_usage(self) -> Dict[str, int]:
-        """Get total token usage from all calls."""
-        prompt_tokens = sum(c.prompt_tokens or 0 for c in self.call_history)
-        completion_tokens = sum(c.completion_tokens or 0 for c in self.call_history)
+        """Get total token usage from all calls (O(1))."""
+        cached = getattr(self, '_total_cached_tokens', 0)
         return {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
+            "prompt_tokens": self._total_prompt_tokens,
+            "completion_tokens": self._total_completion_tokens,
+            "cached_tokens": cached,
+            "total_tokens": self._total_prompt_tokens + self._total_completion_tokens,
             "calls": len(self.call_history)
         }
+
+    def get_estimated_cost(self) -> Dict[str, Any]:
+        """
+        Get estimated cost based on token usage.
+
+        This is a convenience method that calls get_effective_token_cost
+        with accumulated totals. Subclasses may override for provider-specific pricing.
+
+        Returns:
+            Dict with cost breakdown in USD
+        """
+        usage = self.get_token_usage()
+        # Base implementation - subclasses should override with actual pricing
+        return {
+            "provider": self.__class__.__name__,
+            "prompt_tokens": usage["prompt_tokens"],
+            "completion_tokens": usage["completion_tokens"],
+            "cached_tokens": usage["cached_tokens"],
+            "total_tokens": usage["total_tokens"],
+            "estimated_cost_usd": None,  # Subclasses should calculate
+            "cached_savings_usd": None,
+            "note": "Subclasses should override get_estimated_cost() with actual pricing"
+        }
+
+    def supports_context_caching(self) -> bool:
+        """
+        Check if context caching is available for this provider.
+
+        Returns:
+            True if context caching is supported
+        """
+        return False  # Default: not supported
 
     def get_last_call_tokens(self) -> Optional[Dict[str, int]]:
         """Get token usage from the most recent call."""
@@ -247,6 +321,7 @@ class BaseProvider(ABC):
         return {
             "prompt": last.prompt_tokens,
             "completion": last.completion_tokens,
+            "cached": last.cached_tokens,
             "total": (last.prompt_tokens or 0) + (last.completion_tokens or 0)
         }
 
@@ -283,6 +358,62 @@ class BaseProvider(ABC):
     def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """Get embeddings for multiple texts."""
         pass
+
+    # ==================== CHAT SESSION METHODS ====================
+
+    def start_chat(self, system_prompt: str = None) -> Any:
+        """
+        Start a new chat session for multi-turn conversations.
+
+        Args:
+            system_prompt: Optional system prompt for the session
+
+        Returns:
+            A chat session object (provider-specific)
+
+        Note:
+            Not all providers support chat sessions. Default implementation
+            raises NotImplementedError. GeminiProvider and OpenAIProvider
+            should override this.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support chat sessions. "
+            "Use stateless call_vision/call_text instead."
+        )
+
+    def send_chat_message(
+        self,
+        chat_session: Any,
+        prompt: str,
+        images: List[str] = None
+    ) -> str:
+        """
+        Send a message in an existing chat session.
+
+        Args:
+            chat_session: Session returned by start_chat()
+            prompt: User message
+            images: Optional list of image paths
+
+        Returns:
+            Model response text
+
+        Note:
+            Not all providers support chat sessions. Default implementation
+            raises NotImplementedError.
+        """
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not support chat sessions. "
+            "Use stateless call_vision/call_text instead."
+        )
+
+    def supports_chat(self) -> bool:
+        """Check if this provider supports chat sessions."""
+        try:
+            # Check if start_chat is overridden
+            return self.start_chat.__func__ is not BaseProvider.start_chat
+        except AttributeError:
+            return False
 
     # ==================== GRADING METHODS ====================
 

@@ -10,6 +10,7 @@
 - **Dual LLM**: Deux IA notent en parallèle avec vérification croisée et ultimatum
 - **4 Providers supportés**: Gemini, OpenAI, GLM (z.ai), OpenRouter
 - **3 modes de correction**: Individual, Batch, Hybrid
+- **Context Caching**: Images mises en cache pour vérification/ultimatum (~10x moins cher)
 - **Annotation PDF**: Génération automatique de copies annotées avec overlays
 - **Protection Anti-Hallucination**: Figement des lectures, détection des flip-flops
 - **Infrastructure Robuste**: Retry automatique avec backoff exponentiel, rate limiting
@@ -69,6 +70,8 @@ python -m src.main correct <LLM_MODE> <GRADING_METHOD> <PDF> [OPTIONS]
 | `--pages-per-copy N` | Découpe le PDF en copies de N pages |
 | `--auto-confirm` | Mode automatique sans interaction |
 | `--batch-verify MODE` | Vérification post-batch: `per-question` ou `grouped` (dual uniquement) |
+| `--chat-continuation` | Active le context caching pour vérification/ultimatum (défaut: activé) |
+| `--no-chat-continuation` | Désactive le context caching |
 | `--second-reading` | 2ème lecture pour auto-correction |
 | `--parallel N` | Copies en parallèle (défaut: 6, mode individual uniquement) |
 | `--annotate` | Génère les PDFs annotés avec overlays |
