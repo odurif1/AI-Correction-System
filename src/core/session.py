@@ -20,6 +20,7 @@ from core.models import (
 from core.workflow_state import CorrectionState, WorkflowPhase
 from ai import create_ai_provider
 from ai.provider_factory import create_comparison_provider
+from audit.builder import build_audit_from_llm_comparison
 from config.settings import get_settings
 from analysis.cross_copy import CrossCopyAnalyzer
 from grading.grader import IntelligentGrader
@@ -547,15 +548,51 @@ class GradingSessionOrchestrator:
                 graded.max_score = sum(graded.max_points_by_question.values())
                 graded.confidence = sum(graded.confidence_by_question.values()) / len(graded.confidence_by_question) if graded.confidence_by_question else 0.5
 
-                # Store audit data
-                graded.llm_comparison = {
-                    "method": "single_llm",
+                # Build unified grading audit
+                provider_name = getattr(self.ai, 'model_name', 'single_llm')
+                llm_comparison_for_audit = {
                     "options": {
-                        "second_reading": self._second_reading
+                        "mode": "individual",
+                        "providers": [provider_name],
+                        "second_reading": self._second_reading,
+                        "duration_ms": result.duration_ms
                     },
-                    "self_verification": verification_audit,
-                    "duration_ms": result.duration_ms
+                    "llm_comparison": {
+                        "copy_1": {
+                            "questions": {
+                                qid: {
+                                    provider_name: {
+                                        "grade": q_result.grade,
+                                        "max_points": q_result.max_points,
+                                        "reading": q_result.student_answer_read,
+                                        "reasoning": q_result.reasoning,
+                                        "feedback": q_result.feedback,
+                                        "confidence": q_result.confidence
+                                    },
+                                    "final": {
+                                        "grade": q_result.grade,
+                                        "max_points": q_result.max_points,
+                                        "method": "single_llm",
+                                        "agreement": None
+                                    }
+                                }
+                                for qid, q_result in result.questions.items()
+                            }
+                        }
+                    }
                 }
+                if result.student_name:
+                    llm_comparison_for_audit["llm_comparison"]["copy_1"]["student_detection"] = {
+                        "final_resolved_name": result.student_name,
+                        "llm1_student_name": result.student_name
+                    }
+                graded.grading_audit = build_audit_from_llm_comparison(
+                    llm_comparison_for_audit,
+                    mode="single",
+                    grading_method="individual",
+                    verification_mode="none",
+                    provider_names=[provider_name]
+                )
 
                 # Notify per question
                 for q_id in sorted(graded.grades.keys(), key=question_sort_key):
@@ -806,8 +843,22 @@ class GradingSessionOrchestrator:
             # For each copy, build comparison data
             for copy_result in batch_result.copies:
                 copy_idx = copy_result.copy_index
+
+                # Get student names from both LLMs for initial data
+                llm1_student_name = copy_result.student_name
+                llm2_student_name = None
+                if llm2_result and llm2_result.parse_success:
+                    for c in llm2_result.copies:
+                        if c.copy_index == copy_idx:
+                            llm2_student_name = c.student_name
+                            break
+
                 llm_comparison_data["llm_comparison"][f"copy_{copy_idx}"] = {
                     "student_name": copy_result.student_name,
+                    "student_name_initial": {
+                        "llm1_name": llm1_student_name,
+                        "llm2_name": llm2_student_name
+                    },
                     "questions": {}
                 }
 
@@ -914,6 +965,7 @@ class GradingSessionOrchestrator:
             from ai.batch_grader import (
                 detect_disagreements, run_dual_llm_verification,
                 run_per_question_dual_verification, run_dual_llm_ultimatum,
+                run_per_question_dual_ultimatum,
                 Disagreement
             )
 
@@ -968,6 +1020,14 @@ class GradingSessionOrchestrator:
                     # One call per disagreement per LLM (more granular)
                     verification_results = await run_per_question_dual_verification(
                         self.ai.providers, disagreements, language
+                    )
+                elif self._batch_verify == "per-copy":
+                    # One call per copy per LLM (middle ground)
+                    # Include name_disagreements in the same calls
+                    from ai.batch_grader import run_per_copy_dual_verification
+                    verification_results = await run_per_copy_dual_verification(
+                        self.ai.providers, disagreements, language,
+                        name_disagreements=name_disagreements if name_disagreements else None
                     )
                 else:
                     # Grouped: one call per LLM (all disagreements in one prompt)
@@ -1071,11 +1131,11 @@ class GradingSessionOrchestrator:
                                         "method": f"verified_{verified.get('method', 'grouped')}"
                                     }
 
-                # ===== NAME VERIFICATION RESULTS (grouped mode) =====
+                # ===== NAME VERIFICATION RESULTS (grouped and per-copy modes) =====
                 # Process name verification results from combined verification
                 name_verification_results = {}
                 persistent_name_disagreements = []
-                if self._batch_verify == "grouped" and name_disagreements:
+                if self._batch_verify in ("grouped", "per-copy") and name_disagreements:
                     for nd in name_disagreements:
                         copy_idx = nd['copy_index']
                         name_key = f"name_{copy_idx}"
@@ -1243,9 +1303,20 @@ class GradingSessionOrchestrator:
                         })
 
                     # Run ultimatum round with both LLMs
-                    ultimatum_results = await run_dual_llm_ultimatum(
-                        self.ai.providers, persistent_disagreements, language
-                    )
+                    # Use per-question or per-copy mode if that's what was configured
+                    if self._batch_verify == "per-question":
+                        ultimatum_results = await run_per_question_dual_ultimatum(
+                            self.ai.providers, persistent_disagreements, language
+                        )
+                    elif self._batch_verify == "per-copy":
+                        from ai.batch_grader import run_per_copy_dual_ultimatum
+                        ultimatum_results = await run_per_copy_dual_ultimatum(
+                            self.ai.providers, persistent_disagreements, language
+                        )
+                    else:
+                        ultimatum_results = await run_dual_llm_ultimatum(
+                            self.ai.providers, persistent_disagreements, language
+                        )
 
                     # Check for parsing failures
                     parse_status = ultimatum_results.pop('_parse_status', {})
@@ -1498,8 +1569,8 @@ class GradingSessionOrchestrator:
                                 llm_comparison_data["llm_comparison"][comp_key]["student_name_resolution"]["final_resolved_name"] = resolved_name
 
             # ===== STUDENT NAME VERIFICATION & ULTIMATUM (per-question mode only) =====
-            # In grouped mode, name verification was already done in the combined verification prompt
-            # In per-question mode, run separate name verification calls
+            # In grouped and per-copy modes, name verification is already done in the combined verification prompt
+            # In per-question mode only, run separate name verification calls
             if self._batch_verify == "per-question" and name_disagreements:
                 from ai.batch_grader import run_student_name_verification, run_student_name_ultimatum
 
@@ -1695,6 +1766,43 @@ class GradingSessionOrchestrator:
                 logger.error(f"Batch grading failed: {batch_result.parse_errors}")
                 return []
 
+            # Initialize llm_comparison_data for single LLM mode (for audit)
+            provider_name = getattr(self.ai, 'model_name', 'single_llm')
+            llm_comparison_data = {
+                "options": {
+                    "mode": "batch",
+                    "providers": [provider_name],
+                    "total_copies": total_copies
+                },
+                "llm_comparison": {}
+            }
+
+            # Build comparison data for each copy
+            for copy_result in batch_result.copies:
+                copy_idx = copy_result.copy_index
+                llm_comparison_data["llm_comparison"][f"copy_{copy_idx}"] = {
+                    "student_name": copy_result.student_name,
+                    "questions": {}
+                }
+
+                for qid, qdata in copy_result.questions.items():
+                    llm_comparison_data["llm_comparison"][f"copy_{copy_idx}"]["questions"][qid] = {
+                        provider_name: {
+                            "grade": qdata.get('grade', 0),
+                            "max_points": qdata.get('max_points', 1),
+                            "reading": qdata.get('student_answer_read', ''),
+                            "reasoning": qdata.get('reasoning', ''),
+                            "feedback": qdata.get('feedback', ''),
+                            "confidence": qdata.get('confidence', 0.8)
+                        },
+                        "final": {
+                            "grade": qdata.get('grade', 0),
+                            "max_points": qdata.get('max_points', 1),
+                            "method": "single_llm",
+                            "agreement": None
+                        }
+                    }
+
         # Track student detection for audit
         student_detection_info = {
             'mode': 'multi_student_detection' if len(batch_result.copies) > len(self.session.copies) else 'standard',
@@ -1886,17 +1994,26 @@ class GradingSessionOrchestrator:
                 copy_data = llm_comparison_data["llm_comparison"][copy_key]
 
                 # Build clean student_name section with same structure as questions
-                # Structure: llm1_name, llm2_name, verification, ultimatum, final
+                # Structure: initial, verification, ultimatum, final
                 student_detection = copy_data.get("student_detection", {})
                 student_name_resolution = copy_data.get("student_name_resolution", {})
+                student_name_initial = copy_data.get("student_name_initial", {})
 
                 student_name_section = {}
 
-                # Initial LLM names
-                if "name_disagreement" in student_detection:
-                    nd = student_detection["name_disagreement"]
-                    student_name_section["llm1_name"] = nd.get("llm1_name")
-                    student_name_section["llm2_name"] = nd.get("llm2_name")
+                # Initial LLM names (always include, from initial grading)
+                llm1_initial = student_name_initial.get("llm1_name")
+                llm2_initial = student_name_initial.get("llm2_name")
+                if llm1_initial or llm2_initial:
+                    # Check if initial names agreed
+                    initial_agreement = False
+                    if llm1_initial and llm2_initial:
+                        initial_agreement = llm1_initial.lower().strip() == llm2_initial.lower().strip()
+                    student_name_section["initial"] = {
+                        "llm1_name": llm1_initial,
+                        "llm2_name": llm2_initial,
+                        "agreement": initial_agreement
+                    }
 
                 # Verification step (if occurred)
                 if student_name_resolution.get("verification"):
@@ -1939,7 +2056,7 @@ class GradingSessionOrchestrator:
                     elif student_name_resolution.get("verification"):
                         method = "verification_average"
                     else:
-                        method = "llm1_as_base"
+                        method = "initial_consensus" if initial_agreement else "llm1_as_base"
 
                     student_name_section["final"] = {
                         "resolved_name": final_resolved,
@@ -1975,7 +2092,13 @@ class GradingSessionOrchestrator:
                 readings=readings,
                 confidence_by_question=confidence_by_question,
                 max_points_by_question=max_points_per_question,
-                llm_comparison=copy_comparison
+                grading_audit=build_audit_from_llm_comparison(
+                    copy_comparison or {},
+                    mode="dual" if self._comparison_mode else "single",
+                    grading_method=self._grading_mode or "batch",
+                    verification_mode=self._batch_verify or "none",
+                    provider_names=(llm_comparison_data.get("options", {}).get("providers") if llm_comparison_data else None)
+                ) if copy_comparison else None
             )
 
             graded_copies.append(graded)
@@ -2224,7 +2347,13 @@ class GradingSessionOrchestrator:
                 max_score=sum(self.grading_scale.values()),
                 confidence=0.85 if not disagreements else 0.70,
                 feedback=f"Hybrid mode. Disagreements: {len(disagreements)}",
-                llm_comparison=copy_llm_comparison
+                grading_audit=build_audit_from_llm_comparison(
+                    copy_llm_comparison,
+                    mode="dual",
+                    grading_method="hybrid",
+                    verification_mode="none",
+                    provider_names=[llm1_name, llm2_name]
+                )
             )
 
             if student_name:
@@ -2427,14 +2556,22 @@ class GradingSessionOrchestrator:
                     if len(all_feedbacks) > 3:
                         graded.feedback += "..."
 
-                # Store full audit data with new structure
-                graded.llm_comparison = {
+                # Store full audit data with new unified structure
+                llm_comp_data = {
                     "options": result.get("options", {}),
                     "llm_comparison": llm_comparison,
                     "student_name_info": result.get("student_name_info", {}),
                     "summary": result.get("summary", {}),
                     "timing": result.get("timing", {})
                 }
+                provider_names = result.get("options", {}).get("providers", [])
+                graded.grading_audit = build_audit_from_llm_comparison(
+                    llm_comp_data,
+                    mode="dual",
+                    grading_method="individual",
+                    verification_mode="none",
+                    provider_names=provider_names
+                )
 
                 # Notify copy done
                 if progress_callback:
@@ -2800,7 +2937,9 @@ class GradingSessionOrchestrator:
 
                 # Extract only the pages belonging to this student
                 pdf_bytes = self._extract_student_pages(pdf_path, student_data.get('page_images', []))
-                self.store.save_copy(copy, pdf_bytes)
+                self.store.save_copy(copy, pdf_bytes, copy_number=i + 1)
+                # Move images to copy-specific folder
+                copy = self.store.organize_copy_images(copy, i + 1)
 
             reader.close()
 
@@ -2848,9 +2987,14 @@ class GradingSessionOrchestrator:
 
                 # Extract only the pages belonging to this student
                 pdf_bytes = self._extract_student_pages(pdf_path, student_data.get('page_images', []))
-                self.store.save_copy(copy, pdf_bytes)
+                self.store.save_copy(copy, pdf_bytes, copy_number=i + 1)
+                # Move images to copy-specific folder
+                copy = self.store.organize_copy_images(copy, i + 1)
 
             reader.close()
+
+        # Clean up temp_images folder if empty
+        self.store.cleanup_temp_images()
 
         # Mark structure as pre-detected (skip name/barème detection during grading)
         self._structure_pre_detected = True

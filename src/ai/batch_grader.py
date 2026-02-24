@@ -1209,18 +1209,28 @@ async def _run_dual_llm_phase(
             else:
                 by_copy[d['copy_index']].append(d)
 
+        # Also group name_disagreements by copy if provided
+        name_by_copy = defaultdict(list)
+        if name_disagreements:
+            for nd in name_disagreements:
+                name_by_copy[nd['copy_index']].append(nd)
+
         for copy_idx, copy_disagreements in by_copy.items():
             logger.info(f"Running per-copy {mode} for copy {copy_idx} ({len(copy_disagreements)} disagreements)")
 
             copy_images = _collect_disagreement_images(copy_disagreements, copy_filter=copy_idx)
 
+            # Get name disagreements for this copy (verification mode only)
+            copy_name_disagreements = name_by_copy.get(copy_idx, []) if mode == "verification" and name_disagreements else None
+
             prompt1, prompt2 = _build_dual_prompts(
-                copy_disagreements, llm1_name, llm2_name, language, mode
+                copy_disagreements, llm1_name, llm2_name, language, mode,
+                name_disagreements=copy_name_disagreements
             )
             response1, response2 = await _call_dual_providers(providers, prompt1, prompt2, copy_images)
 
             if mode == "verification":
-                (llm1_question_results, _), (llm2_question_results, _) = \
+                (llm1_question_results, llm1_name_results), (llm2_question_results, llm2_name_results) = \
                     _parse_dual_responses(response1, response2, mode)
 
                 for d in copy_disagreements:
@@ -1233,6 +1243,32 @@ async def _run_dual_llm_phase(
                         d, llm1_question_results, llm2_question_results, key
                     )
                     results[key]['image_paths'] = copy_images
+
+                # Process name verifications for this copy if present
+                if copy_name_disagreements:
+                    for nd in copy_name_disagreements:
+                        name_key = f"name_{copy_idx}"
+
+                        llm1_name_result = llm1_name_results.get(copy_idx, {})
+                        llm2_name_result = llm2_name_results.get(copy_idx, {})
+
+                        llm1_new_name = llm1_name_result.get('my_new_name', nd.get('llm1_name', ''))
+                        llm2_new_name = llm2_name_result.get('my_new_name', nd.get('llm2_name', ''))
+
+                        n1_normalized = llm1_new_name.lower().strip()
+                        n2_normalized = llm2_new_name.lower().strip()
+                        agreement = n1_normalized == n2_normalized and n1_normalized != ''
+
+                        results[name_key] = {
+                            'llm1_new_name': llm1_new_name,
+                            'llm2_new_name': llm2_new_name,
+                            'resolved_name': llm1_new_name if agreement else None,
+                            'agreement': agreement,
+                            'confidence': max(
+                                llm1_name_result.get('confidence', 0.8),
+                                llm2_name_result.get('confidence', 0.8)
+                            )
+                        }
             else:  # ultimatum
                 llm1_results, llm2_results = _parse_dual_responses(response1, response2, mode)
 
@@ -1257,7 +1293,8 @@ async def _run_dual_llm_phase(
 async def run_per_copy_dual_verification(
     providers: List[tuple],
     disagreements: List[Disagreement],
-    language: str = "fr"
+    language: str = "fr",
+    name_disagreements: List[Dict] = None
 ) -> Dict[str, Dict[str, Any]]:
     """
     Run verification grouped by copy with BOTH LLMs.
@@ -1270,16 +1307,19 @@ async def run_per_copy_dual_verification(
         providers: List of (name, provider) tuples
         disagreements: List of disagreements to verify
         language: Language for prompts
+        name_disagreements: Optional list of student name disagreements
 
     Returns:
         Dict mapping "copy_{idx}_{qid}" -> {final_grade, llm1_grade, llm2_grade, method, ...}
+        Also includes "name_{idx}" entries for name verifications
     """
     return await _run_dual_llm_phase(
         providers=providers,
         disagreements=disagreements,
         language=language,
         mode="verification",
-        batching="per_copy"
+        batching="per_copy",
+        name_disagreements=name_disagreements
     )
 
 
