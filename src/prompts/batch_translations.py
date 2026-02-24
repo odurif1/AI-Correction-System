@@ -78,8 +78,8 @@ TRANSLATIONS_FR = {
 
     # Dual LLM verification prompts
     "verification": {
-        "intro": "Tu as corrigé des copies et un DÉSACCORD a été détecté avec un autre correcteur IA.",
-        "mission_intro": "Tu dois maintenant RÉEXAMINER ta correction en tenant compte de l'avis de l'autre IA.",
+        "intro": "Tu as corrigé des copies et un DÉSACCORD a été détecté avec un autre correcteur.",
+        "mission_intro": "Tu dois maintenant RÉEXAMINER ta correction en tenant compte de l'avis de l'autre correcteur.",
         "disagreements_title": "DÉSACCORDS À RÉEXAMINER",
         "disagreement_header": "Désaccord",
         "you_gave": "TOI ({provider}) as donné",
@@ -97,21 +97,21 @@ TRANSLATIONS_FR = {
         # Name section
         "name_section_title": "DÉSACCORDS DE NOMS D'ÉTUDIANTS",
         "name_disagreement_header": "Désaccord de nom",
-        "you_read": "TOI ({provider}) as lu",
-        "other_read": "L'AUTRE IA ({provider}) a lu",
+        "you_read": "TOI as lu",
+        "other_read": "L'autre correcteur a lu",
 
         # Mission
         "mission_title": "TA MISSION",
         "mission_steps": [
             "RELIS l'image de la copie attentivement",
-            "COMPARE ta lecture avec celle de l'autre IA",
+            "COMPARE ta lecture avec celle de l'autre correcteur",
             "DÉCIDE si tu maintiens ta note ou si tu l'ajustes",
             "JUSTIFIE ta décision"
         ],
         "mission_options_title": "IMPORTANT",
         "mission_options": "Tu peux:",
         "mission_option_maintain": "Maintenir ta note si tu es sûr de toi",
-        "mission_option_adjust": "Ajuster ta note si l'autre IA t'a fait voir quelque chose que tu as manqué",
+        "mission_option_adjust": "Ajuster ta note si l'autre correcteur t'a fait voir quelque chose que tu as manqué",
         "mission_option_change": "Changer complètement si tu réalises une erreur",
 
         # JSON format
@@ -128,11 +128,11 @@ TRANSLATIONS_FR = {
     # Ultimatum prompts
     "ultimatum": {
         "header": "ULTIMATUM - DÉCISION FINALE",
-        "intro": "Malgré la vérification croisée, le désaccord PERSISTE avec l'autre IA.",
+        "intro": "Malgré la vérification croisée, le désaccord PERSISTE avec l'autre correcteur.",
         "must_decide": "Tu dois maintenant prendre une DÉCISION FINALE pour chaque cas.",
         "ultimatum_header": "ULTIMATUM",
-        "you_after": "TOI ({provider}) après vérification",
-        "other_after": "L'AUTRE IA ({provider}) après vérification",
+        "you_after": "Toi après vérification",
+        "other_after": "L'autre correcteur après vérification",
         "persistent_diff": "Écart persistant",
         "rubric_still_warning": "Barème toujours en désaccord",
         "your_reasoning": "Ton raisonnement",
@@ -143,7 +143,7 @@ TRANSLATIONS_FR = {
         "rules": [
             ("DÉCISION OBLIGATOIRE", "Tu DOIS choisir ta note finale"),
             ("OPTION A - Maintenir", "Si tu es sûr de toi, garde ta note"),
-            ("OPTION B - Céder", "Si l'autre IA t'a convaincu, accepte sa note"),
+            ("OPTION B - Céder", "Si l'autre correcteur t'a convaincu, accepte sa note"),
             ("OPTION C - Compromis", "Propose une note intermédiaire justifiée")
         ],
         "warning_title": "ATTENTION",
@@ -250,12 +250,12 @@ TRANSLATIONS_EN = {
 
     # Dual LLM verification prompts
     "verification": {
-        "intro": "You graded copies and a DISAGREEMENT was detected with another AI grader.",
-        "mission_intro": "You must now REEXAMINE your grading considering the other AI's opinion.",
+        "intro": "You graded copies and a DISAGREEMENT was detected with another grader.",
+        "mission_intro": "You must now REEXAMINE your grading considering the other grader's opinion.",
         "disagreements_title": "DISAGREEMENTS TO REEXAMINE",
         "disagreement_header": "Disagreement",
-        "you_gave": "YOU ({provider}) gave",
-        "other_gave": "THE OTHER AI gave",
+        "you_gave": "YOU gave",
+        "other_gave": "THE OTHER GRADER gave",
         "your_reading": "Your reading",
         "your_reasoning": "Your reasoning",
         "their_reading": "Their reading",
@@ -269,8 +269,8 @@ TRANSLATIONS_EN = {
         # Name section
         "name_section_title": "STUDENT NAME DISAGREEMENTS",
         "name_disagreement_header": "Name Disagreement",
-        "you_read": "YOU ({provider}) read",
-        "other_read": "THE OTHER AI ({provider}) read",
+        "you_read": "YOU read",
+        "other_read": "THE OTHER GRADER read",
 
         # Mission
         "mission_title": "YOUR MISSION",
@@ -300,11 +300,11 @@ TRANSLATIONS_EN = {
     # Ultimatum prompts
     "ultimatum": {
         "header": "ULTIMATUM - FINAL DECISION",
-        "intro": "Despite cross-verification, the disagreement PERSISTS with the other AI.",
+        "intro": "Despite cross-verification, the disagreement PERSISTS with the other grader.",
         "must_decide": "You must now make a FINAL DECISION for each case.",
         "ultimatum_header": "ULTIMATUM",
-        "you_after": "YOU ({provider}) after verification",
-        "other_after": "THE OTHER AI ({provider}) after verification",
+        "you_after": "YOU after verification",
+        "other_after": "THE OTHER GRADER after verification",
         "persistent_diff": "Persistent difference",
         "rubric_still_warning": "Rubric still in disagreement",
         "your_reasoning": "Your reasoning",
@@ -315,7 +315,7 @@ TRANSLATIONS_EN = {
         "rules": [
             ("MANDATORY DECISION", "You MUST choose your final grade"),
             ("OPTION A - Maintain", "If you're confident, keep your grade"),
-            ("OPTION B - Yield", "If the other AI convinced you, accept their grade"),
+            ("OPTION B - Yield", "If the other grader convinced you, accept their grade"),
             ("OPTION C - Compromise", "Propose an intermediate justified grade")
         ],
         "warning_title": "WARNING",
@@ -333,7 +333,7 @@ TRANSLATIONS_EN = {
     # Student name verification
     "name_verification": {
         "header": "STUDENT NAME VERIFICATION",
-        "intro": "There is a disagreement on the student name between the two AIs.",
+        "intro": "There is a disagreement on the student name between the two graders.",
         "instruction": "Re-read the name and decide whether to maintain or change your reading.",
         "final_instruction": "Re-read the copies and provide your response in JSON format.",
     },

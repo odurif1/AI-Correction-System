@@ -355,7 +355,7 @@ def _build_name_disagreements_section(
         your_name = d.get('llm1_name') if is_llm1 else d.get('llm2_name')
         other_name = d.get('llm2_name') if is_llm1 else d.get('llm1_name')
 
-        other_provider_display = "L'AUTRE IA"
+        other_provider_display = "l'autre correcteur"
         lines.append(f"""## {t['name_disagreement_header']} {i}: Copie {d['copy_index']}
 
 **{t['you_read'].format(provider=provider_name)}**: **"{your_name}"**
@@ -507,13 +507,13 @@ def _build_ultimatum_disagreements_section(
         if abs(llm1_max - llm2_max) > 0.01:
             rubric_note = f"\n**{t['rubric_still_warning']}**: Toi: {llm1_max} pts, Autre: {llm2_max} pts"
 
-        other_provider_display = "L'AUTRE IA"
+        other_provider_display = "l'autre correcteur"
         lines.append(f"""## {t['ultimatum_header']} {i}: Copie {d['copy_index']}, {d['question_id']}
 
-**{t['you_after'].format(provider=provider_name)}**: **{d['llm1_grade']}/{llm1_max}** pts
+**{t['you_after']}**: **{d['llm1_grade']}/{llm1_max}** pts
 - {t['your_reasoning']}: {d.get('llm1_reasoning', '')}
 
-**{t['other_after'].format(provider=other_provider_display)}**: **{d['llm2_grade']}/{llm2_max}** pts
+**{t['other_after']}**: **{d['llm2_grade']}/{llm2_max}** pts
 - {t['their_reasoning']}: {d.get('llm2_reasoning', '')}
 
 {t['persistent_diff']}: {abs(d['llm1_grade'] - d['llm2_grade'])} points{rubric_note}
@@ -553,8 +553,8 @@ def build_student_name_verification_prompt(
     for i, d in enumerate(name_disagreements, 1):
         disagreements_text += f"""## {t.get('disagreement_header', 'DÉSACCORD')} {i}: Copie {d['copy_index']}
 
-**{vt['you_read'].format(provider=provider_name)}**: **"{d['llm1_name']}"**
-**{vt['other_read'].format(provider=other_provider_name)}**: **"{d['llm2_name']}"**
+**{vt['you_read']}**: **"{d['llm1_name']}"**
+**{vt['other_read']}**: **"{d['llm2_name']}"**
 
 """
 
@@ -615,8 +615,8 @@ def build_student_name_ultimatum_prompt(
     for i, d in enumerate(persistent_disagreements, 1):
         disagreements_text += f"""## {t.get('ultimatum_header', 'ULTIMATUM')} {i}: Copie {d['copy_index']}
 
-**{vt['you_read'].format(provider=provider_name)}**: **"{d['llm1_name']}"**
-**{vt['other_read'].format(provider=other_provider_name)}**: **"{d['llm2_name']}"**
+**{vt['you_read']}**: **"{d['llm1_name']}"**
+**{vt['other_read']}**: **"{d['llm2_name']}"**
 
 """
 
