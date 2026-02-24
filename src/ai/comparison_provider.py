@@ -227,6 +227,91 @@ class ComparisonProvider:
             import logging
             logging.warning(f"Progress callback error for {event_type}: {e}")
 
+    # ==================== SHARED UTILITIES FOR UNIFIED METHODS ====================
+
+    @staticmethod
+    def _swap_disagreements_for_provider(disagreements_list: List[Dict], provider_idx: int) -> List[Dict]:
+        """
+        Swap llm1/llm2 positions so each LLM sees its own grade as "you".
+
+        This is used by both _run_unified_verification and _run_unified_ultimatum.
+        """
+        if provider_idx == 0:
+            return disagreements_list  # LLM1 sees original order
+
+        swapped = []
+        for d in disagreements_list:
+            swapped.append({
+                "question_id": d["question_id"],
+                "llm1": d["llm2"],  # LLM2's data now in "llm1" position
+                "llm2": d["llm1"],  # LLM1's data now in "llm2" position
+                "type": d.get("type"),
+                "reason": d.get("reason")
+            })
+        return swapped
+
+    @staticmethod
+    def _swap_name_for_provider(name_dict: Optional[Dict], provider_idx: int) -> Optional[Dict]:
+        """Swap name positions so each LLM sees its own reading as 'you'."""
+        if not name_dict or provider_idx == 0:
+            return name_dict
+        return {
+            "llm1_name": name_dict["llm2_name"],
+            "llm2_name": name_dict["llm1_name"],
+            "similarity": name_dict.get("similarity")
+        }
+
+    async def _call_providers_with_json_parsing(
+        self,
+        prompts_by_provider: Dict[str, str],
+        image_paths: List[str]
+    ) -> Tuple[Dict[str, Dict], Dict[str, str]]:
+        """
+        Call both providers in parallel and parse JSON responses.
+
+        Returns:
+            Tuple of (results_per_provider, prompts_sent)
+        """
+        import re
+
+        results_per_provider = {}
+        prompts_sent = {}
+
+        async def call_provider(idx: int, name: str, provider):
+            try:
+                response = provider.call_vision(
+                    prompt=prompts_by_provider[name],
+                    image_path=image_paths
+                )
+                if asyncio.iscoroutine(response):
+                    response = await response
+
+                # Parse JSON response
+                try:
+                    result = json.loads(response.strip())
+                except json.JSONDecodeError:
+                    # Try to extract JSON from markdown code block
+                    json_match = re.search(r'```(?:json)?\s*([\s\S]*?)\s*```', response)
+                    if json_match:
+                        result = json.loads(json_match.group(1))
+                    else:
+                        result = {"raw_response": response, "parse_error": True}
+
+                return (idx, name, result)
+            except Exception as e:
+                logger.error(f"Provider call failed for {name}: {e}")
+                return (idx, name, {"error": str(e)})
+
+        # Run both providers in parallel
+        tasks = [call_provider(i, name, provider) for i, (name, provider) in enumerate(self.providers)]
+        provider_results = await asyncio.gather(*tasks)
+
+        for idx, name, result in provider_results:
+            results_per_provider[name] = result
+            prompts_sent[f"llm{idx+1}"] = prompts_by_provider[name]
+
+        return results_per_provider, prompts_sent
+
     # ==================== GRADING HELPER METHODS ====================
 
     def _build_jurisprudence_context(

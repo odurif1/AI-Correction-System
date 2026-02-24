@@ -18,10 +18,10 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Union
 
 from config.settings import get_settings
-from config.constants import MAX_RETRIES
+from config.constants import MAX_RETRIES, RETRY_BASE_DELAY, READING_SIMILARITY_THRESHOLD, GRADE_AGREEMENT_THRESHOLD
 from utils.json_extractor import extract_json_from_response
 from prompts.batch import (
     build_batch_grading_prompt,
@@ -31,8 +31,7 @@ from prompts.batch import (
 
 logger = logging.getLogger(__name__)
 
-# Retry configuration (base delay for exponential backoff)
-RETRY_BASE_DELAY = 1.0  # seconds
+# Status codes that are retryable
 RETRYABLE_STATUS_CODES = {503, 429, 500, 502, 504}
 
 
@@ -554,7 +553,9 @@ async def run_dual_llm_verification(
     extra_images: List[str] = None
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Run verification with BOTH LLMs seeing each other's work.
+    Run verification with BOTH LLMs seeing each other's work (grouped mode).
+
+    All disagreements are verified in a single call per LLM.
 
     Args:
         providers: List of (name, provider) tuples
@@ -568,161 +569,15 @@ async def run_dual_llm_verification(
         - "copy_{idx}_{qid}" -> {final_grade, llm1_grade, llm2_grade, method, ...}
         - "name_{idx}" -> {llm1_new_name, llm2_new_name, resolved_name, agreement} for name verifications
     """
-    if not disagreements and not name_disagreements:
-        return {}
-
-    llm1_name, llm1_provider = providers[0]
-    llm2_name, llm2_provider = providers[1]
-
-    # Collect all unique image paths from grade disagreements
-    all_images = []
-    seen = set()
-    for d in disagreements:
-        for img in d.image_paths:
-            if img not in seen:
-                all_images.append(img)
-                seen.add(img)
-
-    # Add extra images (for name-only disagreements case)
-    if extra_images:
-        for img in extra_images:
-            if img not in seen:
-                all_images.append(img)
-                seen.add(img)
-
-    # Add provider info to name disagreements for prompt building
-    name_disags_with_providers = []
-    if name_disagreements:
-        for nd in name_disagreements:
-            name_disags_with_providers.append({
-                **nd,
-                'llm1_provider': llm1_name,
-                'llm2_provider': llm2_name
-            })
-
-    # Build prompts for each LLM
-    llm1_prompt = build_dual_llm_verification_prompt(
-        disagreements, llm1_name, llm2_name, is_own_perspective=True, language=language,
-        name_disagreements=name_disags_with_providers if name_disags_with_providers else None
+    return await _run_dual_llm_phase(
+        providers=providers,
+        disagreements=disagreements,
+        language=language,
+        mode="verification",
+        batching="grouped",
+        name_disagreements=name_disagreements,
+        extra_images=extra_images
     )
-    llm2_prompt = build_dual_llm_verification_prompt(
-        disagreements, llm2_name, llm1_name, is_own_perspective=True, language=language,
-        name_disagreements=name_disags_with_providers if name_disags_with_providers else None
-    )
-
-    # Call both LLMs in parallel
-    llm1_response, llm2_response = await asyncio.gather(
-        _call_provider_vision(llm1_provider, llm1_prompt, all_images),
-        _call_provider_vision(llm2_provider, llm2_prompt, all_images)
-    )
-
-    # Parse responses - now returns tuple of (question_results, name_results)
-    llm1_question_results, llm1_name_results = _parse_verification_response(llm1_response)
-    llm2_question_results, llm2_name_results = _parse_verification_response(llm2_response)
-
-    # Merge question verification results (grades, readings, max_points)
-    results = {}
-    for d in disagreements:
-        key = f"copy_{d.copy_index}_{d.question_id}"
-
-        # Get new grades from each LLM
-        llm1_new = llm1_question_results.get(key, {}).get('my_new_grade', d.llm1_grade)
-        llm2_new = llm2_question_results.get(key, {}).get('my_new_grade', d.llm2_grade)
-
-        # Get new max_points from each LLM (if provided)
-        llm1_new_mp = llm1_question_results.get(key, {}).get('my_new_max_points')
-        llm2_new_mp = llm2_question_results.get(key, {}).get('my_new_max_points')
-
-        # Resolve max_points: use new values if provided, otherwise use original
-        llm1_mp = llm1_new_mp if llm1_new_mp is not None else d.llm1_max_points
-        llm2_mp = llm2_new_mp if llm2_new_mp is not None else d.llm2_max_points
-        resolved_max_points = max(llm1_mp, llm2_mp)
-
-        # Resolve: if both agree now, use that; otherwise average
-        if abs(llm1_new - llm2_new) < get_agreement_threshold(d.max_points):
-            final_grade = (llm1_new + llm2_new) / 2
-            method = "verification_consensus"
-        else:
-            final_grade = (llm1_new + llm2_new) / 2
-            method = "verification_average"
-
-        # Get new readings if provided
-        llm1_new_reading = llm1_question_results.get(key, {}).get('my_new_reading')
-        llm2_new_reading = llm2_question_results.get(key, {}).get('my_new_reading')
-
-        # Get feedback from both LLMs - prefer the one that changed their mind or has better feedback
-        llm1_feedback = llm1_question_results.get(key, {}).get('feedback', '')
-        llm2_feedback = llm2_question_results.get(key, {}).get('feedback', '')
-
-        # Consolidate feedback: prefer non-empty, or use LLM2's if LLM1 changed their grade more
-        if llm1_feedback and llm2_feedback:
-            # Both have feedback - use LLM1's as primary (it's the "base" LLM)
-            final_feedback = llm1_feedback
-        elif llm1_feedback:
-            final_feedback = llm1_feedback
-        elif llm2_feedback:
-            final_feedback = llm2_feedback
-        else:
-            final_feedback = ''
-
-        results[key] = {
-            'final_grade': final_grade,
-            'llm1_new_grade': llm1_new,
-            'llm2_new_grade': llm2_new,
-            'llm1_new_max_points': llm1_mp,
-            'llm2_new_max_points': llm2_mp,
-            'resolved_max_points': resolved_max_points,
-            'llm1_new_reading': llm1_new_reading,
-            'llm2_new_reading': llm2_new_reading,
-            'llm1_reasoning': llm1_question_results.get(key, {}).get('reasoning', ''),
-            'llm2_reasoning': llm2_question_results.get(key, {}).get('reasoning', ''),
-            'llm1_feedback': llm1_feedback,
-            'llm2_feedback': llm2_feedback,
-            'final_feedback': final_feedback,
-            'method': method,
-            'max_points': d.max_points,
-            'confidence': max(
-                llm1_question_results.get(key, {}).get('confidence', 0.8),
-                llm2_question_results.get(key, {}).get('confidence', 0.8)
-            )
-        }
-
-    # Process name verifications if present
-    if name_disagreements:
-        for nd in name_disagreements:
-            copy_idx = nd['copy_index']
-            name_key = f"name_{copy_idx}"
-
-            # Get new names from each LLM
-            llm1_name_result = llm1_name_results.get(copy_idx, {})
-            llm2_name_result = llm2_name_results.get(copy_idx, {})
-
-            llm1_new_name = llm1_name_result.get('my_new_name', nd.get('llm1_name', ''))
-            llm2_new_name = llm2_name_result.get('my_new_name', nd.get('llm2_name', ''))
-
-            # Check agreement (normalized comparison)
-            n1_normalized = llm1_new_name.lower().strip()
-            n2_normalized = llm2_new_name.lower().strip()
-            agreement = n1_normalized == n2_normalized and n1_normalized != ''
-
-            # Resolve name: if agreement, use that; otherwise keep original disagreement for ultimatum
-            if agreement:
-                resolved_name = llm1_new_name  # They match, use either
-            else:
-                resolved_name = None  # Will need ultimatum or user resolution
-
-            results[name_key] = {
-                'llm1_new_name': llm1_new_name,
-                'llm2_new_name': llm2_new_name,
-                'resolved_name': resolved_name,
-                'agreement': agreement,
-                'confidence': max(
-                    llm1_name_result.get('confidence', 0.8),
-                    llm2_name_result.get('confidence', 0.8)
-                )
-            }
-
-    return results
 
 
 async def run_per_question_dual_verification(
@@ -744,91 +599,13 @@ async def run_per_question_dual_verification(
     Returns:
         Dict mapping "copy_{idx}_{qid}" -> {final_grade, llm1_grade, llm2_grade, method, ...}
     """
-    if not disagreements:
-        return {}
-
-    llm1_name, llm1_provider = providers[0]
-    llm2_name, llm2_provider = providers[1]
-
-    results = {}
-
-    # Process each disagreement separately
-    for d in disagreements:
-        key = f"copy_{d.copy_index}_{d.question_id}"
-
-        # Build prompts for this single disagreement
-        llm1_prompt = build_dual_llm_verification_prompt(
-            [d], llm1_name, llm2_name, is_own_perspective=True, language=language
-        )
-        llm2_prompt = build_dual_llm_verification_prompt(
-            [d], llm2_name, llm1_name, is_own_perspective=True, language=language
-        )
-
-        # Call both LLMs in parallel for this disagreement
-        llm1_response, llm2_response = await asyncio.gather(
-            _call_provider_vision(llm1_provider, llm1_prompt, d.image_paths),
-            _call_provider_vision(llm2_provider, llm2_prompt, d.image_paths)
-        )
-
-        # Parse responses (returns tuple, we only need question_results for per-question mode)
-        llm1_question_results, _ = _parse_verification_response(llm1_response)
-        llm2_question_results, _ = _parse_verification_response(llm2_response)
-
-        # Get new grades from each LLM
-        llm1_new = llm1_question_results.get(key, {}).get('my_new_grade', d.llm1_grade)
-        llm2_new = llm2_question_results.get(key, {}).get('my_new_grade', d.llm2_grade)
-
-        # Get new max_points from each LLM (if provided)
-        llm1_new_mp = llm1_question_results.get(key, {}).get('my_new_max_points')
-        llm2_new_mp = llm2_question_results.get(key, {}).get('my_new_max_points')
-
-        # Resolve max_points: use new values if provided, otherwise use original
-        llm1_mp = llm1_new_mp if llm1_new_mp is not None else d.llm1_max_points
-        llm2_mp = llm2_new_mp if llm2_new_mp is not None else d.llm2_max_points
-        resolved_max_points = max(llm1_mp, llm2_mp)
-
-        # Resolve: if both agree now, use that; otherwise average
-        if abs(llm1_new - llm2_new) < get_agreement_threshold(d.max_points):
-            final_grade = (llm1_new + llm2_new) / 2
-            method = "verification_consensus"
-        else:
-            final_grade = (llm1_new + llm2_new) / 2
-            method = "verification_average"
-
-        # Get and consolidate feedback
-        llm1_feedback = llm1_question_results.get(key, {}).get('feedback', '')
-        llm2_feedback = llm2_question_results.get(key, {}).get('feedback', '')
-        if llm1_feedback and llm2_feedback:
-            final_feedback = llm1_feedback
-        elif llm1_feedback:
-            final_feedback = llm1_feedback
-        elif llm2_feedback:
-            final_feedback = llm2_feedback
-        else:
-            final_feedback = ''
-
-        results[key] = {
-            'final_grade': final_grade,
-            'llm1_new_grade': llm1_new,
-            'llm2_new_grade': llm2_new,
-            'llm1_new_max_points': llm1_mp,
-            'llm2_new_max_points': llm2_mp,
-            'resolved_max_points': resolved_max_points,
-            'llm1_reasoning': llm1_question_results.get(key, {}).get('reasoning', ''),
-            'llm2_reasoning': llm2_question_results.get(key, {}).get('reasoning', ''),
-            'llm1_feedback': llm1_feedback,
-            'llm2_feedback': llm2_feedback,
-            'final_feedback': final_feedback,
-            'method': method,
-            'max_points': d.max_points,
-            'confidence': max(
-                llm1_question_results.get(key, {}).get('confidence', 0.8),
-                llm2_question_results.get(key, {}).get('confidence', 0.8)
-            ),
-            'image_paths': d.image_paths  # Keep for potential ultimatum
-        }
-
-    return results
+    return await _run_dual_llm_phase(
+        providers=providers,
+        disagreements=disagreements,
+        language=language,
+        mode="verification",
+        batching="per_question"
+    )
 
 
 def _parse_verification_response(raw_response: str) -> Tuple[Dict[str, Dict], Dict[int, Dict]]:
@@ -880,6 +657,633 @@ def _parse_verification_response(raw_response: str) -> Tuple[Dict[str, Dict], Di
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# HELPER FUNCTIONS FOR DUAL LLM PHASES (Refactored)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _collect_disagreement_images(
+    disagreements: List[Union[Disagreement, Dict]],
+    copy_filter: Optional[int] = None
+) -> List[str]:
+    """
+    Collect unique image paths from disagreements.
+
+    Args:
+        disagreements: List of Disagreement objects or dicts
+        copy_filter: If set, only collect images for this copy index
+
+    Returns:
+        List of unique image paths
+    """
+    all_images = []
+    seen = set()
+
+    for d in disagreements:
+        # Handle both Disagreement objects and dicts
+        if isinstance(d, Disagreement):
+            copy_idx = d.copy_index
+            image_paths = d.image_paths
+        else:
+            copy_idx = d.get('copy_index')
+            image_paths = d.get('image_paths', [])
+
+        # Filter by copy if specified
+        if copy_filter is not None and copy_idx != copy_filter:
+            continue
+
+        for img in image_paths:
+            if img not in seen:
+                all_images.append(img)
+                seen.add(img)
+
+    return all_images
+
+
+def _build_dual_prompts(
+    disagreements: List,
+    llm1_name: str,
+    llm2_name: str,
+    language: str,
+    mode: str,
+    name_disagreements: List[Dict] = None,
+    extra_images: List[str] = None
+) -> Tuple[str, str]:
+    """
+    Build prompts for both LLMs based on mode.
+
+    Args:
+        disagreements: List of disagreements
+        llm1_name: Name of first LLM
+        llm2_name: Name of second LLM
+        language: Language for prompts
+        mode: "verification" or "ultimatum"
+        name_disagreements: Optional name disagreements (verification only)
+        extra_images: Optional extra images (verification only)
+
+    Returns:
+        Tuple of (prompt1, prompt2)
+    """
+    if mode == "verification":
+        # Add provider info to name disagreements for prompt building
+        name_disags_with_providers = None
+        if name_disagreements:
+            name_disags_with_providers = [
+                {**nd, 'llm1_provider': llm1_name, 'llm2_provider': llm2_name}
+                for nd in name_disagreements
+            ]
+
+        prompt1 = build_dual_llm_verification_prompt(
+            disagreements, llm1_name, llm2_name, is_own_perspective=True,
+            language=language, name_disagreements=name_disags_with_providers
+        )
+        prompt2 = build_dual_llm_verification_prompt(
+            disagreements, llm2_name, llm1_name, is_own_perspective=True,
+            language=language, name_disagreements=name_disags_with_providers
+        )
+    else:  # ultimatum
+        # Convert to dict format if needed
+        dict_disagreements = []
+        for d in disagreements:
+            if isinstance(d, Disagreement):
+                dict_disagreements.append({
+                    'copy_index': d.copy_index,
+                    'question_id': d.question_id,
+                    'llm1_grade': d.llm1_grade,
+                    'llm2_grade': d.llm2_grade,
+                    'llm1_max_points': d.llm1_max_points,
+                    'llm2_max_points': d.llm2_max_points,
+                    'max_points': d.max_points,
+                    'image_paths': d.image_paths,
+                    'llm1_reading': d.llm1_reading,
+                    'llm2_reading': d.llm2_reading,
+                })
+            else:
+                dict_disagreements.append(d)
+
+        prompt1 = build_ultimatum_prompt(
+            dict_disagreements, llm1_name, llm2_name, language=language
+        )
+        prompt2 = build_ultimatum_prompt(
+            dict_disagreements, llm2_name, llm1_name, language=language
+        )
+
+    return prompt1, prompt2
+
+
+async def _call_dual_providers(
+    providers: List[Tuple[str, Any]],
+    prompt1: str,
+    prompt2: str,
+    images: List[str]
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Call both providers in parallel.
+
+    Args:
+        providers: List of (name, provider) tuples
+        prompt1: Prompt for first provider
+        prompt2: Prompt for second provider
+        images: List of image paths
+
+    Returns:
+        Tuple of (response1, response2)
+    """
+    _, provider1 = providers[0]
+    _, provider2 = providers[1]
+
+    response1, response2 = await asyncio.gather(
+        _call_provider_vision(provider1, prompt1, images),
+        _call_provider_vision(provider2, prompt2, images)
+    )
+
+    return response1, response2
+
+
+def _parse_dual_responses(
+    response1: Optional[str],
+    response2: Optional[str],
+    mode: str
+) -> Tuple[Dict, Dict]:
+    """
+    Parse responses based on mode.
+
+    Args:
+        response1: Response from first LLM
+        response2: Response from second LLM
+        mode: "verification" or "ultimatum"
+
+    Returns:
+        Tuple of (results1, results2) - parsed results for each LLM
+    """
+    if mode == "verification":
+        # Verification returns tuple of (question_results, name_results)
+        results1 = _parse_verification_response(response1)
+        results2 = _parse_verification_response(response2)
+        return (results1, results2)
+    else:  # ultimatum
+        return (_parse_ultimatum_response(response1), _parse_ultimatum_response(response2))
+
+
+def _consolidate_feedback(
+    llm1_feedback: str,
+    llm2_feedback: str
+) -> str:
+    """
+    Consolidate feedback from both LLMs.
+
+    Prefers non-empty feedback, with LLM1 as primary.
+    """
+    if llm1_feedback and llm2_feedback:
+        return llm1_feedback  # Use LLM1's as primary
+    elif llm1_feedback:
+        return llm1_feedback
+    elif llm2_feedback:
+        return llm2_feedback
+    return ''
+
+
+def _detect_flip_flop(
+    initial_llm1: float,
+    initial_llm2: float,
+    final_llm1: float,
+    final_llm2: float,
+    max_points: float
+) -> bool:
+    """
+    Detect if LLMs have swapped their positions (flip-flop).
+
+    Args:
+        initial_llm1: Initial grade from LLM1
+        initial_llm2: Initial grade from LLM2
+        final_llm1: Final grade from LLM1
+        final_llm2: Final grade from LLM2
+        max_points: Max points for threshold calculation
+
+    Returns:
+        True if flip-flop detected
+    """
+    initial_diff = initial_llm1 - initial_llm2
+    final_diff = final_llm1 - final_llm2
+
+    # Check if signs are opposite (positions crossed)
+    is_swap = (
+        (initial_diff > 0 and final_diff < 0) or
+        (initial_diff < 0 and final_diff > 0)
+    )
+
+    # Use configurable threshold
+    significant_diff = get_flip_flop_threshold(max_points)
+
+    return (
+        is_swap and
+        abs(initial_diff) >= significant_diff and
+        abs(final_diff) >= significant_diff
+    )
+
+
+def _resolve_verification_grade(
+    disagreement: Union[Disagreement, Dict],
+    llm1_question_results: Dict,
+    llm2_question_results: Dict,
+    key: str
+) -> Dict[str, Any]:
+    """
+    Resolve a single disagreement from verification phase.
+
+    Args:
+        disagreement: The disagreement object or dict
+        llm1_question_results: Parsed results from LLM1
+        llm2_question_results: Parsed results from LLM2
+        key: The result key (e.g., "copy_1_Q1")
+
+    Returns:
+        Dict with resolved grade, max_points, feedback, etc.
+    """
+    # Extract values from disagreement
+    if isinstance(disagreement, Disagreement):
+        llm1_grade = disagreement.llm1_grade
+        llm2_grade = disagreement.llm2_grade
+        llm1_max_pts = disagreement.llm1_max_points
+        llm2_max_pts = disagreement.llm2_max_points
+        max_points = disagreement.max_points
+    else:
+        llm1_grade = disagreement.get('llm1_grade', 0)
+        llm2_grade = disagreement.get('llm2_grade', 0)
+        llm1_max_pts = disagreement.get('llm1_max_points', 1.0)
+        llm2_max_pts = disagreement.get('llm2_max_points', 1.0)
+        max_points = disagreement.get('max_points', 1.0)
+
+    # Get new grades
+    llm1_new = llm1_question_results.get(key, {}).get('my_new_grade', llm1_grade)
+    llm2_new = llm2_question_results.get(key, {}).get('my_new_grade', llm2_grade)
+
+    # Get new max_points
+    llm1_new_mp = llm1_question_results.get(key, {}).get('my_new_max_points')
+    llm2_new_mp = llm2_question_results.get(key, {}).get('my_new_max_points')
+
+    llm1_mp = llm1_new_mp if llm1_new_mp is not None else llm1_max_pts
+    llm2_mp = llm2_new_mp if llm2_new_mp is not None else llm2_max_pts
+    resolved_max_points = max(llm1_mp, llm2_mp)
+
+    # Resolve: consensus or average
+    if abs(llm1_new - llm2_new) < get_agreement_threshold(max_points):
+        final_grade = (llm1_new + llm2_new) / 2
+        method = "verification_consensus"
+    else:
+        final_grade = (llm1_new + llm2_new) / 2
+        method = "verification_average"
+
+    # Get feedbacks
+    llm1_feedback = llm1_question_results.get(key, {}).get('feedback', '')
+    llm2_feedback = llm2_question_results.get(key, {}).get('feedback', '')
+    final_feedback = _consolidate_feedback(llm1_feedback, llm2_feedback)
+
+    # Get readings
+    llm1_new_reading = llm1_question_results.get(key, {}).get('my_new_reading')
+    llm2_new_reading = llm2_question_results.get(key, {}).get('my_new_reading')
+
+    return {
+        'final_grade': final_grade,
+        'llm1_new_grade': llm1_new,
+        'llm2_new_grade': llm2_new,
+        'llm1_new_max_points': llm1_mp,
+        'llm2_new_max_points': llm2_mp,
+        'resolved_max_points': resolved_max_points,
+        'llm1_new_reading': llm1_new_reading,
+        'llm2_new_reading': llm2_new_reading,
+        'llm1_reasoning': llm1_question_results.get(key, {}).get('reasoning', ''),
+        'llm2_reasoning': llm2_question_results.get(key, {}).get('reasoning', ''),
+        'llm1_feedback': llm1_feedback,
+        'llm2_feedback': llm2_feedback,
+        'final_feedback': final_feedback,
+        'method': method,
+        'max_points': max_points,
+        'confidence': max(
+            llm1_question_results.get(key, {}).get('confidence', 0.8),
+            llm2_question_results.get(key, {}).get('confidence', 0.8)
+        )
+    }
+
+
+def _resolve_ultimatum_grade(
+    disagreement: Dict,
+    llm1_results: Dict,
+    llm2_results: Dict,
+    key: str
+) -> Dict[str, Any]:
+    """
+    Resolve a single disagreement from ultimatum phase.
+
+    Args:
+        disagreement: The disagreement dict
+        llm1_results: Parsed results from LLM1
+        llm2_results: Parsed results from LLM2
+        key: The result key (e.g., "copy_1_Q1")
+
+    Returns:
+        Dict with resolved grade, max_points, feedback, flip_flop detection, etc.
+    """
+    max_pts = disagreement.get('max_points', 1.0)
+    llm1_grade = disagreement.get('llm1_grade', 0)
+    llm2_grade = disagreement.get('llm2_grade', 0)
+
+    # Get final grades
+    llm1_final = llm1_results.get(key, {}).get('my_final_grade', llm1_grade)
+    llm2_final = llm2_results.get(key, {}).get('my_final_grade', llm2_grade)
+
+    # Get max_points
+    llm1_final_mp = llm1_results.get(key, {}).get('my_final_max_points')
+    llm2_final_mp = llm2_results.get(key, {}).get('my_final_max_points')
+
+    llm1_resolved_mp = llm1_final_mp if llm1_final_mp is not None else disagreement.get('llm1_max_points', max_pts)
+    llm2_resolved_mp = llm2_final_mp if llm2_final_mp is not None else disagreement.get('llm2_max_points', max_pts)
+
+    max_points_disagreement = abs(llm1_resolved_mp - llm2_resolved_mp) > 0.01
+
+    # Resolve: consensus or average
+    if abs(llm1_final - llm2_final) < get_agreement_threshold(max_pts):
+        final_grade = (llm1_final + llm2_final) / 2
+        method = "ultimatum_consensus"
+    else:
+        final_grade = (llm1_final + llm2_final) / 2
+        method = "ultimatum_average"
+
+    # Detect flip-flop
+    flip_flop = _detect_flip_flop(llm1_grade, llm2_grade, llm1_final, llm2_final, max_pts)
+
+    # Get feedbacks
+    llm1_feedback = llm1_results.get(key, {}).get('feedback', '')
+    llm2_feedback = llm2_results.get(key, {}).get('feedback', '')
+    final_feedback = _consolidate_feedback(llm1_feedback, llm2_feedback)
+
+    # Check parsing success
+    llm1_parsed = key in llm1_results
+    llm2_parsed = key in llm2_results
+
+    result = {
+        'final_grade': final_grade,
+        'llm1_final_grade': llm1_final,
+        'llm2_final_grade': llm2_final,
+        'llm1_decision': llm1_results.get(key, {}).get('decision', 'unknown'),
+        'llm2_decision': llm2_results.get(key, {}).get('decision', 'unknown'),
+        'llm1_reasoning': llm1_results.get(key, {}).get('reasoning', ''),
+        'llm2_reasoning': llm2_results.get(key, {}).get('reasoning', ''),
+        'llm1_feedback': llm1_feedback,
+        'llm2_feedback': llm2_feedback,
+        'final_feedback': final_feedback,
+        'llm1_parse_success': llm1_parsed,
+        'llm2_parse_success': llm2_parsed,
+        'method': method,
+        'flip_flop_detected': flip_flop,
+        'confidence': max(
+            llm1_results.get(key, {}).get('confidence', 0.8),
+            llm2_results.get(key, {}).get('confidence', 0.8)
+        ),
+        'resolved_max_points': max(llm1_resolved_mp, llm2_resolved_mp)
+    }
+
+    if max_points_disagreement:
+        result['llm1_final_max_points'] = llm1_resolved_mp
+        result['llm2_final_max_points'] = llm2_resolved_mp
+        result['max_points_disagreement'] = True
+
+    return result
+
+
+async def _run_dual_llm_phase(
+    providers: List[Tuple[str, Any]],
+    disagreements: List[Union[Disagreement, Dict]],
+    language: str,
+    mode: str,
+    batching: str,
+    name_disagreements: List[Dict] = None,
+    extra_images: List[str] = None
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Unified function for all verification/ultimatum phases.
+
+    This consolidates the 6 similar functions (verification/ultimatum × grouped/per_question/per_copy)
+    into one parameterized function.
+
+    Args:
+        providers: List of (name, provider) tuples
+        disagreements: List of Disagreement objects or dicts
+        language: "fr" or "en"
+        mode: "verification" or "ultimatum"
+        batching: "grouped", "per_question", or "per_copy"
+        name_disagreements: Optional name disagreements (verification grouped mode only)
+        extra_images: Optional extra images (verification grouped mode only)
+
+    Returns:
+        Dict with results and optional metadata
+    """
+    from collections import defaultdict
+
+    if not disagreements and not name_disagreements:
+        return {}
+
+    llm1_name, _ = providers[0]
+    llm2_name, _ = providers[1]
+    results = {}
+
+    # Track parsing failures for ultimatum
+    llm1_parse_failed = False
+    llm2_parse_failed = False
+
+    if batching == "grouped":
+        # ===== GROUPED: All disagreements in one call =====
+        all_images = _collect_disagreement_images(disagreements)
+        if extra_images:
+            seen = set(all_images)
+            for img in extra_images:
+                if img not in seen:
+                    all_images.append(img)
+
+        prompt1, prompt2 = _build_dual_prompts(
+            disagreements, llm1_name, llm2_name, language, mode,
+            name_disagreements, extra_images
+        )
+        response1, response2 = await _call_dual_providers(providers, prompt1, prompt2, all_images)
+
+        if mode == "verification":
+            (llm1_question_results, llm1_name_results), (llm2_question_results, llm2_name_results) = \
+                _parse_dual_responses(response1, response2, mode)
+
+            # Resolve each disagreement
+            for d in disagreements:
+                key = f"copy_{d.copy_index}_{d.question_id}"
+                results[key] = _resolve_verification_grade(
+                    d, llm1_question_results, llm2_question_results, key
+                )
+                # Preserve image_paths for potential ultimatum
+                if isinstance(d, Disagreement):
+                    results[key]['image_paths'] = d.image_paths
+
+            # Process name verifications if present
+            if name_disagreements:
+                for nd in name_disagreements:
+                    copy_idx = nd['copy_index']
+                    name_key = f"name_{copy_idx}"
+
+                    llm1_name_result = llm1_name_results.get(copy_idx, {})
+                    llm2_name_result = llm2_name_results.get(copy_idx, {})
+
+                    llm1_new_name = llm1_name_result.get('my_new_name', nd.get('llm1_name', ''))
+                    llm2_new_name = llm2_name_result.get('my_new_name', nd.get('llm2_name', ''))
+
+                    n1_normalized = llm1_new_name.lower().strip()
+                    n2_normalized = llm2_new_name.lower().strip()
+                    agreement = n1_normalized == n2_normalized and n1_normalized != ''
+
+                    results[name_key] = {
+                        'llm1_new_name': llm1_new_name,
+                        'llm2_new_name': llm2_new_name,
+                        'resolved_name': llm1_new_name if agreement else None,
+                        'agreement': agreement,
+                        'confidence': max(
+                            llm1_name_result.get('confidence', 0.8),
+                            llm2_name_result.get('confidence', 0.8)
+                        )
+                    }
+        else:  # ultimatum
+            llm1_results, llm2_results = _parse_dual_responses(response1, response2, mode)
+
+            # Track parsing failures
+            llm1_parse_failed = len(llm1_results) == 0 and response1
+            llm2_parse_failed = len(llm2_results) == 0 and response2
+
+            for d in disagreements:
+                key = f"copy_{d['copy_index']}_{d['question_id']}"
+                results[key] = _resolve_ultimatum_grade(d, llm1_results, llm2_results, key)
+
+            # Add overall parse status
+            results['_parse_status'] = {
+                'llm1_parse_failed': llm1_parse_failed,
+                'llm2_parse_failed': llm2_parse_failed
+            }
+
+    elif batching == "per_question":
+        # ===== PER-QUESTION: One call per disagreement =====
+        for d in disagreements:
+            if isinstance(d, Disagreement):
+                key = f"copy_{d.copy_index}_{d.question_id}"
+                images = d.image_paths
+            else:
+                key = f"copy_{d['copy_index']}_{d['question_id']}"
+                images = d.get('image_paths', [])
+
+            prompt1, prompt2 = _build_dual_prompts(
+                [d], llm1_name, llm2_name, language, mode
+            )
+            response1, response2 = await _call_dual_providers(providers, prompt1, prompt2, images)
+
+            if mode == "verification":
+                (llm1_question_results, _), (llm2_question_results, _) = \
+                    _parse_dual_responses(response1, response2, mode)
+
+                results[key] = _resolve_verification_grade(
+                    d, llm1_question_results, llm2_question_results, key
+                )
+                results[key]['image_paths'] = images
+            else:  # ultimatum
+                llm1_results, llm2_results = _parse_dual_responses(response1, response2, mode)
+
+                if len(llm1_results) == 0 and response1:
+                    llm1_parse_failed = True
+                if len(llm2_results) == 0 and response2:
+                    llm2_parse_failed = True
+
+                results[key] = _resolve_ultimatum_grade(d, llm1_results, llm2_results, key)
+
+        if mode == "ultimatum":
+            results['_parse_status'] = {
+                'llm1_parse_failed': llm1_parse_failed,
+                'llm2_parse_failed': llm2_parse_failed
+            }
+
+    elif batching == "per_copy":
+        # ===== PER-COPY: Group by copy, one call per copy =====
+        by_copy = defaultdict(list)
+        for d in disagreements:
+            if isinstance(d, Disagreement):
+                by_copy[d.copy_index].append(d)
+            else:
+                by_copy[d['copy_index']].append(d)
+
+        for copy_idx, copy_disagreements in by_copy.items():
+            logger.info(f"Running per-copy {mode} for copy {copy_idx} ({len(copy_disagreements)} disagreements)")
+
+            copy_images = _collect_disagreement_images(copy_disagreements, copy_filter=copy_idx)
+
+            prompt1, prompt2 = _build_dual_prompts(
+                copy_disagreements, llm1_name, llm2_name, language, mode
+            )
+            response1, response2 = await _call_dual_providers(providers, prompt1, prompt2, copy_images)
+
+            if mode == "verification":
+                (llm1_question_results, _), (llm2_question_results, _) = \
+                    _parse_dual_responses(response1, response2, mode)
+
+                for d in copy_disagreements:
+                    if isinstance(d, Disagreement):
+                        key = f"copy_{d.copy_index}_{d.question_id}"
+                    else:
+                        key = f"copy_{d['copy_index']}_{d['question_id']}"
+
+                    results[key] = _resolve_verification_grade(
+                        d, llm1_question_results, llm2_question_results, key
+                    )
+                    results[key]['image_paths'] = copy_images
+            else:  # ultimatum
+                llm1_results, llm2_results = _parse_dual_responses(response1, response2, mode)
+
+                if len(llm1_results) == 0 and response1:
+                    llm1_parse_failed = True
+                if len(llm2_results) == 0 and response2:
+                    llm2_parse_failed = True
+
+                for d in copy_disagreements:
+                    key = f"copy_{d['copy_index']}_{d['question_id']}"
+                    results[key] = _resolve_ultimatum_grade(d, llm1_results, llm2_results, key)
+
+        if mode == "ultimatum":
+            results['_parse_status'] = {
+                'llm1_parse_failed': llm1_parse_failed,
+                'llm2_parse_failed': llm2_parse_failed
+            }
+
+    return results
+
+
+async def run_per_copy_dual_verification(
+    providers: List[tuple],
+    disagreements: List[Disagreement],
+    language: str = "fr"
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Run verification grouped by copy with BOTH LLMs.
+
+    Each copy's disagreements are verified together in one call per LLM.
+    This is a middle ground between grouped (all in one) and per-question
+    (one per disagreement).
+
+    Args:
+        providers: List of (name, provider) tuples
+        disagreements: List of disagreements to verify
+        language: Language for prompts
+
+    Returns:
+        Dict mapping "copy_{idx}_{qid}" -> {final_grade, llm1_grade, llm2_grade, method, ...}
+    """
+    return await _run_dual_llm_phase(
+        providers=providers,
+        disagreements=disagreements,
+        language=language,
+        mode="verification",
+        batching="per_copy"
+    )
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # ULTIMATUM ROUND
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -889,7 +1293,9 @@ async def run_dual_llm_ultimatum(
     language: str = "fr"
 ) -> Dict[str, Dict[str, Any]]:
     """
-    Run ultimatum round with BOTH LLMs for persistent disagreements.
+    Run ultimatum round with BOTH LLMs for persistent disagreements (grouped mode).
+
+    All disagreements are resolved in a single call per LLM.
 
     Args:
         providers: List of (name, provider) tuples
@@ -899,150 +1305,70 @@ async def run_dual_llm_ultimatum(
     Returns:
         Dict mapping "copy_{idx}_{qid}" -> {final_grade, llm1_grade, llm2_grade, method, ...}
     """
-    if not persistent_disagreements:
-        return {}
-
-    llm1_name, llm1_provider = providers[0]
-    llm2_name, llm2_provider = providers[1]
-
-    # Collect all unique image paths
-    all_images = []
-    seen = set()
-    for d in persistent_disagreements:
-        for img in d.get('image_paths', []):
-            if img not in seen:
-                all_images.append(img)
-                seen.add(img)
-
-    # Build ultimatum prompts for each LLM
-    llm1_prompt = build_ultimatum_prompt(
-        persistent_disagreements, llm1_name, llm2_name, language=language
-    )
-    llm2_prompt = build_ultimatum_prompt(
-        persistent_disagreements, llm2_name, llm1_name, language=language
+    return await _run_dual_llm_phase(
+        providers=providers,
+        disagreements=persistent_disagreements,
+        language=language,
+        mode="ultimatum",
+        batching="grouped"
     )
 
-    # Call both LLMs in parallel
-    llm1_response, llm2_response = await asyncio.gather(
-        _call_provider_vision(llm1_provider, llm1_prompt, all_images),
-        _call_provider_vision(llm2_provider, llm2_prompt, all_images)
+
+async def run_per_question_dual_ultimatum(
+    providers: List[tuple],
+    persistent_disagreements: List[Dict[str, Any]],
+    language: str = "fr"
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Run ultimatum for each disagreement separately with BOTH LLMs.
+
+    Unlike run_dual_llm_ultimatum (which groups all disagreements),
+    this makes one call per disagreement per LLM (more granular).
+
+    Args:
+        providers: List of (name, provider) tuples
+        persistent_disagreements: List of disagreements that persist after verification
+        language: Language for prompts
+
+    Returns:
+        Dict mapping "copy_{idx}_{qid}" -> {final_grade, llm1_grade, llm2_grade, method, ...}
+    """
+    return await _run_dual_llm_phase(
+        providers=providers,
+        disagreements=persistent_disagreements,
+        language=language,
+        mode="ultimatum",
+        batching="per_question"
     )
 
-    # Parse responses
-    llm1_results = _parse_ultimatum_response(llm1_response)
-    llm2_results = _parse_ultimatum_response(llm2_response)
 
-    # Track parsing failures
-    llm1_parse_failed = len(llm1_results) == 0 and llm1_response
-    llm2_parse_failed = len(llm2_results) == 0 and llm2_response
-    if llm1_parse_failed:
-        logger.warning(f"LLM1 ultimatum response parsing failed")
-    if llm2_parse_failed:
-        logger.warning(f"LLM2 ultimatum response parsing failed")
+async def run_per_copy_dual_ultimatum(
+    providers: List[tuple],
+    persistent_disagreements: List[Dict[str, Any]],
+    language: str = "fr"
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Run ultimatum grouped by copy with BOTH LLMs.
 
-    # Merge results
-    results = {}
-    for d in persistent_disagreements:
-        key = f"copy_{d['copy_index']}_{d['question_id']}"
+    Each copy's persistent disagreements are sent together in one call per LLM.
+    This is a middle ground between grouped (all in one) and per-question
+    (one per disagreement).
 
-        # Check if parsing failed for this specific disagreement
-        llm1_parsed = key in llm1_results
-        llm2_parsed = key in llm2_results
+    Args:
+        providers: List of (name, provider) tuples
+        persistent_disagreements: List of disagreements that persist after verification
+        language: Language for prompts
 
-        # Get final grades from each LLM
-        llm1_final = llm1_results.get(key, {}).get('my_final_grade', d['llm1_grade'])
-        llm2_final = llm2_results.get(key, {}).get('my_final_grade', d['llm2_grade'])
-
-        # Get max_points for relative threshold calculation
-        max_pts = d.get('max_points', 1.0)
-
-        # Get new max_points from each LLM (if provided)
-        llm1_final_mp = llm1_results.get(key, {}).get('my_final_max_points')
-        llm2_final_mp = llm2_results.get(key, {}).get('my_final_max_points')
-
-        # Resolve max_points: use new values if provided, otherwise use original
-        llm1_resolved_mp = llm1_final_mp if llm1_final_mp is not None else d.get('llm1_max_points', max_pts)
-        llm2_resolved_mp = llm2_final_mp if llm2_final_mp is not None else d.get('llm2_max_points', max_pts)
-
-        # Check if there's a max_points disagreement after ultimatum
-        max_points_disagreement = abs(llm1_resolved_mp - llm2_resolved_mp) > 0.01
-
-        # Resolve: if both agree now, use that; otherwise average
-        if abs(llm1_final - llm2_final) < get_agreement_threshold(max_pts):
-            final_grade = (llm1_final + llm2_final) / 2
-            method = "ultimatum_consensus"
-        else:
-            final_grade = (llm1_final + llm2_final) / 2
-            method = "ultimatum_average"
-
-        # Detect flip-flop (grades swapped sides)
-        initial_diff = d['llm1_grade'] - d['llm2_grade']
-        ultimatum_diff = llm1_final - llm2_final
-        is_swap = (
-            (initial_diff > 0 and ultimatum_diff < 0) or
-            (initial_diff < 0 and ultimatum_diff > 0)
-        )
-        # Use configurable threshold (0 = detect any swap)
-        significant_diff = get_flip_flop_threshold(max_pts)
-        flip_flop = (
-            is_swap and
-            abs(initial_diff) >= significant_diff and
-            abs(ultimatum_diff) >= significant_diff
-        )
-
-        # Get and consolidate feedback
-        llm1_feedback = llm1_results.get(key, {}).get('feedback', '')
-        llm2_feedback = llm2_results.get(key, {}).get('feedback', '')
-        if llm1_feedback and llm2_feedback:
-            final_feedback = llm1_feedback
-        elif llm1_feedback:
-            final_feedback = llm1_feedback
-        elif llm2_feedback:
-            final_feedback = llm2_feedback
-        else:
-            final_feedback = ''
-
-        # Build result dict
-        result = {
-            'final_grade': final_grade,
-            'llm1_final_grade': llm1_final,
-            'llm2_final_grade': llm2_final,
-            'llm1_decision': llm1_results.get(key, {}).get('decision', 'unknown'),
-            'llm2_decision': llm2_results.get(key, {}).get('decision', 'unknown'),
-            'llm1_reasoning': llm1_results.get(key, {}).get('reasoning', ''),
-            'llm2_reasoning': llm2_results.get(key, {}).get('reasoning', ''),
-            'llm1_feedback': llm1_feedback,
-            'llm2_feedback': llm2_feedback,
-            'final_feedback': final_feedback,
-            'llm1_parse_success': llm1_parsed,
-            'llm2_parse_success': llm2_parsed,
-            'method': method,
-            'flip_flop_detected': flip_flop,
-            'confidence': max(
-                llm1_results.get(key, {}).get('confidence', 0.8),
-                llm2_results.get(key, {}).get('confidence', 0.8)
-            )
-        }
-
-        # Only include max_points fields if there was a disagreement
-        if max_points_disagreement:
-            result['llm1_final_max_points'] = llm1_resolved_mp
-            result['llm2_final_max_points'] = llm2_resolved_mp
-            result['max_points_disagreement'] = True
-            result['resolved_max_points'] = max(llm1_resolved_mp, llm2_resolved_mp)
-        else:
-            # Include resolved max_points even when agreed
-            result['resolved_max_points'] = max(llm1_resolved_mp, llm2_resolved_mp)
-
-        results[key] = result
-
-    # Add overall parse status
-    results['_parse_status'] = {
-        'llm1_parse_failed': llm1_parse_failed,
-        'llm2_parse_failed': llm2_parse_failed
-    }
-
-    return results
+    Returns:
+        Dict mapping "copy_{idx}_{qid}" -> {final_grade, llm1_grade, llm2_grade, method, ...}
+    """
+    return await _run_dual_llm_phase(
+        providers=providers,
+        disagreements=persistent_disagreements,
+        language=language,
+        mode="ultimatum",
+        batching="per_copy"
+    )
 
 
 def _parse_ultimatum_response(raw_response: str) -> Dict[str, Dict]:
