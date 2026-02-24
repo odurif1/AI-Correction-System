@@ -5,6 +5,8 @@ This module defines all Pydantic models used throughout the system.
 They represent the foundation of all data structures.
 """
 
+from __future__ import annotations
+
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict, Optional, Literal, Any
 from datetime import datetime
@@ -184,15 +186,8 @@ class GradedCopy(BaseModel):
     max_points_by_question: Dict[str, float] = Field(default_factory=dict)
     # {question_id: max_points detected from document}
 
-    # LLM Comparison data (for dual-LLM mode)
-    llm_comparison: Optional[Dict[str, Any]] = None
-    # {
-    #   "llm1": {"provider": "gemini", "grade": 4.0, "reasoning": "..."},
-    #   "llm2": {"provider": "gemini-pro", "grade": 3.5, "reasoning": "..."},
-    #   "initial_difference": 0.5,
-    #   "after_cross_verification": {"llm1": 4.0, "llm2": 4.0},
-    #   "final_agreement": true
-    # }
+    # Unified grading audit (replaces deprecated llm_comparison)
+    grading_audit: Optional[GradingAudit] = None
 
     uncertainty_type: UncertaintyType = UncertaintyType.NONE
 
@@ -203,6 +198,82 @@ class GradedCopy(BaseModel):
     # Feedback
     feedback: Optional[str] = None
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# UNIFIED GRADING AUDIT MODELS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class ProviderInfo(BaseModel):
+    """Information about an LLM provider used in grading."""
+    id: str  # "LLM1" or "LLM2"
+    model: str
+    tokens: Optional[Dict[str, int]] = None  # {"prompt": int, "completion": int}
+
+
+class LLMResult(BaseModel):
+    """Result from a single LLM for a question."""
+    grade: float
+    max_points: float  # Each LLM detects its own barème
+    reading: str = ""
+    reasoning: str = ""
+    feedback: str = ""
+    confidence: float = 0.8
+
+
+class ResolutionInfo(BaseModel):
+    """Resolution information for a question after LLM comparison."""
+    final_grade: float
+    final_max_points: float  # Barème retained after resolution
+    method: str  # consensus, average, verification_consensus, ultimatum_average, etc.
+    phases: List[str]  # ["initial"], ["verification"], ["verification", "ultimatum"], etc.
+    agreement: Optional[bool] = None  # null for single LLM
+    initial_reading_similarity: Optional[float] = None  # SequenceMatcher ratio between initial LLM readings
+
+
+class QuestionAudit(BaseModel):
+    """Audit information for a single question."""
+    llm_results: Dict[str, LLMResult]  # "LLM1" -> {...}, "LLM2" -> {...}
+    resolution: ResolutionInfo
+
+
+class StudentDetectionAudit(BaseModel):
+    """Audit information for student name detection."""
+    final_name: str
+    llm_results: Dict[str, str]  # "LLM1" -> "Jean Dupont", "LLM2" -> "J. Dupont"
+    resolution: ResolutionInfo
+
+
+class AuditSummary(BaseModel):
+    """Summary statistics for a grading audit."""
+    total_questions: int
+    agreed_initial: int
+    required_verification: int = 0
+    required_ultimatum: int = 0
+    final_agreement_rate: float
+
+
+class GradingAudit(BaseModel):
+    """
+    Unified audit structure for all grading modes.
+
+    Works for:
+    - Single LLM mode (mode="single", one provider)
+    - Dual LLM mode (mode="dual", two providers)
+    - All verification modes (grouped, per-copy, per-question, none)
+    """
+    mode: Literal["single", "dual"]
+    grading_method: Literal["batch", "individual", "hybrid"]
+    verification_mode: Literal["grouped", "per-copy", "per-question", "none"]
+
+    providers: List[ProviderInfo]
+    questions: Dict[str, QuestionAudit]  # "Q1" -> {...}
+    student_detection: Optional[StudentDetectionAudit] = None
+    summary: AuditSummary
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TEACHER INTERACTION MODELS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 class TeacherDecision(BaseModel):
     """
@@ -408,7 +479,3 @@ class AnalyticsReport(BaseModel):
 
     # Generated at
     generated_at: datetime = Field(default_factory=datetime.now)
-
-
-# Forward references for type hints
-GradingSession.model_rebuild()

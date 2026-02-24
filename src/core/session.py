@@ -903,10 +903,16 @@ class GradingSessionOrchestrator:
                         # Also check max_points agreement (barème must match)
                         max_points_agreement = abs(llm1_qdata.get("max_points", 1.0) - llm2_qdata.get("max_points", 1.0)) < 0.01
                         agreement = grade_agreement and max_points_agreement
+                        # Calculate reading similarity for initial phase
+                        from difflib import SequenceMatcher
+                        r1 = llm1_qdata.get("reading", "").lower().strip()
+                        r2 = llm2_qdata.get("reading", "").lower().strip()
+                        initial_reading_similarity = SequenceMatcher(None, r1, r2).ratio() if r1 and r2 else None
                     else:
                         final_grade = llm1_qdata["grade"]
                         max_pts = llm1_qdata.get("max_points", 1.0)
                         agreement = True
+                        initial_reading_similarity = None
 
                     # Build question data - structure: max_points, LLM1, LLM2, (verification), (ultimatum), final
                     # We'll add final at the end after all processing
@@ -922,7 +928,8 @@ class GradingSessionOrchestrator:
                         "grade": final_grade,
                         "max_points": max_pts,
                         "method": "average" if llm2_qdata else "single_llm",
-                        "agreement": agreement
+                        "agreement": agreement,
+                        "reading_similarity": initial_reading_similarity
                     }
 
                     llm_comparison_data["llm_comparison"][f"copy_{copy_idx}"]["questions"][qid] = question_data
