@@ -425,17 +425,3 @@ Respond ONLY with valid JSON:
   "questions": {{{questions_json}
   }}
 }}"""
-
-
-# Test
-if __name__ == '__main__':
-    tests = [
-        ('Le chat est gris', 'fr'),
-        ('The cat is gray', 'en'),
-    ]
-    for text, expected in tests:
-        result = detect_language(text)
-        status = 'OK' if result == expected else 'KO'
-        print(f'{status}: {text} -> {result} ({expected})')
-
-

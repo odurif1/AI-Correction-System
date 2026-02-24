@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple, Union
 
 from config.settings import get_settings
-from config.constants import MAX_RETRIES, RETRY_BASE_DELAY, READING_SIMILARITY_THRESHOLD, GRADE_AGREEMENT_THRESHOLD
+from config.constants import MAX_RETRIES, RETRY_BASE_DELAY, GRADE_AGREEMENT_THRESHOLD
 from utils.json_extractor import extract_json_from_response
 from prompts.batch import (
     build_batch_grading_prompt,

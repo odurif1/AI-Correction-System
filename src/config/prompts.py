@@ -39,8 +39,6 @@ from prompts import (
     build_cross_copy_analysis_prompt,
     # Annotation
     build_direct_annotation_prompt,
-    build_annotation_coordinate_prompt,
-    build_zone_detection_prompt,
     parse_annotation_response,
 )
 
@@ -64,7 +62,5 @@ __all__ = [
     'build_rule_extraction_prompt',
     'build_cross_copy_analysis_prompt',
     'build_direct_annotation_prompt',
-    'build_annotation_coordinate_prompt',
-    'build_zone_detection_prompt',
     'parse_annotation_response',
 ]
