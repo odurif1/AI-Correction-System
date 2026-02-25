@@ -37,6 +37,7 @@ class DebugCall:
     duration_ms: float = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cached_tokens: int = 0  # Tokens served from cache (lower cost)
     error: Optional[str] = None
     llm_id: int = 0  # 0=unknown, 1=LLM1, 2=LLM2
 
@@ -80,6 +81,7 @@ class DebugCapture:
             duration_ms=duration_ms,
             prompt_tokens=tokens.get("prompt", 0) if tokens else 0,
             completion_tokens=tokens.get("completion", 0) if tokens else 0,
+            cached_tokens=tokens.get("cached", 0) if tokens else 0,
             error=error,
             llm_id=llm_id
         )
@@ -104,7 +106,8 @@ class DebugCapture:
                     "duration_ms": c.duration_ms,
                     "tokens": {
                         "prompt": c.prompt_tokens,
-                        "completion": c.completion_tokens
+                        "completion": c.completion_tokens,
+                        "cached": c.cached_tokens
                     },
                     "error": c.error,
                     "llm_id": c.llm_id

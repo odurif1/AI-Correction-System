@@ -94,7 +94,8 @@ class CorrectionState:
         self,
         phase: WorkflowPhase,
         prompt_tokens: int,
-        completion_tokens: int
+        completion_tokens: int,
+        cached_tokens: int = 0
     ) -> 'CorrectionState':
         """
         Record token usage for a phase.
@@ -103,6 +104,7 @@ class CorrectionState:
             phase: Phase to record tokens for
             prompt_tokens: Number of prompt tokens
             completion_tokens: Number of completion tokens
+            cached_tokens: Number of tokens served from cache (lower cost)
 
         Returns:
             New CorrectionState instance
@@ -111,10 +113,11 @@ class CorrectionState:
         phase_name = phase.value
 
         if phase_name not in new_usage:
-            new_usage[phase_name] = {'prompt': 0, 'completion': 0, 'total': 0}
+            new_usage[phase_name] = {'prompt': 0, 'completion': 0, 'cached': 0, 'total': 0}
 
         new_usage[phase_name]['prompt'] += prompt_tokens
         new_usage[phase_name]['completion'] += completion_tokens
+        new_usage[phase_name]['cached'] += cached_tokens
         new_usage[phase_name]['total'] += prompt_tokens + completion_tokens
 
         return CorrectionState(
@@ -135,15 +138,18 @@ class CorrectionState:
         """Get token usage summary by phase."""
         total_prompt = 0
         total_completion = 0
+        total_cached = 0
 
         for phase_usage in self.token_usage_by_phase.values():
             total_prompt += phase_usage.get('prompt', 0)
             total_completion += phase_usage.get('completion', 0)
+            total_cached += phase_usage.get('cached', 0)
 
         return {
             'by_phase': self.token_usage_by_phase.copy(),
             'total_prompt': total_prompt,
             'total_completion': total_completion,
+            'total_cached': total_cached,
             'total': total_prompt + total_completion
         }
 

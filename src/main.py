@@ -535,7 +535,7 @@ async def command_correct(args):
         return new_scale
 
     # Helper to record token usage for current phase (delta from previous)
-    _prev_tokens = {'prompt': 0, 'completion': 0}
+    _prev_tokens = {'prompt': 0, 'completion': 0, 'cached': 0}
     _current_sub_phase = WorkflowPhase.GRADING  # Track sub-phase within grading (verification, ultimatum)
     _token_debug_log = []  # Debug log for token tracking
 
@@ -546,10 +546,12 @@ async def command_correct(args):
             usage = orchestrator.ai.get_token_usage()
             current_prompt = usage.get('prompt_tokens', 0)
             current_completion = usage.get('completion_tokens', 0)
+            current_cached = usage.get('cached_tokens', 0)
 
             # Calculate delta from previous phase
             delta_prompt = current_prompt - _prev_tokens['prompt']
             delta_completion = current_completion - _prev_tokens['completion']
+            delta_cached = current_cached - _prev_tokens['cached']
             delta_total = delta_prompt + delta_completion
 
             # Debug log
@@ -558,8 +560,10 @@ async def command_correct(args):
                 'phase': current_phase.value,
                 'delta_prompt': delta_prompt,
                 'delta_completion': delta_completion,
+                'delta_cached': delta_cached,
                 'total_prompt': current_prompt,
-                'total_completion': current_completion
+                'total_completion': current_completion,
+                'total_cached': current_cached
             })
 
             # Update state with delta
@@ -567,11 +571,12 @@ async def command_correct(args):
                 state = state.with_token_usage(
                     phase=current_phase,
                     prompt_tokens=delta_prompt,
-                    completion_tokens=delta_completion
+                    completion_tokens=delta_completion,
+                    cached_tokens=delta_cached
                 )
 
             # Store current for next delta calculation
-            _prev_tokens = {'prompt': current_prompt, 'completion': current_completion}
+            _prev_tokens = {'prompt': current_prompt, 'completion': current_completion, 'cached': current_cached}
 
     # ============================================================
     # Phase 2: Grading
@@ -1281,14 +1286,27 @@ async def command_correct(args):
             'annotation': 'Annotation'
         }
 
+        total_cached = 0
         for phase_name in phase_order:
             if phase_name in token_summary['by_phase']:
                 usage = token_summary['by_phase'][phase_name]
                 label = phase_labels.get(phase_name, phase_name)
-                cli.console.print(f"  {label}: {usage['total']:,} tokens")
+                cached = usage.get('cached', 0)
+                total_cached += cached
+
+                # Show cached tokens if present
+                if cached > 0:
+                    # Calculate effective tokens (total - cached = actual paid tokens)
+                    effective = usage['total'] - cached
+                    cli.console.print(f"  {label}: {usage['total']:,} tokens (🔥 {cached:,} cached → {effective:,} effective)")
+                else:
+                    cli.console.print(f"  {label}: {usage['total']:,} tokens")
 
         # Total
         cli.console.print(f"  [bold]Total: {token_summary['total']:,}[/bold] tokens")
+        if total_cached > 0:
+            effective_total = token_summary['total'] - total_cached
+            cli.console.print(f"  🔥 Cached: {total_cached:,} → [green]Effective: {effective_total:,}[/green] (cost savings!)")
         cli.console.print(f"  (Prompt: {token_summary['total_prompt']:,} | Completion: {token_summary['total_completion']:,})")
 
         # Show by provider if available
@@ -1298,7 +1316,13 @@ async def command_correct(args):
                 cli.console.print(f"\n  [dim]Par provider:[/dim]")
                 for provider_name, usage in provider_usage['by_provider'].items():
                     # Use markup=False to avoid Rich interpreting brackets
-                    cli.console.print(f"  [{provider_name}] {usage.get('total_tokens', 0):,} tokens ({usage.get('calls', 0)} calls)", markup=False)
+                    cached = usage.get('cached_tokens', 0)
+                    total = usage.get('total_tokens', 0)
+                    calls = usage.get('calls', 0)
+                    if cached > 0:
+                        cli.console.print(f"  [{provider_name}] {total:,} tokens ({calls} calls, 🔥 {cached:,} cached)", markup=False)
+                    else:
+                        cli.console.print(f"  [{provider_name}] {total:,} tokens ({calls} calls)", markup=False)
 
     return 0
 

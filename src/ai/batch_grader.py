@@ -1901,20 +1901,18 @@ class ChatContinuationManager:
 
     async def _create_shared_cache(self, copies_data: List[Dict[str, Any]], initial_prompt: str):
         """Create ONE shared cache for all copies (batch mode)."""
-        
+
         # Collect ALL images from ALL copies
         all_images = []
         for copy_data in copies_data:
             all_images.extend(copy_data.get('image_paths', []))
-        
 
         # Create ONE shared cache per provider
         for name, provider in self.providers:
             cache_id = None
             caching_ok = self._check_caching_support(name, provider)
-            
+
             if caching_ok:
-                
                 cache_id = provider.create_cached_context(
                     system_prompt=initial_prompt,
                     images=all_images,

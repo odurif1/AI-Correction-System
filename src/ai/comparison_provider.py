@@ -185,6 +185,7 @@ class ComparisonProvider:
         """Get total token usage from all providers."""
         total_prompt = 0
         total_completion = 0
+        total_cached = 0
         provider_usage = {}
 
         for name, provider in self.providers:
@@ -193,10 +194,12 @@ class ComparisonProvider:
                 provider_usage[name] = usage
                 total_prompt += usage.get('prompt_tokens', 0)
                 total_completion += usage.get('completion_tokens', 0)
+                total_cached += usage.get('cached_tokens', 0)
 
         return {
             "prompt_tokens": total_prompt,
             "completion_tokens": total_completion,
+            "cached_tokens": total_cached,
             "total_tokens": total_prompt + total_completion,
             "by_provider": provider_usage
         }

@@ -1027,7 +1027,7 @@ class GradingSessionOrchestrator:
                 # ===== CONTEXT CACHING + CHAT SESSIONS SETUP =====
                 # Create chat sessions with cached context for verification/ultimatum
                 chat_manager = None
-                
+
                 if self._use_chat_continuation:
                     from ai.batch_grader import ChatContinuationManager
                     from prompts.batch import build_batch_grading_prompt
@@ -1039,7 +1039,6 @@ class GradingSessionOrchestrator:
                         provider1.supports_context_caching() or
                         provider2.supports_context_caching()
                     )
-                    
 
                     if caching_supported:
                         logger.info("Creating chat sessions with cached context for verification/ultimatum")
