@@ -7,6 +7,7 @@ Contains:
 """
 
 from typing import Dict, Any, Optional, List
+from prompts.common import detect_language
 
 def build_rule_extraction_prompt(
     teacher_decision: str,

@@ -40,9 +40,9 @@ def choose_by_confidence(
     conf2 = llm2_result.get(confidence_key, 0)
 
     if conf1 >= conf2:
-        return llm1_result.get(field) or default
+        return llm1_result.get(field, default)
     else:
-        return llm2_result.get(field) or default
+        return llm2_result.get(field, default)
 
 
 def choose_higher_confidence_result(
@@ -96,6 +96,6 @@ def merge_by_confidence(
 
     merged = {}
     for field in fields:
-        merged[field] = primary.get(field) or secondary.get(field)
+        merged[field] = primary.get(field, secondary.get(field))
 
     return merged

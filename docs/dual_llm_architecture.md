@@ -272,6 +272,19 @@ if normalized(llm1_name) == normalized(llm2_name):
 
 ### Réduction avec vérification groupée (--batch-verify grouped)
 
+| Mode | API Calls/LLM | Granularité | Coût | Précision |
+|------|---------------|-------------|------|-----------|
+| `grouped` | 1 | Basse | Min | Moins précis |
+| `per-copy` | N copies | Moyenne | Moyen | Équilibré |
+| `per-question` | M désaccords | Haute | Max | Plus précis |
+
+**Exemple avec 2 copies, 8 total désaccords:**
+| Mode | API Calls/LLM | Tokens (approx) |
+|------|---------------|-----------------|
+| `grouped` | 1 | ~2,000 |
+| `per-copy` | 2 | ~4,000 |
+| `per-question` | 8 | ~16,000 |
+
 | Scénario | Avant | Après | Économie |
 |----------|-------|-------|----------|
 | 3 questions en désaccord | 18 appels | 4 appels | **~78%** |
@@ -319,6 +332,9 @@ python -m src.main correct dual batch copies.pdf --auto-confirm
 
 # Dual LLM batch avec vérification groupée (défaut)
 python -m src.main correct dual batch copies.pdf --batch-verify grouped --auto-confirm
+
+# Dual LLM batch avec vérification par copie (équilibre coût/précision)
+python -m src.main correct dual batch copies.pdf --batch-verify per-copy --auto-confirm
 
 # Dual LLM batch avec vérification par question (plus précis)
 python -m src.main correct dual batch copies.pdf --batch-verify per-question --auto-confirm

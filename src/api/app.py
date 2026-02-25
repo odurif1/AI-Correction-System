@@ -4,7 +4,8 @@ FastAPI application for the AI correction system.
 Provides web API for grading operations with WebSocket support for real-time progress.
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Depends, Security
+from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -15,6 +16,7 @@ import uuid
 import re
 import json
 import logging
+import os
 
 # Maximum file size for uploads (50 MB)
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
@@ -32,6 +34,26 @@ from api.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+# API Key authentication
+API_KEY_NAME = "X-API-Key"
+api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+
+
+def get_api_key(api_key: str = Security(api_key_header)) -> str:
+    """Verify API key from header."""
+    expected_key = os.getenv("AI_CORRECTION_API_KEY", "")
+
+    # If no API key is configured, allow all requests (development mode)
+    if not expected_key:
+        return "dev_mode"
+
+    if not api_key or api_key != expected_key:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid or missing API key"
+        )
+    return api_key
 
 
 # ============================================================================
@@ -58,8 +80,8 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        allow_headers=["Content-Type", "Authorization", "X-API-Key"],
     )
 
     # Session storage (in-memory for active grading)
@@ -117,7 +139,8 @@ def create_app() -> FastAPI:
     @app.post("/api/sessions", response_model=SessionResponse)
     async def create_session(
         request: CreateSessionRequest,
-        background_tasks: BackgroundTasks
+        background_tasks: BackgroundTasks,
+        api_key: str = Depends(get_api_key)
     ):
         """
         Create a new grading session.
@@ -159,7 +182,8 @@ def create_app() -> FastAPI:
     @app.post("/api/sessions/{session_id}/upload")
     async def upload_copies(
         session_id: str,
-        files: List[UploadFile] = File(...)
+        files: List[UploadFile] = File(...),
+        api_key: str = Depends(get_api_key)
     ):
         """
         Upload PDF copies to a session.
@@ -229,7 +253,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/sessions/{session_id}", response_model=SessionDetailResponse)
-    async def get_session(session_id: str):
+    async def get_session(session_id: str, api_key: str = Depends(get_api_key)):
         """Get detailed session information."""
         store = SessionStore(session_id)
         session = store.load_session()
@@ -280,7 +304,7 @@ def create_app() -> FastAPI:
         )
 
     @app.delete("/api/sessions/{session_id}")
-    async def delete_session(session_id: str):
+    async def delete_session(session_id: str, api_key: str = Depends(get_api_key)):
         """Delete a session and all its data."""
         store = SessionStore(session_id)
 
@@ -299,7 +323,7 @@ def create_app() -> FastAPI:
         return {"success": success}
 
     @app.post("/api/sessions/{session_id}/grade", response_model=GradeResponse)
-    async def start_grading(session_id: str, background_tasks: BackgroundTasks):
+    async def start_grading(session_id: str, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
         """
         Start the grading process for a session.
 
@@ -380,7 +404,7 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/api/sessions/{session_id}/decisions")
-    async def submit_decision(session_id: str, decision: TeacherDecisionRequest):
+    async def submit_decision(session_id: str, decision: TeacherDecisionRequest, api_key: str = Depends(get_api_key)):
         """
         Submit a teacher's grading decision.
 
@@ -414,7 +438,7 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/sessions/{session_id}/analytics", response_model=AnalyticsResponse)
-    async def get_analytics(session_id: str):
+    async def get_analytics(session_id: str, api_key: str = Depends(get_api_key)):
         """Get analytics for a session."""
         orchestrator = GradingSessionOrchestrator(session_id=session_id)
         analytics = orchestrator.get_analytics()
@@ -422,7 +446,7 @@ def create_app() -> FastAPI:
         return AnalyticsResponse(**analytics)
 
     @app.get("/api/sessions")
-    async def list_sessions():
+    async def list_sessions(api_key: str = Depends(get_api_key)):
         """List all sessions."""
         from storage.file_store import SessionIndex
 
@@ -458,7 +482,7 @@ def create_app() -> FastAPI:
     # ============================================================================
 
     @app.get("/api/sessions/{session_id}/disagreements", response_model=List[DisagreementResponse])
-    async def get_disagreements(session_id: str):
+    async def get_disagreements(session_id: str, api_key: str = Depends(get_api_key)):
         """Get all disagreements for a session."""
         store = SessionStore(session_id)
         session = store.load_session()
@@ -468,47 +492,62 @@ def create_app() -> FastAPI:
 
         disagreements = []
         for graded in session.graded_copies:
-            if graded.llm_comparison and "llm_comparison" in graded.llm_comparison:
-                llm_comp = graded.llm_comparison["llm_comparison"]
+            # Use new grading_audit structure
+            if graded.grading_audit:
+                audit = graded.grading_audit
 
                 # Find the copy for student name and index
                 copy = next((c for c in session.copies if c.id == graded.copy_id), None)
                 copy_index = session.copies.index(copy) + 1 if copy else 0
 
-                for q_id, comp in llm_comp.items():
-                    llm1 = comp.get("llm1", {})
-                    llm2 = comp.get("llm2", {})
+                for q_id, qaudit in audit.questions.items():
+                    llm_results = qaudit.llm_results
+
+                    # Get LLM results
+                    llm_ids = list(llm_results.keys())
+                    if len(llm_ids) < 2:
+                        continue  # Skip if not dual LLM
+
+                    llm1_result = llm_results.get(llm_ids[0])
+                    llm2_result = llm_results.get(llm_ids[1])
+
+                    if not llm1_result or not llm2_result:
+                        continue
 
                     # Check if there was a disagreement
-                    grade1 = llm1.get("grade", 0)
-                    grade2 = llm2.get("grade", 0)
+                    grade1 = llm1_result.grade
+                    grade2 = llm2_result.grade
                     diff = abs(grade1 - grade2)
 
-                    # Consider it a disagreement if difference > 0.5 points
-                    if diff > 0.5 or not comp.get("final", {}).get("agreement", True):
+                    # Consider it a disagreement if difference > 0.5 points or no agreement
+                    if diff > 0.5 or not qaudit.resolution.agreement:
+                        # Find provider info
+                        provider1 = next((p for p in audit.providers if p.id == llm_ids[0]), None)
+                        provider2 = next((p for p in audit.providers if p.id == llm_ids[1]), None)
+
                         disagreements.append(DisagreementResponse(
                             copy_id=graded.copy_id,
                             copy_index=copy_index,
                             student_name=copy.student_name if copy else None,
                             question_id=q_id,
-                            max_points=graded.max_points_by_question.get(q_id, 1.0),
+                            max_points=qaudit.resolution.final_max_points,
                             llm1={
-                                "provider": llm1.get("provider", "unknown"),
-                                "model": llm1.get("model", "unknown"),
+                                "provider": provider1.model if provider1 else "unknown",
+                                "model": provider1.model if provider1 else "unknown",
                                 "grade": grade1,
-                                "confidence": llm1.get("confidence", 0.5),
-                                "reasoning": llm1.get("reasoning"),
-                                "reading": llm1.get("reading")
+                                "confidence": llm1_result.confidence,
+                                "reasoning": llm1_result.reasoning,
+                                "reading": llm1_result.reading
                             },
                             llm2={
-                                "provider": llm2.get("provider", "unknown"),
-                                "model": llm2.get("model", "unknown"),
+                                "provider": provider2.model if provider2 else "unknown",
+                                "model": provider2.model if provider2 else "unknown",
                                 "grade": grade2,
-                                "confidence": llm2.get("confidence", 0.5),
-                                "reasoning": llm2.get("reasoning"),
-                                "reading": llm2.get("reading")
+                                "confidence": llm2_result.confidence,
+                                "reasoning": llm2_result.reasoning,
+                                "reading": llm2_result.reading
                             },
-                            resolved=comp.get("final", {}).get("agreement", False)
+                            resolved=qaudit.resolution.agreement or False
                         ))
 
         return disagreements
@@ -517,7 +556,8 @@ def create_app() -> FastAPI:
     async def resolve_disagreement(
         session_id: str,
         question_id: str,
-        request: ResolveDisagreementRequest
+        request: ResolveDisagreementRequest,
+        api_key: str = Depends(get_api_key)
     ):
         """Resolve a disagreement."""
         store = SessionStore(session_id)
@@ -537,7 +577,7 @@ def create_app() -> FastAPI:
     # ============================================================================
 
     @app.get("/api/sessions/{session_id}/export/{format}")
-    async def export_session(session_id: str, format: str):
+    async def export_session(session_id: str, format: str, api_key: str = Depends(get_api_key)):
         """Export session results in the specified format."""
         from export.analytics import DataExporter
 
@@ -649,7 +689,7 @@ def create_app() -> FastAPI:
         )
 
     @app.put("/api/settings", response_model=SettingsResponse)
-    async def update_settings_api(request: UpdateSettingsRequest):
+    async def update_settings_api(request: UpdateSettingsRequest, api_key: str = Depends(get_api_key)):
         """Update application settings.
 
         Note: This only updates runtime settings. For persistent changes,

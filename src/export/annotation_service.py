@@ -209,11 +209,8 @@ class AnnotationCoordinateDetector:
         # Get page count with proper resource management
         num_pages = 1
         try:
-            doc = fitz.open(pdf_path)
-            try:
+            with fitz.open(pdf_path) as doc:
                 num_pages = len(doc)
-            finally:
-                doc.close()
         except (FileNotFoundError, PermissionError, OSError):
             # PDF access failed, use default of 1 page
             pass
@@ -278,11 +275,8 @@ class AnnotationCoordinateDetector:
         # Get page count with proper resource management
         num_pages = 1
         try:
-            doc = fitz.open(pdf_path)
-            try:
+            with fitz.open(pdf_path) as doc:
                 num_pages = len(doc)
-            finally:
-                doc.close()
         except (FileNotFoundError, PermissionError, OSError):
             pass
 
@@ -294,16 +288,23 @@ class AnnotationCoordinateDetector:
             # Ensure page is within valid range
             page_num = max(1, min(page_num, num_pages))
 
+            # Clamp coordinate percentages to valid range (0-100)
+            def clamp_percent(value, default):
+                try:
+                    return max(0.0, min(100.0, float(value)))
+                except (ValueError, TypeError):
+                    return default
+
             annotations.placements.append(AnnotationPlacement(
                 question_id=q_id,
                 feedback_text=ann_data.get("feedback_text", graded_copy.student_feedback.get(q_id, "")),
                 page_number=page_num,  # 1-based
-                x_percent=float(ann_data.get("x_percent", 70.0)),
-                y_percent=float(ann_data.get("y_percent", 20.0)),
-                width_percent=float(ann_data.get("width_percent", 25.0)),
-                height_percent=float(ann_data.get("height_percent", 5.0)),
+                x_percent=clamp_percent(ann_data.get("x_percent"), 70.0),
+                y_percent=clamp_percent(ann_data.get("y_percent"), 20.0),
+                width_percent=clamp_percent(ann_data.get("width_percent"), 25.0),
+                height_percent=clamp_percent(ann_data.get("height_percent"), 5.0),
                 placement=ann_data.get("placement", "right_margin"),
-                confidence=float(ann_data.get("confidence", 0.5))
+                confidence=max(0.0, min(1.0, float(ann_data.get("confidence", 0.5))))
             ))
 
         return annotations
@@ -320,22 +321,19 @@ class AnnotationCoordinateDetector:
         temp_files = []
 
         try:
-            doc = fitz.open(pdf_path)
+            with fitz.open(pdf_path) as doc:
+                for page_num in range(len(doc)):
+                    page = doc[page_num]
 
-            for page_num in range(len(doc)):
-                page = doc[page_num]
+                    # Render page to image (2x zoom for better quality)
+                    mat = fitz.Matrix(2, 2)
+                    pix = page.get_pixmap(matrix=mat)
 
-                # Render page to image (2x zoom for better quality)
-                mat = fitz.Matrix(2, 2)
-                pix = page.get_pixmap(matrix=mat)
-
-                # Save to temp file
-                temp_fd, temp_path = tempfile.mkstemp(suffix=f"_page_{page_num}.png")
-                os.close(temp_fd)
-                pix.save(temp_path)
-                temp_files.append(temp_path)
-
-            doc.close()
+                    # Save to temp file
+                    temp_fd, temp_path = tempfile.mkstemp(suffix=f"_page_{page_num}.png")
+                    os.close(temp_fd)
+                    pix.save(temp_path)
+                    temp_files.append(temp_path)
         except Exception as e:
             print(f"Error converting PDF to images: {e}")
             # Clean up any temp files created so far

@@ -2,169 +2,186 @@
 
 > Voir aussi: [README principal](../README.md) | [Architecture Dual LLM](dual_llm_architecture.md)
 
-Ce document décrit la structure complète de l'audit généré pour chaque question corrigée.
+Ce document décrit la structure unifiée de l'audit généré pour chaque copie corrigée.
 
 ## Vue d'ensemble
 
-L'audit est stocké dans `data/{session_id}/session.json` et contient toutes les informations sur le processus de correction, y compris les échanges avec les LLMs.
+L'audit est stocké dans `data/{session_id}/copies/{copy_number}/audit.json` et contient toutes les informations sur le processus de correction.
 
 L'audit permet de:
 - **Tracer** chaque décision de notation
-- **Comprendre** les désaccords entre LLMs
-- **Déboguer** les erreurs de lecture
-- **Auditer** le processus complet
+- **Comparer** facilement les résultats LLM1 vs LLM2
+- **Comprendre** les désaccords et leur résolution
+- **Suivre** l'évolution par phase (initial → verification → ultimatum)
 
-## Structure hiérarchique
+---
 
-```
-session.json
-├── graded_copies[]              # Liste des copies corrigées
-│   ├── copy_id                  # Identifiant de la copie
-│   ├── student_name             # Nom de l'élève
-│   ├── total_score              # Score total
-│   ├── max_score                # Score maximum
-│   ├── grades                   # Notes par question
-│   │   └── {Q1: {grade, feedback, reading}, Q2: {...}}
-│   └── llm_comparison           # Audit détaillé du Dual LLM
-│       ├── options              # Configuration utilisée
-│       ├── student_detection    # Détection du nom
-│       └── questions            # Détail par question
-│
-└── policy                       # Barème et critères
-```
+## Structure Unifiée `grading_audit`
 
-### Structure détaillée d'une question
+La nouvelle structure `grading_audit` fonctionne pour tous les modes:
+- **Single LLM** et **Dual LLM**
+- Tous les modes de vérification (`grouped`, `per-copy`, `per-question`, `none`)
 
-```
-questions/
-└── {Q1, Q2, ...}/
-    ├── max_points               # Barème de la question
-    │
-    ├── LLM1: {model}            # Résultat LLM1
-    │   ├── grade                # Note attribuée
-    │   ├── reading              # Lecture de la réponse
-    │   ├── reasoning            # Justification
-    │   └── feedback             # Feedback pour l'élève
-    │
-    ├── LLM2: {model}            # Résultat LLM2
-    │   └── ...
-    │
-    ├── final                    # Résultat final
-    │   ├── grade                # Note finale
-    │   ├── method               # Méthode de résolution
-    │   └── agreement            # Accord atteint?
-    │
-    ├── verification             # Phase de vérification (si désaccord)
-    │   ├── llm1_new_grade       # Nouvelle note LLM1
-    │   ├── llm2_new_grade       # Nouvelle note LLM2
-    │   └── method               # Méthode utilisée
-    │
-    ├── ultimatum                # Phase ultimatum (si persiste)
-    │   ├── llm1_final_grade     # Note finale LLM1
-    │   ├── llm2_final_grade     # Note finale LLM2
-    │   ├── llm1_decision        # maintained/changed
-    │   ├── llm2_decision        # maintained/changed
-    │   └── method               # Méthode utilisée
-    │
-    └── max_points_disagreement  # Désaccord sur le barème (si applicable)
-        ├── llm1_max_points      # Barème LLM1
-        ├── llm2_max_points      # Barème LLM2
-        └── resolved_max_points  # Barème résolu
+```json
+{
+  "grading_audit": {
+    "mode": "single" | "dual",
+    "grading_method": "batch" | "individual" | "hybrid",
+    "verification_mode": "grouped" | "per-copy" | "per-question" | "none",
+
+    "providers": [
+      {"id": "LLM1", "model": "gemini-2.5-flash", "tokens": {"prompt": 15000, "completion": 3000}},
+      {"id": "LLM2", "model": "gpt-4o", "tokens": {"prompt": 15000, "completion": 3000}}
+    ],
+
+    "questions": {
+      "Q1": {
+        "llm_results": {
+          "LLM1": {
+            "grade": 1.0,
+            "max_points": 1.0,
+            "reading": "fiole jaugée",
+            "reasoning": "L'élève a correctement identifié...",
+            "feedback": "Réponse correcte.",
+            "confidence": 0.9
+          },
+          "LLM2": {
+            "grade": 1.0,
+            "max_points": 1.0,
+            "reading": "fiole jaugée",
+            "reasoning": "Identification correcte...",
+            "feedback": "Correct.",
+            "confidence": 0.95
+          }
+        },
+
+        "resolution": {
+          "final_grade": 1.0,
+          "final_max_points": 1.0,
+          "method": "consensus",
+          "phases": ["initial"],
+          "agreement": true
+        }
+      },
+
+      "Q3": {
+        "llm_results": {
+          "LLM1": {"grade": 2.0, "max_points": 2.0, "reading": "...", "reasoning": "...", "feedback": "...", "confidence": 0.9},
+          "LLM2": {"grade": 1.0, "max_points": 1.5, "reading": "...", "reasoning": "...", "feedback": "...", "confidence": 0.85}
+        },
+
+        "resolution": {
+          "final_grade": 1.5,
+          "final_max_points": 2.0,
+          "method": "ultimatum_average",
+          "phases": ["initial", "verification", "ultimatum"],
+          "agreement": false
+        },
+
+        "phases": {
+          "initial": {
+            "llm1_grade": 2.0,
+            "llm1_max_points": 2.0,
+            "llm2_grade": 1.0,
+            "llm2_max_points": 1.5,
+            "agreement": false
+          },
+          "verification": {
+            "llm1_grade": 2.0,
+            "llm1_max_points": 2.0,
+            "llm2_grade": 1.0,
+            "llm2_max_points": 1.5,
+            "llm1_reasoning": "Je maintiens...",
+            "llm2_reasoning": "Je maintiens...",
+            "agreement": false
+          },
+          "ultimatum": {
+            "llm1_grade": 2.0,
+            "llm1_max_points": 2.0,
+            "llm2_grade": 1.0,
+            "llm2_max_points": 1.5,
+            "llm1_decision": "maintained",
+            "llm2_decision": "maintained",
+            "agreement": false
+          }
+        }
+      }
+    },
+
+    "student_detection": {
+      "final_name": "Jean Dupont",
+      "llm_results": {
+        "LLM1": "Jean Dupont",
+        "LLM2": "J. Dupont"
+      },
+      "resolution": {
+        "method": "consensus",
+        "phases": ["initial"],
+        "agreement": true
+      }
+    },
+
+    "summary": {
+      "total_questions": 6,
+      "agreed_initial": 4,
+      "required_verification": 2,
+      "required_ultimatum": 1,
+      "final_agreement_rate": 0.833
+    }
+  }
+}
 ```
 
 ---
 
-## Exemple complet
+## Structure hiérarchique
 
-```json
-{
-  "graded_copies": [{
-    "copy_id": "abc-123",
-    "student_name": "Jean Dupont",
-    "total_score": 5.5,
-    "max_score": 8.0,
-    "grades": {
-      "Q1": {"grade": 1.0, "max_points": 1.0, "feedback": "Correct.", "reading": "fiole jaugée"},
-      "Q2": {"grade": 1.0, "max_points": 1.0, "feedback": "Correct.", "reading": "balance"},
-      "Q3": {"grade": 1.5, "max_points": 2.0, "feedback": "Partiellement correct.", "reading": "m = C × V"},
-      "Q4": {"grade": 0.0, "max_points": 1.0, "feedback": "Incorrect.", "reading": "bécher"},
-      "Q5": {"grade": 1.0, "max_points": 2.0, "feedback": "Calcul incomplet.", "reading": "..."},
-      "Q6": {"grade": 1.0, "max_points": 1.0, "feedback": "Correct.", "reading": "..."}
-    },
-    "llm_comparison": {
-      "options": {
-        "mode": "batch",
-        "providers": ["LLM1: gemini-2.5-flash", "LLM2: gpt-4o"],
-        "total_copies": 2
-      },
-      "student_detection": {
-        "copy_index": 1,
-        "student_name": "Jean Dupont",
-        "llm1_student_name": "Jean Dupont",
-        "llm2_student_name": "J. Dupont",
-        "name_disagreement": null
-      },
-      "questions": {
-        "Q1": {
-          "max_points": 1.0,
-          "LLM1: gemini-2.5-flash": {
-            "grade": 1.0,
-            "reading": "fiole jaugée",
-            "reasoning": "L'élève a correctement identifié...",
-            "feedback": "Réponse correcte."
-          },
-          "LLM2: gpt-4o": {
-            "grade": 1.0,
-            "reading": "fiole jaugée",
-            "reasoning": "Identification correcte...",
-            "feedback": "Correct."
-          },
-          "final": {
-            "grade": 1.0,
-            "method": "consensus",
-            "agreement": true
-          }
-        },
-        "Q3": {
-          "max_points": 2.0,
-          "LLM1: gemini-2.5-flash": {
-            "grade": 2.0,
-            "reading": "m = C × V = 40 × 0.1 = 4g",
-            "reasoning": "Calcul complet et correct",
-            "feedback": "Excellent travail."
-          },
-          "LLM2: gpt-4o": {
-            "grade": 1.0,
-            "reading": "m = C × V",
-            "reasoning": "Formule correcte mais pas de calcul numérique",
-            "feedback": "Il manque l'application numérique."
-          },
-          "final": {
-            "grade": 1.5,
-            "method": "average",
-            "agreement": false
-          },
-          "verification": {
-            "final_grade": 1.5,
-            "llm1_new_grade": 2.0,
-            "llm2_new_grade": 1.0,
-            "llm1_reasoning": "Je maintiens ma note...",
-            "llm2_reasoning": "Je maintiens ma note...",
-            "method": "verification_average"
-          },
-          "ultimatum": {
-            "final_grade": 1.5,
-            "llm1_final_grade": 2.0,
-            "llm2_final_grade": 1.0,
-            "llm1_decision": "maintained",
-            "llm2_decision": "maintained",
-            "method": "ultimatum_average"
-          }
-        }
-      }
-    }
-  }]
-}
+```
+audit.json
+└── grading_audit                    # Structure unifiée d'audit
+    ├── mode                         # "single" ou "dual"
+    ├── grading_method               # "batch", "individual", "hybrid"
+    ├── verification_mode            # "grouped", "per-copy", "per-question", "none"
+    │
+    ├── providers[]                  # Liste des LLMs utilisés
+    │   ├── id                       # "LLM1" ou "LLM2"
+    │   ├── model                    # Nom du modèle
+    │   └── tokens                   # Usage des tokens
+    │
+    ├── questions{}                  # Détail par question
+    │   └── {Q1, Q2, ...}/
+    │       ├── llm_results{}        # Résultats par LLM
+    │       │   └── {LLM1, LLM2}/
+    │       │       ├── grade        # Note attribuée
+    │       │       ├── max_points   # Barème détecté
+    │       │       ├── reading      # Lecture de la réponse
+    │       │       ├── reasoning    # Justification
+    │       │       ├── feedback     # Feedback pour l'élève
+    │       │       └── confidence   # Confiance (0-1)
+    │       │
+    │       ├── resolution           # Résolution finale
+    │       │   ├── final_grade      # Note finale
+    │       │   ├── final_max_points # Barème retenu
+    │       │   ├── method           # Méthode de résolution
+    │       │   ├── phases[]         # ["initial"] ou ["initial", "verification", "ultimatum"]
+    │       │   └── agreement        # Accord atteint?
+    │       │
+    │       └── phases{}             # Détail par phase (optionnel)
+    │           ├── initial          # Phase initiale
+    │           ├── verification     # Phase de vérification
+    │           └── ultimatum        # Phase ultimatum
+    │
+    ├── student_detection            # Détection du nom
+    │   ├── final_name               # Nom final retenu
+    │   ├── llm_results{}            # Noms détectés par LLM
+    │   └── resolution               # Résolution
+    │
+    └── summary                      # Résumé statistique
+        ├── total_questions          # Nombre total de questions
+        ├── agreed_initial           # Questions en accord initial
+        ├── required_verification    # Questions nécessitant vérification
+        ├── required_ultimatum       # Questions nécessitant ultimatum
+        └── final_agreement_rate     # Taux d'accord final
 ```
 
 ---
@@ -176,39 +193,57 @@ questions/
 | `consensus` | Accord initial entre les deux LLMs |
 | `verification_consensus` | Accord après cross-verification |
 | `ultimatum_consensus` | Accord après ultimatum |
-| `average` | Moyenne des notes (désaccord persistant) |
-| `user_choice` | Choix utilisateur (mode interactif) |
+| `average` | Moyenne simple (désaccord initial sans vérification) |
+| `verification_average` | Moyenne après vérification (désaccord persiste) |
+| `ultimatum_average` | Moyenne après ultimatum (désaccord persiste) |
+| `single_llm` | Mode LLM unique (pas de comparaison) |
 
 ---
 
-## Détection des problèmes
+## Avantages de la Nouvelle Structure
 
-### Désaccord sur les noms d'élèves
+1. **Uniforme**: Même structure pour single/dual, tous les modes de vérification
+2. **Comparable**: `llm_results.LLM1` vs `llm_results.LLM2` directement
+3. **Traçable**: `phases` montre l'évolution complète (initial → verification → ultimatum)
+4. **Queryable**: Structure prévisible pour jq/analyses
+5. **Extensible**: Facile d'ajouter de nouveaux modes ou phases
 
-```json
-"student_detection": {
-  "copy_index": 1,
-  "student_name": "Jean Dupont",
-  "llm1_student_name": "Sophia Hanou",
-  "llm2_student_name": "Sapio Nancy",
-  "name_disagreement": {
-    "llm1_name": "Sophia Hanou",
-    "llm2_name": "Sapio Nancy",
-    "similarity": 0.45,
-    "resolved_name": "Jean Dupont"
-  }
-}
+---
+
+## Exemple CLI
+
+```bash
+# Voir la structure d'audit unifiée
+cat data/{session}/copies/1/audit.json | jq '.grading_audit'
+
+# Voir le mode et les providers
+cat data/{session}/copies/1/audit.json | jq '.grading_audit | {mode, verification_mode, providers}'
+
+# Comparer les résultats LLM pour une question
+cat data/{session}/copies/1/audit.json | jq '.grading_audit.questions.Q1.llm_results'
+
+# Voir les questions avec désaccord
+cat data/{session}/copies/1/audit.json | jq '.grading_audit.questions | to_entries[] | select(.value.resolution.agreement == false)'
+
+# Voir le résumé
+cat data/{session}/copies/1/audit.json | jq '.grading_audit.summary'
+
+# Voir les méthodes de résolution utilisées
+cat data/{session}/copies/1/audit.json | jq '.grading_audit.questions | to_entries[].value.resolution.method' | sort | uniq -c
 ```
 
-### Désaccord sur le barème
+---
 
-```json
-"max_points_disagreement": {
-  "llm1_max_points": 2.0,
-  "llm2_max_points": 1.5,
-  "resolved_max_points": 2.0,
-  "persisted_after_ultimatum": false
-}
+## Accès à l'Audit
+
+L'audit unifié `grading_audit` est la seule structure d'audit. Accédez-y directement:
+
+```bash
+# Voir l'audit complet
+cat data/{session}/copies/1/audit.json | jq '.grading_audit'
+
+# Voir le résumé
+cat data/{session}/copies/1/audit.json | jq '.grading_audit.summary'
 ```
 
 ---
@@ -217,51 +252,19 @@ questions/
 
 ### Pourquoi LLM1 a-t-il changé sa note?
 
-1. Comparer `LLM1.grade` initial vs `verification.llm1_new_grade`
-2. Lire `verification.llm1_reasoning` pour comprendre le changement
-3. Vérifier si `ultimatum.llm1_decision` = "changed" ou "maintained"
+1. Vérifier `phases.verification.llm1_grade` vs `phases.initial.llm1_grade`
+2. Lire `phases.verification.llm1_reasoning` pour comprendre le changement
+3. Vérifier `phases.ultimatum.llm1_decision` = "maintained" ou "changed"
 
 ### Pourquoi y a-t-il un désaccord?
 
-1. Comparer les `reading` des deux LLMs
-2. Vérifier si l'un a lu plus de contexte que l'autre
-3. Regarder les `reasoning` pour comprendre les divergences
+1. Comparer `llm_results.LLM1.reading` vs `llm_results.LLM2.reading`
+2. Vérifier les `reasoning` respectifs
+3. Regarder l'évolution dans `phases`
 
 ### Quel a été le chemin de décision?
 
-1. `final.agreement = true` → Accord (consensus)
-2. `final.agreement = false` + `verification` présent → Vérification effectuée
-3. `final.agreement = false` + `ultimatum` présent → Ultimatum effectué
-4. `method = "average"` → Désaccord persistant, moyenne appliquée
-
----
-
-## Exemple CLI
-
-```bash
-# Après une correction, consulter l'audit
-cat data/{session_id}/session.json | jq '.graded_copies[0].llm_comparison'
-
-# Voir les désaccords
-cat data/{session_id}/session.json | jq '.graded_copies[].llm_comparison.questions[] | select(.final.agreement == false)'
-
-# Voir les méthodes de résolution utilisées
-cat data/{session_id}/session.json | jq '.graded_copies[].llm_comparison.questions[].final.method' | sort | uniq -c
-```
-
----
-
-## Token Tracking
-
-Le système track également l'utilisation des tokens par phase:
-
-```json
-"token_usage": {
-  "grading": {"prompt": 15000, "completion": 3000},
-  "verification": {"prompt": 5000, "completion": 1000},
-  "calibration": {"prompt": 0, "completion": 0},
-  "annotation": {"prompt": 2000, "completion": 500}
-}
-```
-
-Cette information est affichée en fin de correction via la CLI.
+Regarder `resolution.phases`:
+- `["initial"]` → Accord immédiat
+- `["initial", "verification"]` → Vérification effectuée
+- `["initial", "verification", "ultimatum"]` → Ultimatum nécessaire

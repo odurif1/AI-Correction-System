@@ -155,6 +155,63 @@ class SessionStore:
             with open(copy_dir / "original.pdf", 'wb') as f:
                 f.write(original_pdf)
 
+    def organize_copy_images(self, copy: CopyDocument, copy_number: int) -> CopyDocument:
+        """
+        Move images from temp folder to copy-specific folder.
+
+        Args:
+            copy: CopyDocument with page_images pointing to temp folder
+            copy_number: Copy number (1, 2, 3...)
+
+        Returns:
+            CopyDocument with updated page_images paths
+        """
+        import shutil
+
+        if not copy.page_images:
+            return copy
+
+        copy_dir = self.session_dir / "copies" / str(copy_number)
+        images_dir = copy_dir / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+
+        new_page_images = []
+        for i, old_path in enumerate(copy.page_images):
+            old_path = Path(old_path)
+            if old_path.exists():
+                # New path in copy's images folder
+                new_path = images_dir / f"page_{i}.png"
+                # Move (not copy) to avoid duplicates
+                shutil.move(str(old_path), str(new_path))
+                new_page_images.append(str(new_path))
+            else:
+                # Keep original path if file doesn't exist in temp
+                new_page_images.append(str(old_path))
+
+        # Update copy's page_images
+        copy.page_images = new_page_images
+
+        # Update annotation.json with new paths
+        annotation_file = copy_dir / "annotation.json"
+        if annotation_file.exists():
+            with open(annotation_file, 'r', encoding='utf-8') as f:
+                annotation = json.load(f)
+            annotation["page_images"] = new_page_images
+            with open(annotation_file, 'w', encoding='utf-8') as f:
+                json.dump(annotation, f, indent=2, ensure_ascii=False)
+
+        return copy
+
+    def cleanup_temp_images(self):
+        """Remove temp_images folder if empty."""
+        temp_dir = self.session_dir / "temp_images"
+        if temp_dir.exists() and temp_dir.is_dir():
+            # Only remove if empty
+            try:
+                temp_dir.rmdir()
+            except OSError:
+                pass  # Directory not empty, keep it
+
     def load_copy(self, copy_number: str) -> Optional[CopyDocument]:
         """
         Charge une copie par son numéro.
@@ -340,6 +397,23 @@ class SessionStore:
             shutil.rmtree(cache_dir)
             cache_dir.mkdir()
 
+    # ==================== JSON HELPERS ====================
+
+    def _save_json(self, file_path: Path, data: Dict[str, Any]) -> None:
+        """Save data to JSON file with proper encoding."""
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
+    def _load_json(self, file_path: Path) -> Optional[Dict[str, Any]]:
+        """Load data from JSON file with error handling."""
+        if not file_path.exists():
+            return None
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, IOError) as e:
+            raise SerializationError(f"Failed to load JSON from {file_path}: {e}")
+
     # ==================== REPORTS ====================
 
     def save_report(self, data: Dict[str, Any], filename: str = None) -> Path:
@@ -479,6 +553,8 @@ class SessionStore:
                 temp_file = index_file.with_suffix('.tmp')
                 with open(temp_file, 'w', encoding='utf-8') as f:
                     json.dump(index, f, indent=2, ensure_ascii=False)
+                    f.flush()
+                    os.fsync(f.fileno())
                 temp_file.replace(index_file)  # Atomic on POSIX
 
             finally:

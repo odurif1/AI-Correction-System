@@ -72,8 +72,9 @@ class IntelligentGrader:
             result = self.progress_callback(event_type, data)
             if asyncio.iscoroutine(result):
                 await result
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Progress callback failed: {e}")
 
     async def grade_copy(
         self,
@@ -140,9 +141,62 @@ class IntelligentGrader:
             # Store comparison data if available (dual-LLM mode)
             comp_data = result.get("comparison")
             if comp_data:
-                if graded.llm_comparison is None:
-                    graded.llm_comparison = {}
-                graded.llm_comparison[question_id] = comp_data
+                # Build grading_audit if not already present
+                if graded.grading_audit is None:
+                    from audit.builder import AuditBuilder
+                    from core.models import GradingAudit
+                    graded.grading_audit = GradingAudit(
+                        mode="dual",
+                        grading_method="individual",
+                        verification_mode="none",
+                        providers=[],
+                        questions={},
+                        summary={"total_questions": 0, "agreed_initial": 0, "required_verification": 0, "required_ultimatum": 0, "final_agreement_rate": 0.0}
+                    )
+
+                # Add question result to audit
+                from audit.builder import AuditBuilder
+                from core.models import LLMResult, ResolutionInfo
+
+                # Get LLM names from comparison data
+                llm1_name = comp_data.get("llm1", {}).get("provider", "LLM1")
+                llm2_name = comp_data.get("llm2", {}).get("provider", "LLM2")
+
+                # Build LLM results
+                llm_results = {}
+                if comp_data.get("llm1"):
+                    llm_results["LLM1"] = LLMResult(
+                        grade=comp_data["llm1"].get("grade", 0),
+                        max_points=max_points,  # Use the max_points from the question
+                        reading=comp_data["llm1"].get("reading", ""),
+                        reasoning=comp_data["llm1"].get("reasoning", ""),
+                        feedback=comp_data["llm1"].get("student_feedback", ""),
+                        confidence=comp_data["llm1"].get("confidence", 0.8)
+                    )
+                if comp_data.get("llm2"):
+                    llm_results["LLM2"] = LLMResult(
+                        grade=comp_data["llm2"].get("grade", 0),
+                        max_points=max_points,  # Use the max_points from the question
+                        reading=comp_data["llm2"].get("reading", ""),
+                        reasoning=comp_data["llm2"].get("reasoning", ""),
+                        feedback=comp_data["llm2"].get("student_feedback", ""),
+                        confidence=comp_data["llm2"].get("confidence", 0.8)
+                    )
+
+                # Build resolution
+                resolution = ResolutionInfo(
+                    final_grade=grade,
+                    final_max_points=max_points,
+                    method=comp_data.get("final_method", "consensus"),
+                    phases=["initial"],
+                    agreement=comp_data.get("final_agreement", True)
+                )
+
+                # Add to audit
+                graded.grading_audit.questions[question_id] = QuestionAudit(
+                    llm_results=llm_results,
+                    resolution=resolution
+                )
 
             # Handle None grade (error case)
             grade = result.get("grade") or 0
@@ -211,14 +265,6 @@ class IntelligentGrader:
         results_summary = []
         for q_id in sorted(graded.grades.keys()):
             grade = graded.grades[q_id]
-            # Find max points from comparison or estimate
-            if graded.llm_comparison and q_id in graded.llm_comparison:
-                comp = graded.llm_comparison[q_id]
-                # Estimate max from the grades (rough)
-                max_q = max(1.0, grade * 1.5)  # Rough estimate
-            else:
-                max_q = 1.0  # Default
-
             feedback_q = graded.student_feedback.get(q_id, "")[:100]
             results_summary.append(f"{q_id}: {grade:.1f} - {feedback_q}")
 
@@ -277,7 +323,8 @@ Reply ONLY with the comment, no quotation marks or pleasantries."""
             response = provider.call_text(prompt)
             return response.strip() if response else ""
         except Exception as e:
-            # Return empty on error rather than fail
+            import logging
+            logging.getLogger(__name__).warning(f"Overall feedback generation failed: {e}")
             return ""
 
     async def _grade_question(

@@ -50,10 +50,8 @@ def build_batch_grading_prompt(
     # Determine copies instruction
     if detect_students:
         copies_instruction = t["copies_instruction_detected"]
-        copies_count_text = t.get("all_students", "all students")
     else:
         copies_instruction = t["copies_instruction_batch"]
-        copies_count_text = f"{len(copies_data)} copies"
 
     # Build copies steps
     copies_steps = "\n".join(f"{i+1}. {step}" for i, step in enumerate(t["copies_steps"]))
@@ -67,18 +65,21 @@ def build_batch_grading_prompt(
     # Build JSON example
     json_example = _build_batch_json_example(t)
 
-    return f"""{t['role'].format(copies_count=copies_count_text)}
-
-{t['approach_intro']}
-
-═══════════════════════════════════════════════════════════════════
-
+    # Build rubric section only if questions are defined
+    rubric_section = ""
+    if questions_text.strip():
+        rubric_section = f"""
 # {t['rubric_title']}
 
 {questions_text}
 
 ═══════════════════════════════════════════════════════════════════
-{student_detection}
+"""
+
+    return f"""{t['role']}
+
+═══════════════════════════════════════════════════════════════════
+{rubric_section}{student_detection}
 # {t['copies_title']}
 
 {copies_instruction}:
@@ -156,9 +157,9 @@ def _build_batch_json_example(t: dict) -> str:
       "questions": {{
         "Q1": {{
           "student_answer_read": "{t['json_student_answer']}",
-          "grade": 1.0,
-          "max_points": 1.0,
-          "confidence": 0.95,
+          "grade": "<note sur le barème>",
+          "max_points": "<barème de la question>",
+          "confidence": "<0.0 à 1.0>",
           "reasoning": "{t['json_reasoning']}",
           "feedback": "{t['json_feedback']}"
         }},

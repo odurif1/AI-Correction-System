@@ -444,6 +444,8 @@ class AICallResult(BaseModel):
     # Tokens (if available)
     prompt_tokens: Optional[int] = None
     completion_tokens: Optional[int] = None
+    # Cached tokens (served from context cache, cost less)
+    cached_tokens: Optional[int] = None
 
 
 class ExportOptions(BaseModel):

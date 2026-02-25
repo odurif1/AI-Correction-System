@@ -1,0 +1,2125 @@
+📄 Fichier: /home/olivier/Correction/outputs/e93b4067-92fe-48d3-a892-68269a07b9c4/debug/debug_log.json
+
+============================================================
+📊 RÉSUMÉ
+============================================================
+Temps de capture: 2026-02-25T00:06:01.196151
+Nombre total d'appels: 10
+
+Appels par provider:
+  - GeminiProvider: 10
+
+Appels par type:
+  - vision: 2
+  - chat: 8
+
+Tokens totaux:
+  - Prompt: 43,182
+  - Completion: 16,130
+  - Total: 59,312
+
+============================================================
+📞 APPEL #1.1
+============================================================
+Provider: GeminiProvider
+Model: gemini-2.5-flash-lite
+Type: vision
+Durée: 5710ms
+Tokens: 1688 prompt + 2147 completion
+
+📷 Images (4):
+  - batch_copy_1_page_0.png
+  - batch_copy_1_page_1.png
+  - batch_copy_1_page_2.png
+  ... et 1 autres
+
+📝 PROMPT (2053 chars):
+----------------------------------------
+Tu es un correcteur expérimenté. Tu dois corriger toutes les copies présentées.
+
+═══════════════════════════════════════════════════════════════════
+
+# COPIES À CORRIGER
+
+Pour CHACUNE des copies de ce document:
+1. Identifie le nom de l'élève (si présent)
+2. Repère les questions sur le document
+3. Lis attentivement chaque réponse
+4. Attribue une note en justifiant
+5. Formule un feedback sobre et professionnel
+
+═══════════════════════════════════════════════════════════════════
+
+# RÈGLES IMPORTANTES
+
+1. **COHÉRENCE ABSOLUE**: Si deux élèves ont écrit la même réponse, ils doivent avoir la même note
+2. **LECTURE ATTENTIVE**: Utilise le CONTEXTE (question, cohérence entre copies) pour déchiffrer l'écriture manuscrite
+3. **FEEDBACK SOBRE**: Commentaire court, constructif, adapté à la difficulté
+4. **DÉTECTION PATTERNS**: Note si beaucoup d'élèves ont la même réponse (correcte ou non)
+
+═══════════════════════════════════════════════════════════════════
+
+# FORMAT DE RÉPONSE (JSON)
+
+```json
+{
+  "copies": [
+    {
+      "copy_index": 1,
+      "student_name": "Nom de l'élève ou null",
+      "pages": [1, 2],
+      "questions": {
+        "Q1": {
+          "student_answer_read": "Ce que l'élève a écrit",
+          "grade": "<note sur le barème>",
+          "max_points": "<barème de la question>",
+          "confidence": "<0.0 à 1.0>",
+          "reasoning": "Pourquoi cette note",
+          "feedback": "Feedback sobre"
+        },
+        "Q2": { ... }
+      },
+      "overall_feedback": "Commentaire général sur la copie"
+    },
+    {
+      "copy_index": 2,
+      "student_name": "Autre élève",
+      "pages": [3, 4],
+      ...
+    }
+  ],
+  "patterns": {
+    "Q1": {
+      "common_answer": "fiole jaugée",
+      "frequency": "75%",
+      "is_correct": true
+    },
+    "suspicious_similarities": [
+      {"copies": [1, 2], "question": "Q4", "reason": "Réponses identiques mot pour mot"}
+    ]
+  }
+}
+```
+
+═══════════════════════════════════════════════════════════════════
+
+Analyse maintenant le document et retourne ta correction au format JSON.
+
+
+📤 RÉPONSE (7268 chars):
+----------------------------------------
+```json
+{
+  "copies": [
+    {
+      "copy_index": 1,
+      "student_name": "Gogola Hanou",
+      "pages": [1, 2],
+      "questions": {
+        "Q1": {
+          "student_answer_read": "ballon",
+          "grade": "1.0",
+          "max_points": "1pt",
+          "confidence": 1.0,
+          "reasoning": "L'élève a correctement identifié la verrerie comme un ballon.",
+          "feedback": "Bonne identification."
+        },
+        "Q2": {
+          "student_answer_read": "Fiole Jaugée",
+          "grade": "1.0",
+          "max_points": "1pt",
+          "confidence": 1.0,
+          "reasoning": "L'élève a correctement identifié la verrerie comme une fiole jaugée.",
+          "feedback": "Bonne identification."
+        },
+        "Q3": {
+          "student_answer_read": "Une dissoluto diluction c'est quand on mélnge avec un soluté produit ça donne un solvant",
+          "grade": "0.5",
+          "max_points": "1pt",
+          "confidence": 0.9,
+          "reasoning": "L'élève a compris qu'il s'agit d'un mélange, mais la définition est imprécise et contient des erreurs de vocabulaire ('dissoluto', 'soluté produit'). La notion de solvant est inversée.",
+          "feedback": "Définition à reformuler en utilisant le vocabulaire précis."
+        },
+        "Q4": {
+          "student_answer_read": "Le Solvant c'est un produit qui rêve seux",
+          "grade": "0.5",
+          "max_points": "1pt",
+          "confidence": 0.8,
+          "reasoning": "L'élève identifie correctement que le solvant est ce qui reste ('rêve' est une faute d'orthographe pour 'reste' ou une confusion). La définition reste vague.",
+          "feedback": "Préciser le rôle du solvant dans la dissolution."
+        },
+        "Q5": {
+          "student_answer_read": "m = V×Cm",
+          "grade": "2.0",
+          "max_points": "2pt",
+          "confidence": 1.0,
+          "reasoning": "L'élève a donné la formule littérale correcte pour calculer la masse de soluté.",
+          "feedback": "Formule correcte."
+        },
+        "Q6": {
+          "student_answer_read": "m = 40g L x 10L = 40g",
+          "grade": "0.0",
+          "max_points": "2pt",
+          "confidence": 1.0,
+          "reasoning": "L'élève a appliqué la formule mais a fait une erreur d'unités. La concentration est en g.L⁻¹ et le volume est en mL, il manque la conversion du volume. La multiplication est incorrecte.",
+          "feedback": "Attention aux unités et aux calculs. La conversion du volume est nécessaire."
+        }
+      },
+      "overall_feedback": "Bonne maîtrise de l'identification du matériel. La définition des termes de cours pourrait être plus précise. L'exercice demande une attention particulière aux unités et aux conversions."
+    },
+    {
+      "copy_index": 2,
+      "student_name": "Coronado Florence",
+      "pages": [3, 4],
+      "questions": {
+        "Q1": {
+          "student_answer_read": "Fiole jaugée",
+          "grade": "1.0",
+          "max_points": "1pt",
+          "confidence": 1.0,
+          "reasoning": "L'élève a correctement identifié la verrerie comme une fiole jaugée.",
+          "feedback": "Bonne identification."
+        },
+        "Q2": {
+          "student_answer_read": "balance",
+          "grade": "1.0",
+          "max_points": "1pt",
+          "confidence": 1.0,
+          "reasoning": "L'élève a correctement identifié la verrerie comme une balance.",
+          "feedback": "Bonne identification."
+        },
+        "Q3": {
+          "student_answer_read": "le solute est la matière qui se dissout avec des dissolvant par ex (le sucre et l'eau)",
+          "grade": "1.0",
+          "max_points": "1pt",
+          "confidence": 1.0,
+          "reasoning": "L'élève a correctement défini le soluté et donné un bon exemple.",
+          "feedback": "Définition claire et exemple pertinent."
+        },
+        "Q4": {
+          "student_answer_read": "elle s'exprime en gramme (g)",
+          "grade": "0.5",
+          "max_points": "1pt",
+          "confidence": 0.8,
+          "reasoning": "L'élève donne une unité de masse pour la concentration, ce qui est partiellement correct mais incomplet. La concentration massique s'exprime en g/L.",
+          "feedback": "La concentration massique s'exprime en g/L. Préciser les unités."
+        },
+        "Q5": {
+          "student_answer_read": "Cm = m soluté / V ................ 30g / 250ml",
+          "grade": "1.5",
+          "max_points": "2pt",
+          "confidence": 0.9,
+          "reasoning": "L'élève a donné la formule littérale correcte pour la concentration massique. Cependant, la question demandait l'expression de la masse 'm' en fonction de Cm et V, qui est m = Cm * V.",
+          "feedback": "La question demandait l'expression de la masse 'm', pas de la concentration 'Cm'."
+        },
+        "Q6": {
+          "student_answer_read": "cm = m Soluté / V .......... 30g / 250ml",
+          "grade": "0.0",
+          "max_points": "2pt",
+          "confidence": 1.0,
+          "reasoning": "L'élève a redonné la formule de la concentration massique au lieu de calculer la concentration massique. L'énoncé demandait de calculer la concentration massique Cm, et non de la redéfinir ou de redonner la formule.",
+          "feedback": "La question demandait de calculer la concentration massique, pas de donner la formule."
+        }
+      },
+      "overall_feedback": "Bonne identification du matériel et bonne définition des concepts de base. Des confusions apparaissent dans la compréhension des questions demandant d'exprimer des grandeurs ou de calculer. L'attention aux unités et aux formulations des questions est à renforcer."
+    }
+  ],
+  "patterns": {
+    "Q1": {
+      "common_answer": "Fiole jaugée",
+      "frequency": "50%",
+      "is_correct": true
+    },
+    "Q2": {
+      "common_answer": "Fiole jaugée",
+      "frequency": "50%",
+      "is_correct": true
+    },
+    "Q3": {
+      "common_answer": "Définition du soluté/dilution avec mélange",
+      "frequency": "100%",
+      "is_correct": false
+    },
+    "Q4": {
+      "common_answer": "Description vague du solvant/concentration en gramme",
+      "frequency": "100%",
+      "is_correct": false
+    },
+    "Q5": {
+      "common_answer": "Formule littérale de la concentration massique (Cm = m/V)",
+      "frequency": "50%",
+      "is_correct": false
+    },
+    "Q6": {
+      "common_answer": "Redonner la formule de la concentration massique",
+      "frequency": "100%",
+      "is_correct": false
+    },
+    "suspicious_similarities": [
+      {
+        "copies": [1, 2],
+        "question": "Q1",
+        "reason": "Les deux élèves ont identifié une verrerie, mais l'une est correcte pour l'autre."
+      },
+      {
+        "copies": [1, 2],
+        "question": "Q2",
+        "reason": "Les deux élèves ont identifié une verrerie, mais l'une est correcte pour l'autre."
+      },
+      {
+        "copies": [1, 2],
+        "question": "Q5",
+        "reason": "Les deux élèves ont donné la formule de la concentration massique, mais la question demandait l'expression de la masse."
+      },
+      {
+        "copies": [1, 2],
+        "question": "Q6",
+        "reason": "Les deux élèves ont donné la formule de la concentration massique au lieu de calculer la concentration massique."
+      }
+    ]
+  }
+}
+```
+
+============================================================
+📞 APPEL #1.2
+============================================================
+Provider: GeminiProvider
+Model: gemini-2.5-flash-lite
+Type: chat
+Durée: 4992ms
+Tokens: 3450 prompt + 1312 completion
+
+📷 Images (4):
+  - batch_copy_1_page_0.png
+  - batch_copy_1_page_1.png
+  - batch_copy_1_page_2.png
+  ... et 1 autres
+
+📝 PROMPT (5066 chars):
+----------------------------------------
+Tu as corrigé des copies et un DÉSACCORD a été détecté avec un autre correcteur.
+
+Tu dois maintenant RÉEXAMINER ta correction en tenant compte de l'avis de l'autre correcteur.
+
+═══════════════════════════════════════════════════════════════════
+
+# DÉSACCORDS À RÉEXAMINER
+
+## Désaccord 1: Copie 1, Q1
+
+**TOI (LLM1: gemini-2.5-flash-lite) as donné**: **1.0/0.0** pts
+- Ta lecture: "ballon"
+- Ton raisonnement: L'élève a correctement identifié la verrerie comme un ballon.
+
+**L'AUTRE IA a donné**: **0.0/1.0** pts
+- Sa lecture: "ballon"
+- Son raisonnement: L'image représente une fiole jaugée et non un ballon.
+
+Écart: 1.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 0.0 pts, Autre: 1.0 pts
+
+## Désaccord 2: Copie 1, Q2
+
+**TOI (LLM1: gemini-2.5-flash-lite) as donné**: **1.0/0.0** pts
+- Ta lecture: "Fiole Jaugée"
+- Ton raisonnement: L'élève a correctement identifié la verrerie comme une fiole jaugée.
+
+**L'AUTRE IA a donné**: **1.0/1.0** pts
+- Sa lecture: "fiole Jaugée"
+- Son raisonnement: L'élève identifie correctement la fiole jaugée.
+
+Écart: 0.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 0.0 pts, Autre: 1.0 pts
+
+## Désaccord 3: Copie 1, Q3
+
+**TOI (LLM1: gemini-2.5-flash-lite) as donné**: **0.5/0.0** pts
+- Ta lecture: "Une dissoluto diluction c'est quand on mélnge avec un soluté produit ça donne un solvant"
+- Ton raisonnement: L'élève a compris qu'il s'agit d'un mélange, mais la définition est imprécise et contient des erreurs de vocabulaire ('dissoluto', 'soluté produit'). La notion de solvant est inversée.
+
+**L'AUTRE IA a donné**: **0.0/1.0** pts
+- Sa lecture: "Une dissoluto dilution c'est quand on mélange avec un solvant produit ca donne un solvant"
+- Son raisonnement: La définition est confuse et inexacte. La dilution est le fait de diminuer la concentration d'une solution par ajout de solvant, pas la création d'un solvant.
+
+Écart: 0.5 points
+**ATTENTION: Désaccord sur le barème!** Toi: 0.0 pts, Autre: 1.0 pts
+
+## Désaccord 4: Copie 1, Q4
+
+**TOI (LLM1: gemini-2.5-flash-lite) as donné**: **0.5/0.0** pts
+- Ta lecture: "Le Solvant c'est un produit qui rêve seux"
+- Ton raisonnement: L'élève identifie correctement que le solvant est ce qui reste ('rêve' est une faute d'orthographe pour 'reste' ou une confusion). La définition reste vague.
+
+**L'AUTRE IA a donné**: **0.0/1.0** pts
+- Sa lecture: "le solvant c'est un produit qui rêve sens"
+- Son raisonnement: La réponse est incompréhensible et sans rapport avec la question.
+
+Écart: 0.5 points
+**ATTENTION: Désaccord sur le barème!** Toi: 0.0 pts, Autre: 1.0 pts
+
+## Désaccord 5: Copie 1, Q5
+
+**TOI (LLM1: gemini-2.5-flash-lite) as donné**: **2.0/0.0** pts
+- Ta lecture: "m = V×Cm"
+- Ton raisonnement: L'élève a donné la formule littérale correcte pour calculer la masse de soluté.
+
+**L'AUTRE IA a donné**: **0.0/2.0** pts
+- Sa lecture: "m = V X cm"
+- Son raisonnement: L'expression littérale de la masse d'un soluté est m = Cm * V, pas V * Cm. De plus, la concentration massique est généralement notée Cm ou C m.
+
+Écart: 2.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 0.0 pts, Autre: 2.0 pts
+
+## Désaccord 6: Copie 1, Q6
+
+**TOI (LLM1: gemini-2.5-flash-lite) as donné**: **0.0/0.0** pts
+- Ta lecture: "m = 40g L x 10L = 40g"
+- Ton raisonnement: L'élève a appliqué la formule mais a fait une erreur d'unités. La concentration est en g.L⁻¹ et le volume est en mL, il manque la conversion du volume. La multiplication est incorrecte.
+
+**L'AUTRE IA a donné**: **0.0/2.0** pts
+- Sa lecture: "m = 40g/L x 1.0 L = 40g"
+- Son raisonnement: Le calcul est incorrect. L'énoncé indique un volume de 100,0 mL soit 0,1 L, et non 1,0 L. La concentration massique est de 40 g.L^-1.
+
+Écart: 0.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 0.0 pts, Autre: 2.0 pts
+
+
+═══════════════════════════════════════════════════════════════════
+
+# TA MISSION
+
+1. RELIS l'image de la copie attentivement
+2. COMPARE ta lecture avec celle de l'autre correcteur
+3. DÉCIDE si tu maintiens ta note ou si tu l'ajustes
+4. JUSTIFIE ta décision
+
+**IMPORTANT**: Tu peux:
+- Maintenir ta note si tu es sûr de toi
+- Ajuster ta note si l'autre correcteur t'a fait voir quelque chose que tu as manqué
+- Changer complètement si tu réalises une erreur
+
+═══════════════════════════════════════════════════════════════════
+
+# FORMAT DE RÉPONSE (JSON)
+
+```json
+{
+  "verifications": [
+    {
+      "copy_index": 1,
+      "question_id": "Q1",
+      "my_initial_grade": 1.0,
+      "my_new_grade": 0.5,
+      "my_new_max_points": 2.0,
+      "my_new_reading": "Réponse corrigée de l'élève",
+      "changed": true,
+      "reasoning": "Pourquoi j'ai changé/maintenu ma note",
+      "feedback": "Feedback final pour l'élève (concis et constructif)",
+      "confidence": 0.9
+    },
+    ...
+  ]
+}
+```
+
+**IMPORTANT**: Si tu changes ton barème (max_points), indique le nouveau barème dans `my_new_max_points`. Si tu corriges ta lecture, indique la nouvelle lecture dans `my_new_reading`.
+
+═══════════════════════════════════════════════════════════════════
+
+Réexamine les copies et retourne ta décision au format JSON.
+
+
+📤 RÉPONSE (4141 chars):
+----------------------------------------
+```json
+{
+  "verifications": [
+    {
+      "copy_index": 1,
+      "question_id": "Q1",
+      "my_initial_grade": 1.0,
+      "my_new_grade": 0.0,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "ballon",
+      "changed": true,
+      "reasoning": "Après réexamen et comparaison avec l'avis de l'autre correcteur, j'ai constaté que l'image de la verrerie représente bien une fiole jaugée et non un ballon. Ma lecture initiale était correcte, mais mon identification de l'objet était erronée. La note est donc ajustée.",
+      "feedback": "L'objet représenté est une fiole jaugée. Attention à bien identifier la verrerie.",
+      "confidence": 1.0
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q2",
+      "my_initial_grade": 1.0,
+      "my_new_grade": 1.0,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "Fiole Jaugée",
+      "changed": false,
+      "reasoning": "Ma note initiale et celle de l'autre correcteur sont identiques. L'élève a correctement identifié la verrerie comme une fiole jaugée. Ma lecture et mon évaluation sont donc maintenues.",
+      "feedback": "Bien identifié.",
+      "confidence": 1.0
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q3",
+      "my_initial_grade": 0.5,
+      "my_new_grade": 0.0,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "Une dissoluto dilution c'est quand on mélnge avec un solva produit ça donne un solvant",
+      "changed": true,
+      "reasoning": "L'autre correcteur a souligné la confusion et l'inexactitude de la définition. Ma note initiale reflétait une compréhension partielle, mais l'avis de l'autre correcteur met en évidence le manque de précision et les erreurs de vocabulaire. La définition donnée n'est pas correcte, il s'agit de la création d'un solvant et non de la dilution. La note est donc ajustée à 0.",
+      "feedback": "La définition de la dilution est incorrecte. Il s'agit de diminuer la concentration d'une solution en ajoutant du solvant.",
+      "confidence": 1.0
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q4",
+      "my_initial_grade": 0.5,
+      "my_new_grade": 0.0,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "Le Solvant c'est un produit qui rêve seux",
+      "changed": true,
+      "reasoning": "L'autre correcteur considère la réponse comme incompréhensible et sans rapport. Bien que j'ai interprété 'rêve seux' comme une tentative de 'reste' ou 'solvant', l'autre correcteur a raison sur l'absence de sens clair et de définition pertinente. La réponse ne répond pas à la question. Ma note est donc ajustée à 0.",
+      "feedback": "La réponse n'est pas claire et ne définit pas correctement le solvant.",
+      "confidence": 1.0
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q5",
+      "my_initial_grade": 2.0,
+      "my_new_grade": 0.0,
+      "my_new_max_points": 2.0,
+      "my_new_reading": "m = V×Cm",
+      "changed": true,
+      "reasoning": "L'autre correcteur a identifié une erreur dans l'ordre des termes de la formule, bien que mathématiquement commutative (V * Cm = Cm * V), la convention et la clarté attendues en chimie sont Cm * V. De plus, la notation de la concentration massique (Cm) est correctement soulignée. Ma lecture était correcte, mais l'appréciation de la réponse doit être plus stricte sur la convention. La note est donc ajustée à 0.",
+      "feedback": "L'ordre des termes dans la formule littérale est conventionnellement Cm * V. Attention à la notation.",
+      "confidence": 1.0
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q6",
+      "my_initial_grade": 0.0,
+      "my_new_grade": 0.0,
+      "my_new_max_points": 2.0,
+      "my_new_reading": "m = 40g L x 10L = 40g",
+      "changed": false,
+      "reasoning": "Ma note initiale et celle de l'autre correcteur sont identiques (0 points). Les deux correcteurs identifient des erreurs dans le calcul : l'énoncé indique 100,0 mL (soit 0,1 L) et non 10 L, et la multiplication est incorrecte. L'évaluation et la note sont donc maintenues.",
+      "feedback": "Le calcul est erroné, notamment concernant le volume utilisé et le résultat.",
+      "confidence": 1.0
+    }
+  ]
+}
+```
+
+============================================================
+📞 APPEL #1.2
+============================================================
+Provider: GeminiProvider
+Model: gemini-2.5-flash-lite
+Type: chat
+Durée: 3972ms
+Tokens: 2406 prompt + 1749 completion
+
+📝 PROMPT (5152 chars):
+----------------------------------------
+Tu as corrigé des copies et un DÉSACCORD a été détecté avec un autre correcteur.
+
+Tu dois maintenant RÉEXAMINER ta correction en tenant compte de l'avis de l'autre correcteur.
+
+═══════════════════════════════════════════════════════════════════
+
+# DÉSACCORDS À RÉEXAMINER
+
+## Désaccord 1: Copie 2, Q1
+
+**TOI (LLM1: gemini-2.5-flash-lite) as donné**: **1.0/0.0** pts
+- Ta lecture: "Fiole jaugée"
+- Ton raisonnement: L'élève a correctement identifié la verrerie comme une fiole jaugée.
+
+**L'AUTRE IA a donné**: **1.0/1.0** pts
+- Sa lecture: "Fiole jaugé"
+- Son raisonnement: L'élève identifie correctement la fiole jaugée.
+
+Écart: 0.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 0.0 pts, Autre: 1.0 pts
+
+## Désaccord 2: Copie 2, Q2
+
+**TOI (LLM1: gemini-2.5-flash-lite) as donné**: **1.0/0.0** pts
+- Ta lecture: "balance"
+- Ton raisonnement: L'élève a correctement identifié la verrerie comme une balance.
+
+**L'AUTRE IA a donné**: **1.0/1.0** pts
+- Sa lecture: "balance"
+- Son raisonnement: L'élève identifie correctement la balance.
+
+Écart: 0.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 0.0 pts, Autre: 1.0 pts
+
+## Désaccord 3: Copie 2, Q3
+
+**TOI (LLM1: gemini-2.5-flash-lite) as donné**: **1.0/0.0** pts
+- Ta lecture: "le solute est la matière qui se dissout avec des dissolvant par ex (le sucre et l'eau)"
+- Ton raisonnement: L'élève a correctement défini le soluté et donné un bon exemple.
+
+**L'AUTRE IA a donné**: **1.0/1.0** pts
+- Sa lecture: "le soluté est la matière qui se dissout avec des dissolvant par ex (le sucre et l'eau)"
+- Son raisonnement: La définition du soluté est correcte et bien illustrée par un exemple pertinent.
+
+Écart: 0.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 0.0 pts, Autre: 1.0 pts
+
+## Désaccord 4: Copie 2, Q4
+
+**TOI (LLM1: gemini-2.5-flash-lite) as donné**: **0.5/0.0** pts
+- Ta lecture: "elle s'exprime en gramme (g)"
+- Ton raisonnement: L'élève donne une unité de masse pour la concentration, ce qui est partiellement correct mais incomplet. La concentration massique s'exprime en g/L.
+
+**L'AUTRE IA a donné**: **0.0/1.0** pts
+- Sa lecture: "elle s'exprime en gramme (g)... dissolvant"
+- Son raisonnement: La question porte sur l'unité de la concentration massique, qui est le gramme par litre (g/L). L'élève ne donne que l'unité de masse (gramme) et mentionne 'dissolvant' sans lien clair.
+
+Écart: 0.5 points
+**ATTENTION: Désaccord sur le barème!** Toi: 0.0 pts, Autre: 1.0 pts
+
+## Désaccord 5: Copie 2, Q5
+
+**TOI (LLM1: gemini-2.5-flash-lite) as donné**: **1.5/0.0** pts
+- Ta lecture: "Cm = m soluté / V ................ 30g / 250ml"
+- Ton raisonnement: L'élève a donné la formule littérale correcte pour la concentration massique. Cependant, la question demandait l'expression de la masse 'm' en fonction de Cm et V, qui est m = Cm * V.
+
+**L'AUTRE IA a donné**: **1.0/2.0** pts
+- Sa lecture: "cm = m soluté V"
+- Son raisonnement: L'élève donne la relation Cm = m/V, ce qui est correct. Cependant, le 'soluté' est superflu dans l'expression.
+
+Écart: 0.5 points
+**ATTENTION: Désaccord sur le barème!** Toi: 0.0 pts, Autre: 2.0 pts
+
+## Désaccord 6: Copie 2, Q6
+
+**TOI (LLM1: gemini-2.5-flash-lite) as donné**: **0.0/0.0** pts
+- Ta lecture: "cm = m Soluté / V .......... 30g / 250ml"
+- Ton raisonnement: L'élève a redonné la formule de la concentration massique au lieu de calculer la concentration massique. L'énoncé demandait de calculer la concentration massique Cm, et non de la redéfinir ou de redonner la formule.
+
+**L'AUTRE IA a donné**: **1.0/2.0** pts
+- Sa lecture: "cm = 30g V 250ml"
+- Son raisonnement: L'élève a correctement identifié la masse de soluté (30 g) mais n'a pas effectué le calcul final de la concentration massique. Le volume de 250 mL n'est pas converti en litres.
+
+Écart: 1.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 0.0 pts, Autre: 2.0 pts
+
+
+═══════════════════════════════════════════════════════════════════
+
+# TA MISSION
+
+1. RELIS l'image de la copie attentivement
+2. COMPARE ta lecture avec celle de l'autre correcteur
+3. DÉCIDE si tu maintiens ta note ou si tu l'ajustes
+4. JUSTIFIE ta décision
+
+**IMPORTANT**: Tu peux:
+- Maintenir ta note si tu es sûr de toi
+- Ajuster ta note si l'autre correcteur t'a fait voir quelque chose que tu as manqué
+- Changer complètement si tu réalises une erreur
+
+═══════════════════════════════════════════════════════════════════
+
+# FORMAT DE RÉPONSE (JSON)
+
+```json
+{
+  "verifications": [
+    {
+      "copy_index": 1,
+      "question_id": "Q1",
+      "my_initial_grade": 1.0,
+      "my_new_grade": 0.5,
+      "my_new_max_points": 2.0,
+      "my_new_reading": "Réponse corrigée de l'élève",
+      "changed": true,
+      "reasoning": "Pourquoi j'ai changé/maintenu ma note",
+      "feedback": "Feedback final pour l'élève (concis et constructif)",
+      "confidence": 0.9
+    },
+    ...
+  ]
+}
+```
+
+**IMPORTANT**: Si tu changes ton barème (max_points), indique le nouveau barème dans `my_new_max_points`. Si tu corriges ta lecture, indique la nouvelle lecture dans `my_new_reading`.
+
+═══════════════════════════════════════════════════════════════════
+
+Réexamine les copies et retourne ta décision au format JSON.
+
+
+📤 RÉPONSE (5319 chars):
+----------------------------------------
+Je comprends. Je vais maintenant réexaminer la copie en tenant compte des désaccords signalés et ajuster mes évaluations si nécessaire.
+
+Voici ma révision au format JSON :
+
+```json
+{
+  "verifications": [
+    {
+      "copy_index": 2,
+      "question_id": "Q1",
+      "my_initial_grade": 0.0,
+      "my_new_grade": 1.0,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "Fiole jaugée",
+      "changed": true,
+      "reasoning": "Après réexamen et comparaison avec l'avis de l'autre correcteur, la lecture 'Fiole jaugé' est effectivement une erreur de ma part pour 'Fiole jaugée'. L'orthographe ne remet pas en cause la bonne identification de l'objet. Le barème initial était de 1.0 point pour une identification correcte, et j'avais attribué 0.0 par erreur. Je corrige donc ma note à 1.0.",
+      "feedback": "Bien identifié.",
+      "confidence": 0.95
+    },
+    {
+      "copy_index": 2,
+      "question_id": "Q2",
+      "my_initial_grade": 0.0,
+      "my_new_grade": 1.0,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "balance",
+      "changed": true,
+      "reasoning": "L'autre correcteur a raison. Ma lecture était 'balance', et j'avais attribué 0.0/1.0. L'identification de la balance est correcte. Il semble que j'aie confondu la lecture et la note. Je corrige ma note à 1.0/1.0.",
+      "feedback": "Bien identifié.",
+      "confidence": 0.95
+    },
+    {
+      "copy_index": 2,
+      "question_id": "Q3",
+      "my_initial_grade": 0.0,
+      "my_new_grade": 1.0,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "le solute est la matière qui se dissout avec des dissolvant par ex (le sucre et l'eau)",
+      "changed": true,
+      "reasoning": "L'autre correcteur et moi avions la même lecture et le même raisonnement initial. Cependant, j'avais attribué 0.0/1.0 alors que la réponse est correcte. C'est une erreur dans l'application du barème. Je corrige la note à 1.0/1.0.",
+      "feedback": "Définition correcte et bon exemple.",
+      "confidence": 0.95
+    },
+    {
+      "copy_index": 2,
+      "question_id": "Q4",
+      "my_initial_grade": 0.0,
+      "my_new_grade": 0.0,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "elle s'exprime en gramme (g)",
+      "changed": false,
+      "reasoning": "Ma lecture initiale est 'elle s'exprime en gramme (g)'. L'autre correcteur a lu 'elle s'exprime en gramme (g)... dissolvant'. Bien que le mot 'dissolvant' soit présent dans la copie, il n'est pas pertinent pour la question qui porte sur l'unité de la concentration massique. La concentration massique s'exprime en g/L. L'élève n'a donné que l'unité de masse 'g', ce qui est incomplet. Mon attribution de 0.0/1.0 est donc justifiée, car la réponse est incorrecte. L'autre correcteur a attribué 1.0/1.0, ce qui me semble excessif compte tenu de l'incomplétude de la réponse.",
+      "feedback": "L'unité de la concentration massique est g/L. Le gramme seul n'est pas suffisant.",
+      "confidence": 0.85
+    },
+    {
+      "copy_index": 2,
+      "question_id": "Q5",
+      "my_initial_grade": 0.0,
+      "my_new_grade": 0.5,
+      "my_new_max_points": 2.0,
+      "my_new_reading": "Cm = m soluté / V ................ 30g / 250ml",
+      "changed": true,
+      "reasoning": "Ma lecture initiale est 'Cm = m soluté / V ................ 30g / 250ml'. J'avais initialement attribué 0.0/2.0, considérant que la question demandait m = Cm * V et non la formule de Cm. L'autre correcteur a lu 'cm = m soluté V' et a attribué 1.0/2.0, en indiquant que 'soluté' est superflu. En relisant la question, elle demande 'Exprimer la masse m du soluté en fonction de Cm et V'. L'élève a bien donné la formule de Cm et un calcul numérique avec les valeurs. Ce n'est pas la formule demandée (m = Cm * V). Cependant, il a correctement identifié la formule littérale Cm = m/V et a proposé un calcul. Je vais ajuster ma note pour reconnaître la formule littérale correcte et l'application numérique, même si la formule demandée n'est pas explicitement donnée sous la forme m = Cm * V. Je lui accorde 0.5 points pour l'identification de la formule de Cm et les valeurs.",
+      "feedback": "La formule demandée est m = Cm * V. Vous avez donné la formule de Cm et un calcul.",
+      "confidence": 0.90
+    },
+    {
+      "copy_index": 2,
+      "question_id": "Q6",
+      "my_initial_grade": 0.0,
+      "my_new_grade": 1.0,
+      "my_new_max_points": 2.0,
+      "my_new_reading": "cm = m Soluté / V .......... 30g / 250ml",
+      "changed": true,
+      "reasoning": "Ma lecture initiale est 'cm = m Soluté / V .......... 30g / 250ml'. J'avais attribué 0.0/2.0 en considérant que l'élève n'avait pas calculé la concentration. L'autre correcteur a lu 'cm = 30g V 250ml' et a attribué 1.0/2.0, indiquant que la masse est correcte mais le calcul final et la conversion du volume manquent. En réalité, l'élève a écrit la formule de Cm et les valeurs (30g / 250ml). Il n'a pas effectué le calcul final, ni la conversion en litres. L'autre correcteur a raison de lui accorder des points pour l'identification des données et de la formule de base. Je vais ajuster ma note à 1.0/2.0 pour refléter l'identification correcte de la masse, du volume et de la formule.",
+      "feedback": "Vous avez identifié la masse et le volume, mais il manquait le calcul final en g/L.",
+      "confidence": 0.90
+    }
+  ]
+}
+```
+
+============================================================
+📞 APPEL #1.3
+============================================================
+Provider: GeminiProvider
+Model: gemini-2.5-flash-lite
+Type: chat
+Durée: 3953ms
+Tokens: 7168 prompt + 710 completion
+
+📷 Images (4):
+  - batch_copy_1_page_0.png
+  - batch_copy_1_page_1.png
+  - batch_copy_1_page_2.png
+  ... et 1 autres
+
+📝 PROMPT (4603 chars):
+----------------------------------------
+═══════════════════════════════════════════════════════════════════
+ULTIMATUM - DÉCISION FINALE
+═══════════════════════════════════════════════════════════════════
+
+Malgré la vérification croisée, le désaccord PERSISTE avec l'autre correcteur.
+Tu dois maintenant prendre une DÉCISION FINALE pour chaque cas.
+
+## ULTIMATUM 1: Copie 1, Q1
+
+**Toi après vérification**: **0.0/1.0** pts
+- Ton raisonnement: Après réexamen et comparaison avec l'avis de l'autre correcteur, j'ai constaté que l'image de la verrerie représente bien une fiole jaugée et non un ballon. Ma lecture initiale était correcte, mais mon identification de l'objet était erronée. La note est donc ajustée.
+
+**L'autre correcteur après vérification**: **1.0/1.0** pts
+- Son raisonnement: L'autre correcteur a raison. L'image représente bien un ballon de laboratoire, et non une fiole jaugée. Ma lecture initiale était erronée.
+
+Écart persistant: 1.0 points
+
+## ULTIMATUM 2: Copie 1, Q3
+
+**Toi après vérification**: **0.0/1.0** pts
+- Ton raisonnement: L'autre correcteur a souligné la confusion et l'inexactitude de la définition. Ma note initiale reflétait une compréhension partielle, mais l'avis de l'autre correcteur met en évidence le manque de précision et les erreurs de vocabulaire. La définition donnée n'est pas correcte, il s'agit de la création d'un solvant et non de la dilution. La note est donc ajustée à 0.
+
+**L'autre correcteur après vérification**: **0.5/1.0** pts
+- Son raisonnement: L'autre correcteur a identifié des erreurs de vocabulaire ('dissoluto', 'soluté produit') et une inversion du rôle du solvant. L'élève a néanmoins compris qu'il s'agit d'un mélange. Une note partielle est donc justifiée.
+
+Écart persistant: 0.5 points
+
+## ULTIMATUM 3: Copie 1, Q4
+
+**Toi après vérification**: **0.0/1.0** pts
+- Ton raisonnement: L'autre correcteur considère la réponse comme incompréhensible et sans rapport. Bien que j'ai interprété 'rêve seux' comme une tentative de 'reste' ou 'solvant', l'autre correcteur a raison sur l'absence de sens clair et de définition pertinente. La réponse ne répond pas à la question. Ma note est donc ajustée à 0.
+
+**L'autre correcteur après vérification**: **0.5/1.0** pts
+- Son raisonnement: L'autre correcteur a interprété 'rêve seux' comme une confusion ou faute d'orthographe pour 'reste' ou 'résidus'. Si l'élève a compris que le solvant est ce qui reste, la réponse a une certaine pertinence malgré le manque de clarté. Une note partielle est donc justifiée.
+
+Écart persistant: 0.5 points
+
+## ULTIMATUM 4: Copie 1, Q5
+
+**Toi après vérification**: **0.0/2.0** pts
+- Ton raisonnement: L'autre correcteur a identifié une erreur dans l'ordre des termes de la formule, bien que mathématiquement commutative (V * Cm = Cm * V), la convention et la clarté attendues en chimie sont Cm * V. De plus, la notation de la concentration massique (Cm) est correctement soulignée. Ma lecture était correcte, mais l'appréciation de la réponse doit être plus stricte sur la convention. La note est donc ajustée à 0.
+
+**L'autre correcteur après vérification**: **2.0/2.0** pts
+- Son raisonnement: Je reconnais mon erreur. La formule littérale est bien m = Cm * V, et l'élève l'a écrite en utilisant des notations courantes (V pour volume, Cm pour concentration massique, m pour masse). J'avais initialement considéré l'ordre des termes comme une erreur majeure alors que c'est mathématiquement équivalent (V x Cm = Cm x V). La note maximale est justifiée.
+
+Écart persistant: 2.0 points
+
+
+
+═══════════════════════════════════════════════════════════════════
+
+# RÈGLES DE L'ULTIMATUM
+
+1. **DÉCISION OBLIGATOIRE**: Tu DOIS choisir ta note finale
+2. **OPTION A - Maintenir**: Si tu es sûr de toi, garde ta note
+3. **OPTION B - Céder**: Si l'autre correcteur t'a convaincu, accepte sa note
+4. **OPTION C - Compromis**: Propose une note intermédiaire justifiée
+
+**ATTENTION**:
+- Si tu es INCERTAIN, abaisse ta confiance (< 0.5)
+- INTERDICTION de choisir au hasard
+- Tu DOIS justifier ta décision finale
+
+═══════════════════════════════════════════════════════════════════
+
+# RESPONSE FORMAT (JSON)
+
+```json
+{
+  "ultimatum_decisions": [
+    {
+      "copy_index": 1,
+      "question_id": "Q1",
+      "my_final_grade": 0.5,
+      "my_final_max_points": 2.0,
+      "decision": "maintained" ou "yielded" ou "compromise",
+      "reasoning": "Pourquoi j'ai pris cette décision finale",
+      "feedback": "Feedback final pour l'élève",
+      "confidence": 0.9
+    },
+    ...
+  ]
+}
+```
+
+═══════════════════════════════════════════════════════════════════
+
+Relis les copies et prends ta DÉCISION FINALE au format JSON.
+
+
+📤 RÉPONSE (2292 chars):
+----------------------------------------
+```json
+{
+  "ultimatum_decisions": [
+    {
+      "copy_index": 1,
+      "question_id": "Q1",
+      "my_final_grade": 1.0,
+      "my_final_max_points": 1.0,
+      "decision": "yielded",
+      "reasoning": "J'ai choisi de céder car l'autre correcteur a explicitement indiqué que l'image représentait un ballon, ce qui contredit mon analyse initiale. J'ai réexaminé l'image et, bien que la forme puisse prêter à confusion, il est plus probable que ce soit un ballon de laboratoire standard. Ma confiance était faible sur cette identification initiale.",
+      "feedback": "L'objet représenté est un ballon de laboratoire.",
+      "confidence": 0.9
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q3",
+      "my_final_grade": 0.5,
+      "my_final_max_points": 1.0,
+      "decision": "compromise",
+      "reasoning": "J'ai opté pour un compromis. L'élève a fait des erreurs de vocabulaire et la définition n'est pas parfaite, mais il a compris l'idée générale d'un mélange qui mène à une dilution. La note de 0.5/1 est plus juste que 0 ou 1.",
+      "feedback": "La définition de la dilution est imprécise et contient des erreurs de vocabulaire.",
+      "confidence": 0.9
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q4",
+      "my_final_grade": 0.5,
+      "my_final_max_points": 1.0,
+      "decision": "compromise",
+      "reasoning": "J'ai choisi un compromis. L'autre correcteur a raison de souligner l'absence de clarté, mais mon interprétation initiale d'une tentative de dire 'reste' ou 'résidus' a une certaine pertinence quant à la fonction du solvant. 0.5/1 semble donc un juste milieu.",
+      "feedback": "La réponse concernant le solvant est trop vague et manque de clarté.",
+      "confidence": 0.9
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q5",
+      "my_final_grade": 2.0,
+      "my_final_max_points": 2.0,
+      "decision": "yielded",
+      "reasoning": "J'ai décidé de céder car l'argument de l'autre correcteur sur l'équivalence mathématique de l'ordre des termes est valide. L'élève a fourni la relation correcte, même si l'ordre des facteurs est inversé par rapport à la convention habituelle. Ma rigidité sur la convention était excessive.",
+      "feedback": "La formule littérale est correcte.",
+      "confidence": 0.9
+    }
+  ]
+}
+```
+
+============================================================
+📞 APPEL #1.3
+============================================================
+Provider: GeminiProvider
+Model: gemini-2.5-flash-lite
+Type: chat
+Durée: 3480ms
+Tokens: 5744 prompt + 876 completion
+
+📝 PROMPT (5231 chars):
+----------------------------------------
+═══════════════════════════════════════════════════════════════════
+ULTIMATUM - DÉCISION FINALE
+═══════════════════════════════════════════════════════════════════
+
+Malgré la vérification croisée, le désaccord PERSISTE avec l'autre correcteur.
+Tu dois maintenant prendre une DÉCISION FINALE pour chaque cas.
+
+## ULTIMATUM 1: Copie 2, Q4
+
+**Toi après vérification**: **0.0/1.0** pts
+- Ton raisonnement: Ma lecture initiale est 'elle s'exprime en gramme (g)'. L'autre correcteur a lu 'elle s'exprime en gramme (g)... dissolvant'. Bien que le mot 'dissolvant' soit présent dans la copie, il n'est pas pertinent pour la question qui porte sur l'unité de la concentration massique. La concentration massique s'exprime en g/L. L'élève n'a donné que l'unité de masse 'g', ce qui est incomplet. Mon attribution de 0.0/1.0 est donc justifiée, car la réponse est incorrecte. L'autre correcteur a attribué 1.0/1.0, ce qui me semble excessif compte tenu de l'incomplétude de la réponse.
+
+**L'autre correcteur après vérification**: **0.5/1.0** pts
+- Son raisonnement: L'autre correcteur a reconnu que 'gramme (g)' est une partie correcte de la réponse attendue (g/L) et a attribué une note partielle. Ma lecture initiale incluait 'dissolvant' qui n'était pas pertinent pour l'unité. L'ajustement reflète l'attribution de points partiels pour la partie correcte de l'unité.
+
+Écart persistant: 0.5 points
+
+## ULTIMATUM 2: Copie 2, Q5
+
+**Toi après vérification**: **0.5/2.0** pts
+- Ton raisonnement: Ma lecture initiale est 'Cm = m soluté / V ................ 30g / 250ml'. J'avais initialement attribué 0.0/2.0, considérant que la question demandait m = Cm * V et non la formule de Cm. L'autre correcteur a lu 'cm = m soluté V' et a attribué 1.0/2.0, en indiquant que 'soluté' est superflu. En relisant la question, elle demande 'Exprimer la masse m du soluté en fonction de Cm et V'. L'élève a bien donné la formule de Cm et un calcul numérique avec les valeurs. Ce n'est pas la formule demandée (m = Cm * V). Cependant, il a correctement identifié la formule littérale Cm = m/V et a proposé un calcul. Je vais ajuster ma note pour reconnaître la formule littérale correcte et l'application numérique, même si la formule demandée n'est pas explicitement donnée sous la forme m = Cm * V. Je lui accorde 0.5 points pour l'identification de la formule de Cm et les valeurs.
+
+**L'autre correcteur après vérification**: **0.0/2.0** pts
+- Son raisonnement: La question demandait explicitement d'exprimer la masse 'm' en fonction de Cm et V. L'élève a écrit une relation pour Cm (Cm = m/V). Ma note initiale de 1.0 était trop généreuse car la formule demandée n'était pas écrite. L'autre correcteur, malgré une annotation incohérente (1.5/0.0), a identifié que la formule m = Cm * V n'était pas présente. La nouvelle note de 0.0 reflète l'absence de la formule demandée.
+
+Écart persistant: 0.5 points
+
+## ULTIMATUM 3: Copie 2, Q6
+
+**Toi après vérification**: **1.0/2.0** pts
+- Ton raisonnement: Ma lecture initiale est 'cm = m Soluté / V .......... 30g / 250ml'. J'avais attribué 0.0/2.0 en considérant que l'élève n'avait pas calculé la concentration. L'autre correcteur a lu 'cm = 30g V 250ml' et a attribué 1.0/2.0, indiquant que la masse est correcte mais le calcul final et la conversion du volume manquent. En réalité, l'élève a écrit la formule de Cm et les valeurs (30g / 250ml). Il n'a pas effectué le calcul final, ni la conversion en litres. L'autre correcteur a raison de lui accorder des points pour l'identification des données et de la formule de base. Je vais ajuster ma note à 1.0/2.0 pour refléter l'identification correcte de la masse, du volume et de la formule.
+
+**L'autre correcteur après vérification**: **0.0/2.0** pts
+- Son raisonnement: La question demandait le calcul numérique de la concentration massique. L'élève a fourni les données et une fraction mais n'a ni converti les unités ni effectué le calcul final. L'autre correcteur a jugé que cela ne méritait aucun point. Ma note initiale de 1.0 était trop haute. L'absence du résultat final attendu justifie une note de 0.0.
+
+Écart persistant: 1.0 points
+
+
+
+═══════════════════════════════════════════════════════════════════
+
+# RÈGLES DE L'ULTIMATUM
+
+1. **DÉCISION OBLIGATOIRE**: Tu DOIS choisir ta note finale
+2. **OPTION A - Maintenir**: Si tu es sûr de toi, garde ta note
+3. **OPTION B - Céder**: Si l'autre correcteur t'a convaincu, accepte sa note
+4. **OPTION C - Compromis**: Propose une note intermédiaire justifiée
+
+**ATTENTION**:
+- Si tu es INCERTAIN, abaisse ta confiance (< 0.5)
+- INTERDICTION de choisir au hasard
+- Tu DOIS justifier ta décision finale
+
+═══════════════════════════════════════════════════════════════════
+
+# RESPONSE FORMAT (JSON)
+
+```json
+{
+  "ultimatum_decisions": [
+    {
+      "copy_index": 1,
+      "question_id": "Q1",
+      "my_final_grade": 0.5,
+      "my_final_max_points": 2.0,
+      "decision": "maintained" ou "yielded" ou "compromise",
+      "reasoning": "Pourquoi j'ai pris cette décision finale",
+      "feedback": "Feedback final pour l'élève",
+      "confidence": 0.9
+    },
+    ...
+  ]
+}
+```
+
+═══════════════════════════════════════════════════════════════════
+
+Relis les copies et prends ta DÉCISION FINALE au format JSON.
+
+
+📤 RÉPONSE (2875 chars):
+----------------------------------------
+Je comprends. Je vais maintenant prendre une décision finale pour chaque cas de désaccord persistant, en choisissant entre maintenir ma note, céder à l'autre correcteur, ou proposer un compromis.
+
+Voici ma décision finale au format JSON :
+
+```json
+{
+  "ultimatum_decisions": [
+    {
+      "copy_index": 2,
+      "question_id": "Q4",
+      "my_final_grade": 0.0,
+      "my_final_max_points": 1.0,
+      "decision": "maintained",
+      "reasoning": "Je maintiens ma note de 0.0/1.0. La question porte sur l'unité de la concentration massique, qui est g/L. L'élève n'a écrit que 'g'. C'est incorrect et incomplet. L'autre correcteur a proposé 0.5/1.0, ce qui impliquerait qu'une partie de l'unité est correcte. Cependant, dans ce contexte, 'g' seul n'est pas une unité de concentration massique. Il s'agit d'une unité de masse. L'absence de l'unité de volume rend la réponse fausse. Ma confiance est basse car le désaccord persiste, mais je reste sur ma position que la réponse n'est pas correcte.",
+      "feedback": "L'unité de la concentration massique est g/L. Le simple 'g' n'est pas suffisant.",
+      "confidence": 0.4
+    },
+    {
+      "copy_index": 2,
+      "question_id": "Q5",
+      "my_final_grade": 0.0,
+      "my_final_max_points": 2.0,
+      "decision": "yielded",
+      "reasoning": "Je cède à l'autre correcteur et attribue 0.0/2.0. La question demandait explicitement d'exprimer la masse 'm' en fonction de Cm et V. L'élève a écrit la formule de Cm (Cm = m/V) et un calcul. Ma tentative de compromis à 0.5 était basée sur la reconnaissance de la formule littérale correcte de Cm et des valeurs, mais la consigne était très précise et l'élève n'y a pas répondu. L'autre correcteur, qui a jugé que la formule m = Cm * V n'était pas présente, est plus rigoureux sur la consigne. Le barème total pour cette question est de 2.0 points, ce qui suggère une attente claire de la formule m = Cm * V.",
+      "feedback": "La formule demandée était m = Cm * V. Vous avez écrit la formule de Cm.",
+      "confidence": 0.9
+    },
+    {
+      "copy_index": 2,
+      "question_id": "Q6",
+      "my_final_grade": 0.0,
+      "my_final_max_points": 2.0,
+      "decision": "yielded",
+      "reasoning": "Je cède à l'autre correcteur et attribue 0.0/2.0. La question demandait un calcul numérique. L'élève a écrit la formule de Cm et les valeurs (30g / 250ml) mais n'a ni effectué le calcul, ni converti les unités. Mon compromis de 1.0 point reconnaissait l'identification des données et de la formule, mais l'absence de calcul final et de conversion est rédhibitoire pour obtenir des points dans ce type d'exercice. L'autre correcteur, qui attribue 0.0, est plus strict sur l'exécution complète de la tâche demandée (calculer la concentration).",
+      "feedback": "Un calcul numérique complet avec conversion des unités était attendu.",
+      "confidence": 0.9
+    }
+  ]
+}
+```
+
+============================================================
+📞 APPEL #2.1
+============================================================
+Provider: GeminiProvider
+Model: gemini-2.5-flash-lite
+Type: vision
+Durée: 7038ms
+Tokens: 1688 prompt + 1813 completion
+
+📷 Images (4):
+  - batch_copy_1_page_0.png
+  - batch_copy_1_page_1.png
+  - batch_copy_1_page_2.png
+  ... et 1 autres
+
+📝 PROMPT (2053 chars):
+----------------------------------------
+Tu es un correcteur expérimenté. Tu dois corriger toutes les copies présentées.
+
+═══════════════════════════════════════════════════════════════════
+
+# COPIES À CORRIGER
+
+Pour CHACUNE des copies de ce document:
+1. Identifie le nom de l'élève (si présent)
+2. Repère les questions sur le document
+3. Lis attentivement chaque réponse
+4. Attribue une note en justifiant
+5. Formule un feedback sobre et professionnel
+
+═══════════════════════════════════════════════════════════════════
+
+# RÈGLES IMPORTANTES
+
+1. **COHÉRENCE ABSOLUE**: Si deux élèves ont écrit la même réponse, ils doivent avoir la même note
+2. **LECTURE ATTENTIVE**: Utilise le CONTEXTE (question, cohérence entre copies) pour déchiffrer l'écriture manuscrite
+3. **FEEDBACK SOBRE**: Commentaire court, constructif, adapté à la difficulté
+4. **DÉTECTION PATTERNS**: Note si beaucoup d'élèves ont la même réponse (correcte ou non)
+
+═══════════════════════════════════════════════════════════════════
+
+# FORMAT DE RÉPONSE (JSON)
+
+```json
+{
+  "copies": [
+    {
+      "copy_index": 1,
+      "student_name": "Nom de l'élève ou null",
+      "pages": [1, 2],
+      "questions": {
+        "Q1": {
+          "student_answer_read": "Ce que l'élève a écrit",
+          "grade": "<note sur le barème>",
+          "max_points": "<barème de la question>",
+          "confidence": "<0.0 à 1.0>",
+          "reasoning": "Pourquoi cette note",
+          "feedback": "Feedback sobre"
+        },
+        "Q2": { ... }
+      },
+      "overall_feedback": "Commentaire général sur la copie"
+    },
+    {
+      "copy_index": 2,
+      "student_name": "Autre élève",
+      "pages": [3, 4],
+      ...
+    }
+  ],
+  "patterns": {
+    "Q1": {
+      "common_answer": "fiole jaugée",
+      "frequency": "75%",
+      "is_correct": true
+    },
+    "suspicious_similarities": [
+      {"copies": [1, 2], "question": "Q4", "reason": "Réponses identiques mot pour mot"}
+    ]
+  }
+}
+```
+
+═══════════════════════════════════════════════════════════════════
+
+Analyse maintenant le document et retourne ta correction au format JSON.
+
+
+📤 RÉPONSE (5930 chars):
+----------------------------------------
+```json
+{
+  "copies": [
+    {
+      "copy_index": 1,
+      "student_name": "Sofia Nanou",
+      "pages": [
+        1,
+        2
+      ],
+      "questions": {
+        "Q1": {
+          "student_answer_read": "ballon",
+          "grade": "0/1",
+          "max_points": 1,
+          "confidence": 1.0,
+          "reasoning": "L'image représente une fiole jaugée et non un ballon.",
+          "feedback": "Attention à la distinction entre les différents types de verreries."
+        },
+        "Q2": {
+          "student_answer_read": "fiole Jaugée",
+          "grade": "1/1",
+          "max_points": 1,
+          "confidence": 1.0,
+          "reasoning": "L'élève identifie correctement la fiole jaugée.",
+          "feedback": "Bonne identification."
+        },
+        "Q3": {
+          "student_answer_read": "Une dissoluto dilution c'est quand on mélange avec un solvant produit ca donne un solvant",
+          "grade": "0/1",
+          "max_points": 1,
+          "confidence": 0.9,
+          "reasoning": "La définition est confuse et inexacte. La dilution est le fait de diminuer la concentration d'une solution par ajout de solvant, pas la création d'un solvant.",
+          "feedback": "La définition de la dilution doit être précisée."
+        },
+        "Q4": {
+          "student_answer_read": "le solvant c'est un produit qui rêve sens",
+          "grade": "0/1",
+          "max_points": 1,
+          "confidence": 0.8,
+          "reasoning": "La réponse est incompréhensible et sans rapport avec la question.",
+          "feedback": "Veuillez relire la définition du solvant."
+        },
+        "Q5": {
+          "student_answer_read": "m = V X cm",
+          "grade": "0/2",
+          "max_points": 2,
+          "confidence": 1.0,
+          "reasoning": "L'expression littérale de la masse d'un soluté est m = Cm * V, pas V * Cm. De plus, la concentration massique est généralement notée Cm ou C m.",
+          "feedback": "Vérifiez la formule de calcul de la masse."
+        },
+        "Q6": {
+          "student_answer_read": "m = 40g/L x 1.0 L = 40g",
+          "grade": "0/2",
+          "max_points": 2,
+          "confidence": 1.0,
+          "reasoning": "Le calcul est incorrect. L'énoncé indique un volume de 100,0 mL soit 0,1 L, et non 1,0 L. La concentration massique est de 40 g.L^-1.",
+          "feedback": "Attention aux unités et aux valeurs lues dans l'énoncé."
+        }
+      },
+      "overall_feedback": "Des progrès sont nécessaires dans la compréhension des définitions et l'application des formules."
+    },
+    {
+      "copy_index": 2,
+      "student_name": "Coronado Florence",
+      "pages": [
+        3,
+        4
+      ],
+      "questions": {
+        "Q1": {
+          "student_answer_read": "Fiole jaugé",
+          "grade": "1/1",
+          "max_points": 1,
+          "confidence": 1.0,
+          "reasoning": "L'élève identifie correctement la fiole jaugée.",
+          "feedback": "Bonne identification."
+        },
+        "Q2": {
+          "student_answer_read": "balance",
+          "grade": "1/1",
+          "max_points": 1,
+          "confidence": 1.0,
+          "reasoning": "L'élève identifie correctement la balance.",
+          "feedback": "Bonne identification."
+        },
+        "Q3": {
+          "student_answer_read": "le soluté est la matière qui se dissout avec des dissolvant par ex (le sucre et l'eau)",
+          "grade": "1/1",
+          "max_points": 1,
+          "confidence": 1.0,
+          "reasoning": "La définition du soluté est correcte et bien illustrée par un exemple pertinent.",
+          "feedback": "Définition précise et bon exemple."
+        },
+        "Q4": {
+          "student_answer_read": "elle s'exprime en gramme (g)... dissolvant",
+          "grade": "0/1",
+          "max_points": 1,
+          "confidence": 0.9,
+          "reasoning": "La question porte sur l'unité de la concentration massique, qui est le gramme par litre (g/L). L'élève ne donne que l'unité de masse (gramme) et mentionne 'dissolvant' sans lien clair.",
+          "feedback": "L'unité de la concentration massique doit être précisée."
+        },
+        "Q5": {
+          "student_answer_read": "cm = m soluté V",
+          "grade": "1/2",
+          "max_points": 2,
+          "confidence": 1.0,
+          "reasoning": "L'élève donne la relation Cm = m/V, ce qui est correct. Cependant, le 'soluté' est superflu dans l'expression.",
+          "feedback": "La formule est correcte, mais peut être simplifiée."
+        },
+        "Q6": {
+          "student_answer_read": "cm = 30g V 250ml",
+          "grade": "1/2",
+          "max_points": 2,
+          "confidence": 1.0,
+          "reasoning": "L'élève a correctement identifié la masse de soluté (30 g) mais n'a pas effectué le calcul final de la concentration massique. Le volume de 250 mL n'est pas converti en litres.",
+          "feedback": "Il manquait le calcul final de la concentration massique et la conversion du volume."
+        }
+      },
+      "overall_feedback": "Bonne compréhension des définitions, mais des améliorations sont nécessaires dans la formulation des expressions littérales et l'application des calculs de concentration."
+    }
+  ],
+  "patterns": {
+    "Q1": {
+      "common_answer": "Fiole jaugée",
+      "frequency": "100%",
+      "is_correct": true
+    },
+    "Q2": {
+      "common_answer": "balance",
+      "frequency": "50%",
+      "is_correct": true
+    },
+    "Q3": {
+      "common_answer": "soluté = matière qui se dissout dans un solvant",
+      "frequency": "50%",
+      "is_correct": true
+    },
+    "Q4": {
+      "common_answer": "gramme",
+      "frequency": "50%",
+      "is_correct": false
+    },
+    "Q5": {
+      "common_answer": "m = Cm * V",
+      "frequency": "50%",
+      "is_correct": false
+    },
+    "Q6": {
+      "common_answer": "calculs incomplets ou incorrects",
+      "frequency": "100%",
+      "is_correct": false
+    },
+    "suspicious_similarities": []
+  }
+}
+```
+
+============================================================
+📞 APPEL #2.2
+============================================================
+Provider: GeminiProvider
+Model: gemini-2.5-flash-lite
+Type: chat
+Durée: 3658ms
+Tokens: 3450 prompt + 1195 completion
+
+📷 Images (4):
+  - batch_copy_1_page_0.png
+  - batch_copy_1_page_1.png
+  - batch_copy_1_page_2.png
+  ... et 1 autres
+
+📝 PROMPT (5066 chars):
+----------------------------------------
+Tu as corrigé des copies et un DÉSACCORD a été détecté avec un autre correcteur.
+
+Tu dois maintenant RÉEXAMINER ta correction en tenant compte de l'avis de l'autre correcteur.
+
+═══════════════════════════════════════════════════════════════════
+
+# DÉSACCORDS À RÉEXAMINER
+
+## Désaccord 1: Copie 1, Q1
+
+**TOI (LLM2: gemini-2.5-flash-lite) as donné**: **0.0/1.0** pts
+- Ta lecture: "ballon"
+- Ton raisonnement: L'image représente une fiole jaugée et non un ballon.
+
+**L'AUTRE IA a donné**: **1.0/0.0** pts
+- Sa lecture: "ballon"
+- Son raisonnement: L'élève a correctement identifié la verrerie comme un ballon.
+
+Écart: 1.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 1.0 pts, Autre: 0.0 pts
+
+## Désaccord 2: Copie 1, Q2
+
+**TOI (LLM2: gemini-2.5-flash-lite) as donné**: **1.0/1.0** pts
+- Ta lecture: "fiole Jaugée"
+- Ton raisonnement: L'élève identifie correctement la fiole jaugée.
+
+**L'AUTRE IA a donné**: **1.0/0.0** pts
+- Sa lecture: "Fiole Jaugée"
+- Son raisonnement: L'élève a correctement identifié la verrerie comme une fiole jaugée.
+
+Écart: 0.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 1.0 pts, Autre: 0.0 pts
+
+## Désaccord 3: Copie 1, Q3
+
+**TOI (LLM2: gemini-2.5-flash-lite) as donné**: **0.0/1.0** pts
+- Ta lecture: "Une dissoluto dilution c'est quand on mélange avec un solvant produit ca donne un solvant"
+- Ton raisonnement: La définition est confuse et inexacte. La dilution est le fait de diminuer la concentration d'une solution par ajout de solvant, pas la création d'un solvant.
+
+**L'AUTRE IA a donné**: **0.5/0.0** pts
+- Sa lecture: "Une dissoluto diluction c'est quand on mélnge avec un soluté produit ça donne un solvant"
+- Son raisonnement: L'élève a compris qu'il s'agit d'un mélange, mais la définition est imprécise et contient des erreurs de vocabulaire ('dissoluto', 'soluté produit'). La notion de solvant est inversée.
+
+Écart: 0.5 points
+**ATTENTION: Désaccord sur le barème!** Toi: 1.0 pts, Autre: 0.0 pts
+
+## Désaccord 4: Copie 1, Q4
+
+**TOI (LLM2: gemini-2.5-flash-lite) as donné**: **0.0/1.0** pts
+- Ta lecture: "le solvant c'est un produit qui rêve sens"
+- Ton raisonnement: La réponse est incompréhensible et sans rapport avec la question.
+
+**L'AUTRE IA a donné**: **0.5/0.0** pts
+- Sa lecture: "Le Solvant c'est un produit qui rêve seux"
+- Son raisonnement: L'élève identifie correctement que le solvant est ce qui reste ('rêve' est une faute d'orthographe pour 'reste' ou une confusion). La définition reste vague.
+
+Écart: 0.5 points
+**ATTENTION: Désaccord sur le barème!** Toi: 1.0 pts, Autre: 0.0 pts
+
+## Désaccord 5: Copie 1, Q5
+
+**TOI (LLM2: gemini-2.5-flash-lite) as donné**: **0.0/2.0** pts
+- Ta lecture: "m = V X cm"
+- Ton raisonnement: L'expression littérale de la masse d'un soluté est m = Cm * V, pas V * Cm. De plus, la concentration massique est généralement notée Cm ou C m.
+
+**L'AUTRE IA a donné**: **2.0/0.0** pts
+- Sa lecture: "m = V×Cm"
+- Son raisonnement: L'élève a donné la formule littérale correcte pour calculer la masse de soluté.
+
+Écart: 2.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 2.0 pts, Autre: 0.0 pts
+
+## Désaccord 6: Copie 1, Q6
+
+**TOI (LLM2: gemini-2.5-flash-lite) as donné**: **0.0/2.0** pts
+- Ta lecture: "m = 40g/L x 1.0 L = 40g"
+- Ton raisonnement: Le calcul est incorrect. L'énoncé indique un volume de 100,0 mL soit 0,1 L, et non 1,0 L. La concentration massique est de 40 g.L^-1.
+
+**L'AUTRE IA a donné**: **0.0/0.0** pts
+- Sa lecture: "m = 40g L x 10L = 40g"
+- Son raisonnement: L'élève a appliqué la formule mais a fait une erreur d'unités. La concentration est en g.L⁻¹ et le volume est en mL, il manque la conversion du volume. La multiplication est incorrecte.
+
+Écart: 0.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 2.0 pts, Autre: 0.0 pts
+
+
+═══════════════════════════════════════════════════════════════════
+
+# TA MISSION
+
+1. RELIS l'image de la copie attentivement
+2. COMPARE ta lecture avec celle de l'autre correcteur
+3. DÉCIDE si tu maintiens ta note ou si tu l'ajustes
+4. JUSTIFIE ta décision
+
+**IMPORTANT**: Tu peux:
+- Maintenir ta note si tu es sûr de toi
+- Ajuster ta note si l'autre correcteur t'a fait voir quelque chose que tu as manqué
+- Changer complètement si tu réalises une erreur
+
+═══════════════════════════════════════════════════════════════════
+
+# FORMAT DE RÉPONSE (JSON)
+
+```json
+{
+  "verifications": [
+    {
+      "copy_index": 1,
+      "question_id": "Q1",
+      "my_initial_grade": 1.0,
+      "my_new_grade": 0.5,
+      "my_new_max_points": 2.0,
+      "my_new_reading": "Réponse corrigée de l'élève",
+      "changed": true,
+      "reasoning": "Pourquoi j'ai changé/maintenu ma note",
+      "feedback": "Feedback final pour l'élève (concis et constructif)",
+      "confidence": 0.9
+    },
+    ...
+  ]
+}
+```
+
+**IMPORTANT**: Si tu changes ton barème (max_points), indique le nouveau barème dans `my_new_max_points`. Si tu corriges ta lecture, indique la nouvelle lecture dans `my_new_reading`.
+
+═══════════════════════════════════════════════════════════════════
+
+Réexamine les copies et retourne ta décision au format JSON.
+
+
+📤 RÉPONSE (3598 chars):
+----------------------------------------
+```json
+{
+  "verifications": [
+    {
+      "copy_index": 1,
+      "question_id": "Q1",
+      "my_initial_grade": 0.0,
+      "my_new_grade": 1.0,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "ballon",
+      "changed": true,
+      "reasoning": "L'autre correcteur a raison. L'image représente bien un ballon de laboratoire, et non une fiole jaugée. Ma lecture initiale était erronée.",
+      "feedback": "La verrerie identifiée est correcte.",
+      "confidence": 1.0
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q2",
+      "my_initial_grade": 1.0,
+      "my_new_grade": 1.0,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "Fiole Jaugée",
+      "changed": false,
+      "reasoning": "Je maintiens ma note. L'identification de la fiole jaugée est correcte.",
+      "feedback": "La verrerie identifiée est correcte.",
+      "confidence": 1.0
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q3",
+      "my_initial_grade": 0.0,
+      "my_new_grade": 0.5,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "Une dissoluto dilution c'est quand on mélange avec un soluté produit ca donne un solvant",
+      "changed": true,
+      "reasoning": "L'autre correcteur a identifié des erreurs de vocabulaire ('dissoluto', 'soluté produit') et une inversion du rôle du solvant. L'élève a néanmoins compris qu'il s'agit d'un mélange. Une note partielle est donc justifiée.",
+      "feedback": "La définition est imprécise et contient des erreurs de vocabulaire. La notion de solvant est inversée.",
+      "confidence": 0.8
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q4",
+      "my_initial_grade": 0.0,
+      "my_new_grade": 0.5,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "Le Solvant c'est un produit qui rêve seux",
+      "changed": true,
+      "reasoning": "L'autre correcteur a interprété 'rêve seux' comme une confusion ou faute d'orthographe pour 'reste' ou 'résidus'. Si l'élève a compris que le solvant est ce qui reste, la réponse a une certaine pertinence malgré le manque de clarté. Une note partielle est donc justifiée.",
+      "feedback": "La réponse est vague et contient des erreurs d'orthographe rendant la compréhension difficile.",
+      "confidence": 0.8
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q5",
+      "my_initial_grade": 0.0,
+      "my_new_grade": 2.0,
+      "my_new_max_points": 2.0,
+      "my_new_reading": "m = V X cm",
+      "changed": true,
+      "reasoning": "Je reconnais mon erreur. La formule littérale est bien m = Cm * V, et l'élève l'a écrite en utilisant des notations courantes (V pour volume, Cm pour concentration massique, m pour masse). J'avais initialement considéré l'ordre des termes comme une erreur majeure alors que c'est mathématiquement équivalent (V x Cm = Cm x V). La note maximale est justifiée.",
+      "feedback": "La formule littérale pour calculer la masse de soluté est correcte.",
+      "confidence": 1.0
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q6",
+      "my_initial_grade": 0.0,
+      "my_new_grade": 0.0,
+      "my_new_max_points": 2.0,
+      "my_new_reading": "m = 40g/L x 1.0 L = 40g",
+      "changed": false,
+      "reasoning": "Je maintiens ma note. L'élève n'a pas effectué la conversion du volume de 100,0 mL en 0,1 L. L'utilisation de '1.0 L' est une erreur d'interprétation de l'énoncé. De plus, le résultat '40g' est correct mathématiquement mais basé sur une mauvaise donnée de départ pour le volume.",
+      "feedback": "Le calcul de la masse nécessite une conversion du volume de mL en L.",
+      "confidence": 1.0
+    }
+  ]
+}
+```
+
+============================================================
+📞 APPEL #2.2
+============================================================
+Provider: GeminiProvider
+Model: gemini-2.5-flash-lite
+Type: chat
+Durée: 8978ms
+Tokens: 2406 prompt + 4136 completion
+
+📝 PROMPT (5152 chars):
+----------------------------------------
+Tu as corrigé des copies et un DÉSACCORD a été détecté avec un autre correcteur.
+
+Tu dois maintenant RÉEXAMINER ta correction en tenant compte de l'avis de l'autre correcteur.
+
+═══════════════════════════════════════════════════════════════════
+
+# DÉSACCORDS À RÉEXAMINER
+
+## Désaccord 1: Copie 2, Q1
+
+**TOI (LLM2: gemini-2.5-flash-lite) as donné**: **1.0/1.0** pts
+- Ta lecture: "Fiole jaugé"
+- Ton raisonnement: L'élève identifie correctement la fiole jaugée.
+
+**L'AUTRE IA a donné**: **1.0/0.0** pts
+- Sa lecture: "Fiole jaugée"
+- Son raisonnement: L'élève a correctement identifié la verrerie comme une fiole jaugée.
+
+Écart: 0.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 1.0 pts, Autre: 0.0 pts
+
+## Désaccord 2: Copie 2, Q2
+
+**TOI (LLM2: gemini-2.5-flash-lite) as donné**: **1.0/1.0** pts
+- Ta lecture: "balance"
+- Ton raisonnement: L'élève identifie correctement la balance.
+
+**L'AUTRE IA a donné**: **1.0/0.0** pts
+- Sa lecture: "balance"
+- Son raisonnement: L'élève a correctement identifié la verrerie comme une balance.
+
+Écart: 0.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 1.0 pts, Autre: 0.0 pts
+
+## Désaccord 3: Copie 2, Q3
+
+**TOI (LLM2: gemini-2.5-flash-lite) as donné**: **1.0/1.0** pts
+- Ta lecture: "le soluté est la matière qui se dissout avec des dissolvant par ex (le sucre et l'eau)"
+- Ton raisonnement: La définition du soluté est correcte et bien illustrée par un exemple pertinent.
+
+**L'AUTRE IA a donné**: **1.0/0.0** pts
+- Sa lecture: "le solute est la matière qui se dissout avec des dissolvant par ex (le sucre et l'eau)"
+- Son raisonnement: L'élève a correctement défini le soluté et donné un bon exemple.
+
+Écart: 0.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 1.0 pts, Autre: 0.0 pts
+
+## Désaccord 4: Copie 2, Q4
+
+**TOI (LLM2: gemini-2.5-flash-lite) as donné**: **0.0/1.0** pts
+- Ta lecture: "elle s'exprime en gramme (g)... dissolvant"
+- Ton raisonnement: La question porte sur l'unité de la concentration massique, qui est le gramme par litre (g/L). L'élève ne donne que l'unité de masse (gramme) et mentionne 'dissolvant' sans lien clair.
+
+**L'AUTRE IA a donné**: **0.5/0.0** pts
+- Sa lecture: "elle s'exprime en gramme (g)"
+- Son raisonnement: L'élève donne une unité de masse pour la concentration, ce qui est partiellement correct mais incomplet. La concentration massique s'exprime en g/L.
+
+Écart: 0.5 points
+**ATTENTION: Désaccord sur le barème!** Toi: 1.0 pts, Autre: 0.0 pts
+
+## Désaccord 5: Copie 2, Q5
+
+**TOI (LLM2: gemini-2.5-flash-lite) as donné**: **1.0/2.0** pts
+- Ta lecture: "cm = m soluté V"
+- Ton raisonnement: L'élève donne la relation Cm = m/V, ce qui est correct. Cependant, le 'soluté' est superflu dans l'expression.
+
+**L'AUTRE IA a donné**: **1.5/0.0** pts
+- Sa lecture: "Cm = m soluté / V ................ 30g / 250ml"
+- Son raisonnement: L'élève a donné la formule littérale correcte pour la concentration massique. Cependant, la question demandait l'expression de la masse 'm' en fonction de Cm et V, qui est m = Cm * V.
+
+Écart: 0.5 points
+**ATTENTION: Désaccord sur le barème!** Toi: 2.0 pts, Autre: 0.0 pts
+
+## Désaccord 6: Copie 2, Q6
+
+**TOI (LLM2: gemini-2.5-flash-lite) as donné**: **1.0/2.0** pts
+- Ta lecture: "cm = 30g V 250ml"
+- Ton raisonnement: L'élève a correctement identifié la masse de soluté (30 g) mais n'a pas effectué le calcul final de la concentration massique. Le volume de 250 mL n'est pas converti en litres.
+
+**L'AUTRE IA a donné**: **0.0/0.0** pts
+- Sa lecture: "cm = m Soluté / V .......... 30g / 250ml"
+- Son raisonnement: L'élève a redonné la formule de la concentration massique au lieu de calculer la concentration massique. L'énoncé demandait de calculer la concentration massique Cm, et non de la redéfinir ou de redonner la formule.
+
+Écart: 1.0 points
+**ATTENTION: Désaccord sur le barème!** Toi: 2.0 pts, Autre: 0.0 pts
+
+
+═══════════════════════════════════════════════════════════════════
+
+# TA MISSION
+
+1. RELIS l'image de la copie attentivement
+2. COMPARE ta lecture avec celle de l'autre correcteur
+3. DÉCIDE si tu maintiens ta note ou si tu l'ajustes
+4. JUSTIFIE ta décision
+
+**IMPORTANT**: Tu peux:
+- Maintenir ta note si tu es sûr de toi
+- Ajuster ta note si l'autre correcteur t'a fait voir quelque chose que tu as manqué
+- Changer complètement si tu réalises une erreur
+
+═══════════════════════════════════════════════════════════════════
+
+# FORMAT DE RÉPONSE (JSON)
+
+```json
+{
+  "verifications": [
+    {
+      "copy_index": 1,
+      "question_id": "Q1",
+      "my_initial_grade": 1.0,
+      "my_new_grade": 0.5,
+      "my_new_max_points": 2.0,
+      "my_new_reading": "Réponse corrigée de l'élève",
+      "changed": true,
+      "reasoning": "Pourquoi j'ai changé/maintenu ma note",
+      "feedback": "Feedback final pour l'élève (concis et constructif)",
+      "confidence": 0.9
+    },
+    ...
+  ]
+}
+```
+
+**IMPORTANT**: Si tu changes ton barème (max_points), indique le nouveau barème dans `my_new_max_points`. Si tu corriges ta lecture, indique la nouvelle lecture dans `my_new_reading`.
+
+═══════════════════════════════════════════════════════════════════
+
+Réexamine les copies et retourne ta décision au format JSON.
+
+
+📤 RÉPONSE (13452 chars):
+----------------------------------------
+Après réexamen attentif de la copie 2 et en tenant compte des divergences soulevées par l'autre correcteur, voici les ajustements apportés :
+
+## Désaccord 1: Copie 2, Q1
+
+*   **Ma note initiale**: 1.0/1.0
+*   **Lecture initiale**: "Fiole jaugé"
+*   **Raisonnement initial**: L'élève identifie correctement la fiole jaugée.
+*   **Note de l'autre IA**: 1.0/0.0 (La lecture était "Fiole jaugée", mais la note était 0.0, ce qui suggère un barème différent).
+*   **Réexamen**: En relisant la question et en comparant avec d'autres copies (si elles étaient disponibles), il est possible que la question visait un nom plus précis ou une fonction spécifique qui n'est pas explicitement mentionnée dans "Fiole jaugée". Cependant, "Fiole jaugée" est une identification correcte de l'objet. Si le barème est strict et attend un autre terme, une note inférieure pourrait être justifiée. Mais sans information supplémentaire sur le barème attendu, "Fiole jaugée" est une réponse valide. L'autre IA a lu "Fiole jaugée" mais a donné 0.0. Cela semble contradictoire. En supposant que la question attendait juste l'identification correcte, je maintiens ma note.
+
+**Décision**: Maintenir ma note.
+
+## Désaccord 2: Copie 2, Q2
+
+*   **Ma note initiale**: 1.0/1.0
+*   **Lecture initiale**: "balance"
+*   **Raisonnement initial**: L'élève identifie correctement la balance.
+*   **Note de l'autre IA**: 1.0/0.0 (La lecture était "balance", mais la note était 0.0).
+*   **Réexamen**: Similaire à Q1, "balance" est une identification correcte. Si le barème attendait un terme plus technique (ex: balance de précision), alors une note inférieure serait justifiée. Sans contexte supplémentaire, l'identification est correcte. L'autre IA a lu "balance" mais a donné 0.0.
+
+**Décision**: Maintenir ma note.
+
+## Désaccord 3: Copie 2, Q3
+
+*   **Ma note initiale**: 1.0/1.0
+*   **Lecture initiale**: "le soluté est la matière qui se dissout avec des dissolvant par ex (le sucre et l'eau)"
+*   **Raisonnement initial**: La définition du soluté est correcte et bien illustrée par un exemple pertinent.
+*   **Note de l'autre IA**: 1.0/0.0 (La lecture était "le solute est la matière qui se dissout avec des dissolvant par ex (le sucre et l'eau)", mais la note était 0.0).
+*   **Réexamen**: La définition et l'exemple sont corrects. L'orthographe "solute" vs "soluté" n'est pas pénalisante dans ce contexte. L'autre IA a lu la même chose mais a donné 0.0.
+
+**Décision**: Maintenir ma note.
+
+## Désaccord 4: Copie 2, Q4
+
+*   **Ma note initiale**: 0.0/1.0
+*   **Lecture initiale**: "elle s'exprime en gramme (g)... dissolvant"
+*   **Raisonnement initial**: La question porte sur l'unité de la concentration massique, qui est le gramme par litre (g/L). L'élève ne donne que l'unité de masse (gramme) et mentionne 'dissolvant' sans lien clair.
+*   **Note de l'autre IA**: 0.5/0.0 (Lecture: "elle s'exprime en gramme (g)", Raisonnement: "partiellement correct mais incomplet. La concentration massique s'exprime en g/L.")
+*   **Réexamen**: L'autre IA a identifié que "gramme (g)" est une partie de la réponse correcte (unité de masse), et a attribué 0.5 points pour cela, tout en notant l'incomplétude. Ma lecture initiale incluait "dissolvant" qui n'est pas pertinent pour l'unité. La lecture "elle s'exprime en gramme (g)" est donc plus juste. L'unité correcte est g/L. L'élève n'a donné que "g". L'autre IA a donné 0.5/0.0 pour cette réponse. Si le barème était 1.0 point pour la réponse complète (g/L) et 0.5 pour la partie correcte (g), alors ma note de 0.0 était trop sévère, et celle de l'autre IA (0.5) plus appropriée, MAIS l'autre IA a donné 0.0 au total, ce qui est une contradiction. En supposant que le barème autorise des points partiels pour "g", et que la réponse attendue est g/L, alors 0.5/1.0 est plus juste. J'ajuste ma lecture pour ne retenir que "elle s'exprime en gramme (g)".
+
+**Décision**: Ajuster la note. Ma note initiale était trop basse si des points partiels sont accordés pour l'unité de masse. L'autre IA a donné 0.5 pour une réponse similaire.
+*   **Ma nouvelle note**: 0.5/1.0
+*   **Ma nouvelle lecture**: "elle s'exprime en gramme (g)"
+*   **Pourquoi j'ai changé**: L'unité "gramme (g)" est une composante correcte de la concentration massique (g/L). L'autre correcteur a reconnu cela et lui a attribué une note partielle. Il est donc plus juste de reconnaître cette partie correcte.
+*   **Feedback**: L'unité de la concentration massique inclut le volume.
+*   **Confidence**: 0.9
+
+## Désaccord 5: Copie 2, Q5
+
+*   **Ma note initiale**: 1.0/2.0
+*   **Lecture initiale**: "cm = m soluté V"
+*   **Raisonnement initial**: L'élève donne la relation Cm = m/V, ce qui est correct. Cependant, le 'soluté' est superflu dans l'expression.
+*   **Note de l'autre IA**: 1.5/0.0 (Lecture: "Cm = m soluté / V ................ 30g / 250ml", Raisonnement: "formule littérale correcte pour la concentration massique. Cependant, la question demandait l'expression de la masse 'm' en fonction de Cm et V, qui est m = Cm * V.")
+*   **Réexamen**: La question demandait "Exprimer la masse 'm' du soluté en fonction de la concentration massique C m et du volume V." Ma lecture "cm = m soluté V" est interprétée comme Cm = m/V. L'autre IA a lu "Cm = m soluté / V" et a reconnu la formule de Cm mais a noté que la question demandait m = Cm * V. En relisant ma propre lecture "cm = m soluté V", je pense que j'ai mal interprété ce que l'élève a écrit. Il semble que l'élève ait écrit "Cm = m soluté / V". Ce n'est pas la bonne formule pour la question posée. La formule correcte est m = Cm * V. Mon évaluation initiale de 1.0/2.0 était basée sur le fait que "Cm = m/V" est une formule correcte en chimie, mais pas celle demandée. L'autre IA a donné 1.5/0.0, ce qui est incohérent (1.5 points reçus sur 0.0). En considérant la question "Exprimer la masse 'm'...", la réponse attendue est m = Cm * V. L'élève a écrit quelque chose proche de Cm = m/V. Ma note de 1.0/2.0 semble trop généreuse si la formule m = Cm * V n'est pas du tout écrite. L'autre IA a probablement donné 0 points car la bonne formule n'était pas écrite. Le "1.5/0.0" est une erreur d'annotation. Je vais réévaluer ma lecture. Il est probable que l'élève ait écrit "Cm = m/V" (ou similaire) et non la formule demandée.
+
+**Décision**: Ajuster la note. La question demande explicitement l'expression de 'm'. L'élève a écrit une formule pour 'Cm'.
+*   **Ma nouvelle note**: 0.0/2.0
+*   **Ma nouvelle lecture**: "cm = m soluté V" (Interprétation : Cm = m/V)
+*   **Pourquoi j'ai changé**: La question demandait d'exprimer 'm'. L'élève a donné une relation pour 'Cm'. Même si la relation écrite est liée à la chimie, ce n'est pas la réponse attendue. L'autre IA, malgré une annotation incohérente, semble avoir identifié que la formule demandée n'était pas présente.
+*   **Feedback**: La réponse doit exprimer la masse 'm' en fonction de 'Cm' et 'V'.
+*   **Confidence**: 0.9
+
+## Désaccord 6: Copie 2, Q6
+
+*   **Ma note initiale**: 1.0/2.0
+*   **Lecture initiale**: "cm = 30g V 250ml"
+*   **Raisonnement initial**: L'élève a correctement identifié la masse de soluté (30 g) mais n'a pas effectué le calcul final de la concentration massique. Le volume de 250 mL n'est pas converti en litres.
+*   **Note de l'autre IA**: 0.0/0.0 (Lecture: "cm = m Soluté / V .......... 30g / 250ml", Raisonnement: "a redonné la formule de la concentration massique au lieu de calculer la concentration massique.")
+*   **Réexamen**: Ma lecture "cm = 30g V 250ml" pourrait être interprétée comme une tentative de calcul ou une liste des éléments à utiliser. L'autre IA lit "cm = m Soluté / V .......... 30g / 250ml", ce qui ressemble plus à une tentative d'application de formule. La question demande de calculer la concentration massique. Les deux correcteurs semblent s'accorder sur le fait que le calcul n'est pas fait correctement ou pas du tout. Ma note de 1.0/2.0 était basée sur l'identification correcte des données. L'autre IA donne 0.0/0.0, suggérant qu'aucune partie de la réponse n'est valorisable. En relisant ma lecture "cm = 30g V 250ml", je vais ajuster ma lecture pour être plus proche de ce que l'autre IA lit: "cm = 30g / 250ml". Cette écriture, sans unité finale et sans le calcul effectué, est loin d'être une réponse complète. Si le but était le calcul numérique final, alors il y a peu de points à accorder. L'autre IA semble considérer que cela ne mérite aucun point. Je vais ajuster ma note pour être plus proche de l'autre IA, considérant que le calcul final attendu n'est pas fait. Si le barème est strict sur le calcul final, alors 0.0/2.0 est plus logique. Cependant, je peux accorder 0.5 points pour l'identification des données correctes si c'est considéré comme une partie de la résolution. Mais l'autre IA donne 0.0/0.0. Je vais ajuster ma note vers 0.0 pour être en accord, en expliquant que le calcul attendu n'est pas fait.
+
+**Décision**: Ajuster la note. Le calcul final n'est pas effectué.
+*   **Ma nouvelle note**: 0.0/2.0
+*   **Ma nouvelle lecture**: "Cm = 30g / 250ml"
+*   **Pourquoi j'ai changé**: La question demandait le calcul numérique de la concentration massique. L'élève a fourni les données et une fraction, mais sans conversion des unités ni calcul final. L'autre correcteur a jugé que cela ne méritait aucun point, ce qui est cohérent avec l'absence du résultat attendu.
+*   **Feedback**: Le calcul final de la concentration massique doit être effectué, en veillant à utiliser les bonnes unités (litres pour le volume).
+*   **Confidence**: 0.9
+
+Voici le JSON mis à jour :
+
+```json
+{
+  "verifications": [
+    {
+      "copy_index": 2,
+      "question_id": "Q1",
+      "my_initial_grade": 1.0,
+      "my_new_grade": 1.0,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "Fiole jaugé",
+      "changed": false,
+      "reasoning": "La lecture et l'identification de la fiole jaugée sont correctes. L'autre correcteur a attribué 0.0 malgré une lecture identique, ce qui semble être une divergence sur le barème ou une erreur d'annotation. Sans indication contraire sur le barème attendu, l'identification est valide.",
+      "feedback": "Identification correcte.",
+      "confidence": 0.9
+    },
+    {
+      "copy_index": 2,
+      "question_id": "Q2",
+      "my_initial_grade": 1.0,
+      "my_new_grade": 1.0,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "balance",
+      "changed": false,
+      "reasoning": "L'identification de la balance est correcte. Similaire à Q1, l'autre correcteur a attribué 0.0 malgré une lecture identique. L'identification est valide en l'absence de précisions sur le barème.",
+      "feedback": "Identification correcte.",
+      "confidence": 0.9
+    },
+    {
+      "copy_index": 2,
+      "question_id": "Q3",
+      "my_initial_grade": 1.0,
+      "my_new_grade": 1.0,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "le soluté est la matière qui se dissout avec des dissolvant par ex (le sucre et l'eau)",
+      "changed": false,
+      "reasoning": "La définition et l'exemple fournis sont corrects. L'autre correcteur a attribué 0.0 malgré une lecture identique, ce qui suggère une divergence sur le barème ou une annotation erronée. La réponse est correcte.",
+      "feedback": "Définition et exemple corrects.",
+      "confidence": 0.9
+    },
+    {
+      "copy_index": 2,
+      "question_id": "Q4",
+      "my_initial_grade": 0.0,
+      "my_new_grade": 0.5,
+      "my_new_max_points": 1.0,
+      "my_new_reading": "elle s'exprime en gramme (g)",
+      "changed": true,
+      "reasoning": "L'autre correcteur a reconnu que 'gramme (g)' est une partie correcte de la réponse attendue (g/L) et a attribué une note partielle. Ma lecture initiale incluait 'dissolvant' qui n'était pas pertinent pour l'unité. L'ajustement reflète l'attribution de points partiels pour la partie correcte de l'unité.",
+      "feedback": "L'unité de la concentration massique inclut le volume.",
+      "confidence": 0.9
+    },
+    {
+      "copy_index": 2,
+      "question_id": "Q5",
+      "my_initial_grade": 1.0,
+      "my_new_grade": 0.0,
+      "my_new_max_points": 2.0,
+      "my_new_reading": "Cm = m soluté V",
+      "changed": true,
+      "reasoning": "La question demandait explicitement d'exprimer la masse 'm' en fonction de Cm et V. L'élève a écrit une relation pour Cm (Cm = m/V). Ma note initiale de 1.0 était trop généreuse car la formule demandée n'était pas écrite. L'autre correcteur, malgré une annotation incohérente (1.5/0.0), a identifié que la formule m = Cm * V n'était pas présente. La nouvelle note de 0.0 reflète l'absence de la formule demandée.",
+      "feedback": "La réponse attendue est l'expression de la masse 'm', et non de la concentration massique.",
+      "confidence": 0.9
+    },
+    {
+      "copy_index": 2,
+      "question_id": "Q6",
+      "my_initial_grade": 1.0,
+      "my_new_grade": 0.0,
+      "my_new_max_points": 2.0,
+      "my_new_reading": "Cm = 30g / 250ml",
+      "changed": true,
+      "reasoning": "La question demandait le calcul numérique de la concentration massique. L'élève a fourni les données et une fraction mais n'a ni converti les unités ni effectué le calcul final. L'autre correcteur a jugé que cela ne méritait aucun point. Ma note initiale de 1.0 était trop haute. L'absence du résultat final attendu justifie une note de 0.0.",
+      "feedback": "Le calcul numérique final et la conversion des unités sont nécessaires pour obtenir la concentration massique.",
+      "confidence": 0.9
+    }
+  ]
+}
+```
+
+============================================================
+📞 APPEL #2.3
+============================================================
+Provider: GeminiProvider
+Model: gemini-2.5-flash-lite
+Type: chat
+Durée: 2691ms
+Tokens: 7051 prompt + 757 completion
+
+📷 Images (4):
+  - batch_copy_1_page_0.png
+  - batch_copy_1_page_1.png
+  - batch_copy_1_page_2.png
+  ... et 1 autres
+
+📝 PROMPT (4603 chars):
+----------------------------------------
+═══════════════════════════════════════════════════════════════════
+ULTIMATUM - DÉCISION FINALE
+═══════════════════════════════════════════════════════════════════
+
+Malgré la vérification croisée, le désaccord PERSISTE avec l'autre correcteur.
+Tu dois maintenant prendre une DÉCISION FINALE pour chaque cas.
+
+## ULTIMATUM 1: Copie 1, Q1
+
+**Toi après vérification**: **0.0/1.0** pts
+- Ton raisonnement: Après réexamen et comparaison avec l'avis de l'autre correcteur, j'ai constaté que l'image de la verrerie représente bien une fiole jaugée et non un ballon. Ma lecture initiale était correcte, mais mon identification de l'objet était erronée. La note est donc ajustée.
+
+**L'autre correcteur après vérification**: **1.0/1.0** pts
+- Son raisonnement: L'autre correcteur a raison. L'image représente bien un ballon de laboratoire, et non une fiole jaugée. Ma lecture initiale était erronée.
+
+Écart persistant: 1.0 points
+
+## ULTIMATUM 2: Copie 1, Q3
+
+**Toi après vérification**: **0.0/1.0** pts
+- Ton raisonnement: L'autre correcteur a souligné la confusion et l'inexactitude de la définition. Ma note initiale reflétait une compréhension partielle, mais l'avis de l'autre correcteur met en évidence le manque de précision et les erreurs de vocabulaire. La définition donnée n'est pas correcte, il s'agit de la création d'un solvant et non de la dilution. La note est donc ajustée à 0.
+
+**L'autre correcteur après vérification**: **0.5/1.0** pts
+- Son raisonnement: L'autre correcteur a identifié des erreurs de vocabulaire ('dissoluto', 'soluté produit') et une inversion du rôle du solvant. L'élève a néanmoins compris qu'il s'agit d'un mélange. Une note partielle est donc justifiée.
+
+Écart persistant: 0.5 points
+
+## ULTIMATUM 3: Copie 1, Q4
+
+**Toi après vérification**: **0.0/1.0** pts
+- Ton raisonnement: L'autre correcteur considère la réponse comme incompréhensible et sans rapport. Bien que j'ai interprété 'rêve seux' comme une tentative de 'reste' ou 'solvant', l'autre correcteur a raison sur l'absence de sens clair et de définition pertinente. La réponse ne répond pas à la question. Ma note est donc ajustée à 0.
+
+**L'autre correcteur après vérification**: **0.5/1.0** pts
+- Son raisonnement: L'autre correcteur a interprété 'rêve seux' comme une confusion ou faute d'orthographe pour 'reste' ou 'résidus'. Si l'élève a compris que le solvant est ce qui reste, la réponse a une certaine pertinence malgré le manque de clarté. Une note partielle est donc justifiée.
+
+Écart persistant: 0.5 points
+
+## ULTIMATUM 4: Copie 1, Q5
+
+**Toi après vérification**: **0.0/2.0** pts
+- Ton raisonnement: L'autre correcteur a identifié une erreur dans l'ordre des termes de la formule, bien que mathématiquement commutative (V * Cm = Cm * V), la convention et la clarté attendues en chimie sont Cm * V. De plus, la notation de la concentration massique (Cm) est correctement soulignée. Ma lecture était correcte, mais l'appréciation de la réponse doit être plus stricte sur la convention. La note est donc ajustée à 0.
+
+**L'autre correcteur après vérification**: **2.0/2.0** pts
+- Son raisonnement: Je reconnais mon erreur. La formule littérale est bien m = Cm * V, et l'élève l'a écrite en utilisant des notations courantes (V pour volume, Cm pour concentration massique, m pour masse). J'avais initialement considéré l'ordre des termes comme une erreur majeure alors que c'est mathématiquement équivalent (V x Cm = Cm x V). La note maximale est justifiée.
+
+Écart persistant: 2.0 points
+
+
+
+═══════════════════════════════════════════════════════════════════
+
+# RÈGLES DE L'ULTIMATUM
+
+1. **DÉCISION OBLIGATOIRE**: Tu DOIS choisir ta note finale
+2. **OPTION A - Maintenir**: Si tu es sûr de toi, garde ta note
+3. **OPTION B - Céder**: Si l'autre correcteur t'a convaincu, accepte sa note
+4. **OPTION C - Compromis**: Propose une note intermédiaire justifiée
+
+**ATTENTION**:
+- Si tu es INCERTAIN, abaisse ta confiance (< 0.5)
+- INTERDICTION de choisir au hasard
+- Tu DOIS justifier ta décision finale
+
+═══════════════════════════════════════════════════════════════════
+
+# RESPONSE FORMAT (JSON)
+
+```json
+{
+  "ultimatum_decisions": [
+    {
+      "copy_index": 1,
+      "question_id": "Q1",
+      "my_final_grade": 0.5,
+      "my_final_max_points": 2.0,
+      "decision": "maintained" ou "yielded" ou "compromise",
+      "reasoning": "Pourquoi j'ai pris cette décision finale",
+      "feedback": "Feedback final pour l'élève",
+      "confidence": 0.9
+    },
+    ...
+  ]
+}
+```
+
+═══════════════════════════════════════════════════════════════════
+
+Relis les copies et prends ta DÉCISION FINALE au format JSON.
+
+
+📤 RÉPONSE (2536 chars):
+----------------------------------------
+```json
+{
+  "ultimatum_decisions": [
+    {
+      "copy_index": 1,
+      "question_id": "Q1",
+      "my_final_grade": 1.0,
+      "my_final_max_points": 1.0,
+      "decision": "yielded",
+      "reasoning": "Après réexamen attentif des images et des justifications, j'accepte la note de l'autre correcteur. Il a raison, l'objet représenté sur la première image est bien un ballon de laboratoire, et non une fiole jaugée. Ma perception initiale était erronée.",
+      "feedback": "L'identification de la verrerie est correcte.",
+      "confidence": 1.0
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q3",
+      "my_final_grade": 0.5,
+      "my_final_max_points": 1.0,
+      "decision": "compromise",
+      "reasoning": "Je maintiens un compromis. L'élève a compris qu'il s'agit d'un mélange mais la définition est approximative et contient des erreurs notables de vocabulaire et de concept (création de solvant). L'autre correcteur a raison de noter ces imprécisions, mais une note de 0.5 reflète une compréhension partielle de la notion de mélange.",
+      "feedback": "La définition est imprécise et contient des erreurs de vocabulaire ainsi qu'une inversion du rôle du solvant.",
+      "confidence": 0.9
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q4",
+      "my_final_grade": 0.5,
+      "my_final_max_points": 1.0,
+      "decision": "compromise",
+      "reasoning": "Je maintiens un compromis. La lecture de 'rêve seux' est difficile, et l'autre correcteur a raison sur le fait que la réponse manque de clarté et de sens précis. Cependant, si l'on interprète cela comme une tentative de décrire le solvant comme 'ce qui reste' ou 'ce qui dissout', il y a une petite part de vérité. 0.5 est un juste milieu.",
+      "feedback": "La réponse est très vague et le sens est difficile à déterminer, bien qu'une tentative de définition soit présente.",
+      "confidence": 0.8
+    },
+    {
+      "copy_index": 1,
+      "question_id": "Q5",
+      "my_final_grade": 2.0,
+      "my_final_max_points": 2.0,
+      "decision": "yielded",
+      "reasoning": "J'accepte la note de l'autre correcteur. Il est vrai que l'ordre des termes dans une multiplication est sans importance (V x Cm = Cm x V). L'élève a correctement donné la relation littérale entre masse, concentration massique et volume en utilisant des notations standard. Ma rigidité initiale sur la convention Cm * V était excessive.",
+      "feedback": "La formule littérale pour calculer la masse de soluté est correcte.",
+      "confidence": 1.0
+    }
+  ]
+}
+```
+
+============================================================
+📞 APPEL #2.3
+============================================================
+Provider: GeminiProvider
+Model: gemini-2.5-flash-lite
+Type: chat
+Durée: 4957ms
+Tokens: 8131 prompt + 1435 completion
+
+📝 PROMPT (5231 chars):
+----------------------------------------
+═══════════════════════════════════════════════════════════════════
+ULTIMATUM - DÉCISION FINALE
+═══════════════════════════════════════════════════════════════════
+
+Malgré la vérification croisée, le désaccord PERSISTE avec l'autre correcteur.
+Tu dois maintenant prendre une DÉCISION FINALE pour chaque cas.
+
+## ULTIMATUM 1: Copie 2, Q4
+
+**Toi après vérification**: **0.0/1.0** pts
+- Ton raisonnement: Ma lecture initiale est 'elle s'exprime en gramme (g)'. L'autre correcteur a lu 'elle s'exprime en gramme (g)... dissolvant'. Bien que le mot 'dissolvant' soit présent dans la copie, il n'est pas pertinent pour la question qui porte sur l'unité de la concentration massique. La concentration massique s'exprime en g/L. L'élève n'a donné que l'unité de masse 'g', ce qui est incomplet. Mon attribution de 0.0/1.0 est donc justifiée, car la réponse est incorrecte. L'autre correcteur a attribué 1.0/1.0, ce qui me semble excessif compte tenu de l'incomplétude de la réponse.
+
+**L'autre correcteur après vérification**: **0.5/1.0** pts
+- Son raisonnement: L'autre correcteur a reconnu que 'gramme (g)' est une partie correcte de la réponse attendue (g/L) et a attribué une note partielle. Ma lecture initiale incluait 'dissolvant' qui n'était pas pertinent pour l'unité. L'ajustement reflète l'attribution de points partiels pour la partie correcte de l'unité.
+
+Écart persistant: 0.5 points
+
+## ULTIMATUM 2: Copie 2, Q5
+
+**Toi après vérification**: **0.5/2.0** pts
+- Ton raisonnement: Ma lecture initiale est 'Cm = m soluté / V ................ 30g / 250ml'. J'avais initialement attribué 0.0/2.0, considérant que la question demandait m = Cm * V et non la formule de Cm. L'autre correcteur a lu 'cm = m soluté V' et a attribué 1.0/2.0, en indiquant que 'soluté' est superflu. En relisant la question, elle demande 'Exprimer la masse m du soluté en fonction de Cm et V'. L'élève a bien donné la formule de Cm et un calcul numérique avec les valeurs. Ce n'est pas la formule demandée (m = Cm * V). Cependant, il a correctement identifié la formule littérale Cm = m/V et a proposé un calcul. Je vais ajuster ma note pour reconnaître la formule littérale correcte et l'application numérique, même si la formule demandée n'est pas explicitement donnée sous la forme m = Cm * V. Je lui accorde 0.5 points pour l'identification de la formule de Cm et les valeurs.
+
+**L'autre correcteur après vérification**: **0.0/2.0** pts
+- Son raisonnement: La question demandait explicitement d'exprimer la masse 'm' en fonction de Cm et V. L'élève a écrit une relation pour Cm (Cm = m/V). Ma note initiale de 1.0 était trop généreuse car la formule demandée n'était pas écrite. L'autre correcteur, malgré une annotation incohérente (1.5/0.0), a identifié que la formule m = Cm * V n'était pas présente. La nouvelle note de 0.0 reflète l'absence de la formule demandée.
+
+Écart persistant: 0.5 points
+
+## ULTIMATUM 3: Copie 2, Q6
+
+**Toi après vérification**: **1.0/2.0** pts
+- Ton raisonnement: Ma lecture initiale est 'cm = m Soluté / V .......... 30g / 250ml'. J'avais attribué 0.0/2.0 en considérant que l'élève n'avait pas calculé la concentration. L'autre correcteur a lu 'cm = 30g V 250ml' et a attribué 1.0/2.0, indiquant que la masse est correcte mais le calcul final et la conversion du volume manquent. En réalité, l'élève a écrit la formule de Cm et les valeurs (30g / 250ml). Il n'a pas effectué le calcul final, ni la conversion en litres. L'autre correcteur a raison de lui accorder des points pour l'identification des données et de la formule de base. Je vais ajuster ma note à 1.0/2.0 pour refléter l'identification correcte de la masse, du volume et de la formule.
+
+**L'autre correcteur après vérification**: **0.0/2.0** pts
+- Son raisonnement: La question demandait le calcul numérique de la concentration massique. L'élève a fourni les données et une fraction mais n'a ni converti les unités ni effectué le calcul final. L'autre correcteur a jugé que cela ne méritait aucun point. Ma note initiale de 1.0 était trop haute. L'absence du résultat final attendu justifie une note de 0.0.
+
+Écart persistant: 1.0 points
+
+
+
+═══════════════════════════════════════════════════════════════════
+
+# RÈGLES DE L'ULTIMATUM
+
+1. **DÉCISION OBLIGATOIRE**: Tu DOIS choisir ta note finale
+2. **OPTION A - Maintenir**: Si tu es sûr de toi, garde ta note
+3. **OPTION B - Céder**: Si l'autre correcteur t'a convaincu, accepte sa note
+4. **OPTION C - Compromis**: Propose une note intermédiaire justifiée
+
+**ATTENTION**:
+- Si tu es INCERTAIN, abaisse ta confiance (< 0.5)
+- INTERDICTION de choisir au hasard
+- Tu DOIS justifier ta décision finale
+
+═══════════════════════════════════════════════════════════════════
+
+# RESPONSE FORMAT (JSON)
+
+```json
+{
+  "ultimatum_decisions": [
+    {
+      "copy_index": 1,
+      "question_id": "Q1",
+      "my_final_grade": 0.5,
+      "my_final_max_points": 2.0,
+      "decision": "maintained" ou "yielded" ou "compromise",
+      "reasoning": "Pourquoi j'ai pris cette décision finale",
+      "feedback": "Feedback final pour l'élève",
+      "confidence": 0.9
+    },
+    ...
+  ]
+}
+```
+
+═══════════════════════════════════════════════════════════════════
+
+Relis les copies et prends ta DÉCISION FINALE au format JSON.
+
+
+📤 RÉPONSE (4887 chars):
+----------------------------------------
+Après mûre réflexion et en considérant les points de vue divergents avec l'autre correcteur, voici mes décisions finales pour les questions en litige, en me basant sur une analyse rigoureuse de la copie et des questions posées.
+
+## ULTIMATUM 1: Copie 2, Q4
+
+*   **Ma note après vérification**: 0.5/1.0
+*   **Lecture après vérification**: "elle s'exprime en gramme (g)"
+*   **Mon raisonnement final**: La question demande l'unité de la concentration massique. La réponse attendue est g/L. L'élève a écrit "gramme (g)", ce qui n'est qu'une partie de l'unité correcte (l'unité de masse). L'autre correcteur a attribué 0.5 points pour cette réponse, reconnaissant la partie correcte mais incomplètement. Mon évaluation initiale de 0.0 était trop sévère. La note de 0.5/1.0 est un juste milieu qui reconnaît la reconnaissance de l'unité de masse, tout en soulignant l'incomplétude de la réponse (l'absence de l'unité de volume). Je choisis de maintenir cette note de compromis.
+*   **Décision**: Compromis
+*   **Feedback**: L'unité de la concentration massique inclut le volume (g/L).
+
+## ULTIMATUM 2: Copie 2, Q5
+
+*   **Ma note après vérification**: 0.0/2.0
+*   **Lecture après vérification**: "Cm = m soluté / V ................ 30g / 250ml" (Interprétation: Cm = m/V et application numérique)
+*   **Mon raisonnement final**: La question demande explicitement d'exprimer la masse 'm' en fonction de la concentration massique 'Cm' et du volume 'V'. La formule correcte est m = Cm * V. L'élève a écrit une formule pour Cm (Cm = m/V) et a ensuite appliqué les valeurs numériques. Ce n'est pas la relation demandée. L'autre correcteur a insisté sur l'absence de la formule m = Cm * V. Malgré l'application numérique, qui montre une certaine compréhension, elle ne répond pas à la question posée. Je cède donc à l'avis de l'autre correcteur qui a souligné l'absence de la formule *demandée*, ce qui justifie une note de 0.0.
+*   **Décision**: Céder
+*   **Feedback**: La question demandait d'exprimer la masse 'm', et non la concentration massique 'Cm'.
+
+## ULTIMATUM 3: Copie 2, Q6
+
+*   **Ma note après vérification**: 0.0/2.0
+*   **Lecture après vérification**: "Cm = 30g / 250ml"
+*   **Mon raisonnement final**: La question demande de calculer la concentration massique. L'élève a écrit la formule de Cm, les valeurs de masse et de volume, mais n'a pas effectué le calcul final ni la conversion des unités (250 ml en L). L'autre correcteur a attribué 0.0, considérant que le calcul attendu n'était pas fait. Ma tentative de compromis à 1.0/2.0 était basée sur la reconnaissance de l'identification des données et de la formule. Cependant, l'absence totale du calcul numérique final, qui est le cœur de la question, rend cette note trop généreuse. Je cède donc à l'avis de l'autre correcteur qui considère que l'absence du calcul final et de la conversion des unités rend la réponse incorrecte pour l'obtention de points.
+*   **Décision**: Céder
+*   **Feedback**: Il est nécessaire de réaliser le calcul final et de convertir les unités (volume en litres) pour obtenir la concentration massique correcte.
+
+Voici le JSON des décisions finales :
+
+```json
+{
+  "ultimatum_decisions": [
+    {
+      "copy_index": 2,
+      "question_id": "Q4",
+      "my_final_grade": 0.5,
+      "my_final_max_points": 1.0,
+      "decision": "compromise",
+      "reasoning": "La réponse 'gramme (g)' est une partie correcte de l'unité de concentration massique (g/L), mais elle est incomplète. La note de 0.5/1.0 reconnaît la partie correcte tout en reflétant l'incomplétude, suite au désaccord avec l'autre correcteur qui a attribué 0.5.",
+      "feedback": "L'unité de la concentration massique inclut le volume (g/L).",
+      "confidence": 0.8
+    },
+    {
+      "copy_index": 2,
+      "question_id": "Q5",
+      "my_final_grade": 0.0,
+      "my_final_max_points": 2.0,
+      "decision": "yielded",
+      "reasoning": "La question demandait l'expression de la masse 'm' (m = Cm * V). L'élève a fourni la formule de Cm (Cm = m/V). L'absence de la formule demandée justifie une note de 0.0, cédant à l'avis de l'autre correcteur qui a souligné ce point essentiel.",
+      "feedback": "La réponse devait exprimer la masse 'm' et non la concentration massique 'Cm'.",
+      "confidence": 0.9
+    },
+    {
+      "copy_index": 2,
+      "question_id": "Q6",
+      "my_final_grade": 0.0,
+      "my_final_max_points": 2.0,
+      "decision": "yielded",
+      "reasoning": "La question demandait le calcul numérique de la concentration massique. L'élève n'a pas effectué le calcul final ni converti le volume en litres. L'absence du résultat attendu justifie une note de 0.0, cédant à l'avis de l'autre correcteur qui a jugé la réponse incomplète pour attribution de points.",
+      "feedback": "Le calcul final et la conversion des unités sont nécessaires pour une réponse complète.",
+      "confidence": 0.9
+    }
+  ]
+}
+```
