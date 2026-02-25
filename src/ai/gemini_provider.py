@@ -371,10 +371,13 @@ class GeminiProvider(BaseProvider):
         from google.genai import types
 
         config_kwargs = {}
-        if system_prompt:
-            config_kwargs["system_instruction"] = system_prompt
+
+        # IMPORTANT: Cannot use both cached_content AND system_instruction
+        # If cached_context is provided, system_prompt is already in the cache
         if cached_context:
             config_kwargs["cached_content"] = cached_context
+        elif system_prompt:
+            config_kwargs["system_instruction"] = system_prompt
 
         config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
 
@@ -527,6 +530,8 @@ class GeminiProvider(BaseProvider):
         Returns:
             Cache name/ID if successful, None otherwise
         """
+        
+
         if self.mock_mode:
             logger.info("Context caching: Mock mode - returning mock cache ID")
             return "mock_cache_id"
@@ -542,6 +547,7 @@ class GeminiProvider(BaseProvider):
         # Estimate token count before attempting to cache
         num_images = len(images) if images else 0
         estimated_tokens = self._estimate_tokens(system_prompt or "", num_images)
+        
 
         if estimated_tokens < self.MIN_CACHE_TOKENS:
             logger.info(
@@ -553,6 +559,7 @@ class GeminiProvider(BaseProvider):
 
         try:
             parts = []
+            
 
             # Add system prompt only if provided
             if system_prompt:
@@ -582,6 +589,7 @@ class GeminiProvider(BaseProvider):
                     ttl=f"{ttl_seconds}s"
                 )
             )
+            
 
             logger.info(
                 f"Context caching: Created cache '{cached_content.name}' "

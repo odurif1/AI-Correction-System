@@ -62,3 +62,7 @@ Thumbs.db
 *.temp
 *.log
 TODO
+
+# Debug outputs
+debug/
+outputs/

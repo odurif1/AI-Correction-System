@@ -190,9 +190,10 @@ class BaseProvider(ABC):
     - get_embeddings()
     """
 
-    def __init__(self, mock_mode: bool = False):
+    def __init__(self, mock_mode: bool = False, llm_id: int = 0):
         """Initialize base provider."""
         self.mock_mode = mock_mode
+        self.llm_id = llm_id  # 0=unknown, 1=LLM1, 2=LLM2
         self.call_history: List[AICallResult] = []
         # Running totals for O(1) token tracking
         self._total_prompt_tokens: int = 0
@@ -265,7 +266,8 @@ class BaseProvider(ABC):
                 images=images,
                 response=full_response or response_summary,
                 duration_ms=duration_ms,
-                tokens={"prompt": prompt_tokens or 0, "completion": completion_tokens or 0, "cached": cached_tokens or 0}
+                tokens={"prompt": prompt_tokens or 0, "completion": completion_tokens or 0, "cached": cached_tokens or 0},
+                llm_id=getattr(self, 'llm_id', 0)
             )
 
     def get_token_usage(self) -> Dict[str, int]:

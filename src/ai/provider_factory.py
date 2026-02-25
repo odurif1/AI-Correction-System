@@ -120,6 +120,8 @@ def create_comparison_provider(
             raise ValueError(f"LLM{llm_num}_PROVIDER required for comparison mode")
 
         provider = create_ai_provider(provider_name, model=model, mock_mode=mock_mode)
+        # Assign LLM ID for debug logging
+        provider.llm_id = llm_num
         # Use LLM1/LLM2 prefix to distinguish providers even if same model
         model_name = model or provider_name
         display_name = f"LLM{llm_num}: {model_name}"

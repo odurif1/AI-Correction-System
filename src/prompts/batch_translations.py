@@ -11,11 +11,7 @@ Add new languages by creating a new dictionary with the same structure.
 TRANSLATIONS_FR = {
     # Batch grading prompts
     "batch": {
-        "role": "Tu es un correcteur expérimenté. Tu dois corriger {copies_count} en UNE SEULE analyse.",
-        "approach_intro": """Cette approche te permet de:
-- Garantir la COHÉRENCE: même réponse = même note
-- Détecter les PATTERNS: réponses courantes, outliers, copiage potentiel
-- Être EFFICACE: tout en un seul passage""",
+        "role": "Tu es un correcteur expérimenté. Tu dois corriger toutes les copies présentées.",
         "rubric_title": "BARÈME DE NOTATION",
         "question_text": "Question",
         "criteria_text": "Critères",
@@ -43,22 +39,22 @@ TRANSLATIONS_FR = {
         # Copies section
         "copies_title": "COPIES À CORRIGER",
         "copies_instruction_detected": "Pour CHAQUE ÉLÈVE détecté",
-        "copies_instruction_batch": "Pour CHAQUE copie",
+        "copies_instruction_batch": "Pour CHACUNE des copies de ce document",
         "copies_steps": [
-            "Lis le nom de l'élève (si présent)",
-            "Lis les réponses à chaque question",
-            "Note selon le barème",
-            "Donne un feedback sobre et professionnel"
+            "Identifie le nom de l'élève (si présent)",
+            "Repère les questions sur le document",
+            "Lis attentivement chaque réponse",
+            "Attribue une note en justifiant",
+            "Formule un feedback sobre et professionnel"
         ],
 
         # Rules
         "rules_title": "RÈGLES IMPORTANTES",
         "rules": [
             ("COHÉRENCE ABSOLUE", "Si deux élèves ont écrit la même réponse, ils doivent avoir la même note"),
-            ("LECTURE ATTENTIVE", "Utilise le CONTEXTE (question, autres copies, cohérence) pour déchiffrer l'écriture manuscrite"),
+            ("LECTURE ATTENTIVE", "Utilise le CONTEXTE (question, cohérence entre copies) pour déchiffrer l'écriture manuscrite"),
             ("FEEDBACK SOBRE", "Commentaire court, constructif, adapté à la difficulté"),
-            ("DÉTECTION PATTERNS", "Note si beaucoup d'élèves ont la même réponse (correcte ou non)"),
-            ("CROISEMENT", "Comparer les réponses entre copies t'aide à lire l'écriture et assurer la cohérence")
+            ("DÉTECTION PATTERNS", "Note si beaucoup d'élèves ont la même réponse (correcte ou non)")
         ],
 
         # JSON format
@@ -183,11 +179,7 @@ TRANSLATIONS_FR = {
 TRANSLATIONS_EN = {
     # Batch grading prompts
     "batch": {
-        "role": "You are an experienced grader. You must grade {copies_count} in ONE analysis.",
-        "approach_intro": """This approach allows you to:
-- Ensure CONSISTENCY: same answer = same grade
-- Detect PATTERNS: common answers, outliers, potential cheating
-- Be EFFICIENT: everything in one pass""",
+        "role": "You are an experienced grader. You must grade all copies presented.",
         "rubric_title": "GRADING RUBRIC",
         "question_text": "Question",
         "criteria_text": "Criteria",
@@ -215,11 +207,12 @@ TRANSLATIONS_EN = {
         # Copies section
         "copies_title": "COPIES TO GRADE",
         "copies_instruction_detected": "For EACH STUDENT detected",
-        "copies_instruction_batch": "For EACH copy",
+        "copies_instruction_batch": "For EACH copy in this document",
         "copies_steps": [
-            "Read the student's name (if present)",
-            "Read the answers to each question",
-            "Grade according to the rubric",
+            "Identify the student's name (if present)",
+            "Locate the questions on the document",
+            "Read each answer carefully",
+            "Assign a grade with justification",
             "Provide concise, professional feedback"
         ],
 
@@ -227,10 +220,9 @@ TRANSLATIONS_EN = {
         "rules_title": "IMPORTANT RULES",
         "rules": [
             ("ABSOLUTE CONSISTENCY", "If two students wrote the same answer, they must get the same grade"),
-            ("CAREFUL READING", "Use CONTEXT (question, other copies, consistency) to decipher handwriting"),
+            ("CAREFUL READING", "Use CONTEXT (question, consistency across copies) to decipher handwriting"),
             ("CONCISE FEEDBACK", "Short, constructive comment adapted to difficulty"),
-            ("PATTERN DETECTION", "Note if many students have the same answer (correct or not)"),
-            ("CROSS-REFERENCE", "Comparing answers across copies helps you read handwriting and ensure consistency")
+            ("PATTERN DETECTION", "Note if many students have the same answer (correct or not)")
         ],
 
         # JSON format
@@ -276,14 +268,14 @@ TRANSLATIONS_EN = {
         "mission_title": "YOUR MISSION",
         "mission_steps": [
             "REREAD the copy image carefully",
-            "COMPARE your reading with the other AI's",
+            "COMPARE your reading with the other grader's",
             "DECIDE whether to maintain or adjust your grade",
             "JUSTIFY your decision"
         ],
         "mission_options_title": "IMPORTANT",
         "mission_options": "You can:",
         "mission_option_maintain": "Maintain your grade if you're confident",
-        "mission_option_adjust": "Adjust your grade if the other AI pointed out something you missed",
+        "mission_option_adjust": "Adjust your grade if the other grader pointed out something you missed",
         "mission_option_change": "Change completely if you realize an error",
 
         # JSON format

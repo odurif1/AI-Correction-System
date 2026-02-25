@@ -169,13 +169,15 @@ class BatchCopyResult:
     student_name: Optional[str]
     questions: Dict[str, Dict[str, Any]]  # {Q1: {grade, reading, feedback, ...}}
     overall_feedback: str = ""
+    image_paths: List[str] = field(default_factory=list)  # Paths to copy images
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "copy_index": self.copy_index,
             "student_name": self.student_name,
             "questions": self.questions,
-            "overall_feedback": self.overall_feedback
+            "overall_feedback": self.overall_feedback,
+            "image_paths": self.image_paths
         }
 
 
@@ -377,6 +379,12 @@ class BatchGrader:
         copies_results = []
         patterns = {}
 
+        # Collect ALL images from all input copies
+        # In batch mode with student detection, all images belong to all detected copies
+        all_input_images = []
+        for c in copies:
+            all_input_images.extend(c.get('image_paths', []))
+
         # Try to extract JSON from response
         data = extract_json_from_response(raw_response)
         if data is None:
@@ -400,11 +408,14 @@ class BatchGrader:
                             'feedback': qdata.get('feedback', '')
                         }
 
+                    # In batch mode, all input images are shared across detected copies
+                    # (the LLM sees all pages and detects students from them)
                     copies_results.append(BatchCopyResult(
                         copy_index=copy_index,
                         student_name=student_name,
                         questions=questions,
-                        overall_feedback=copy_data.get('overall_feedback', '')
+                        overall_feedback=copy_data.get('overall_feedback', ''),
+                        image_paths=all_input_images  # All copies see all images
                     ))
 
                 # Parse patterns
@@ -1874,6 +1885,7 @@ class ChatContinuationManager:
             copies_data: List with 'copy_index' and 'image_paths'
             initial_prompt: The batch grading prompt (will be cached)
         """
+        
         self._initial_prompt = initial_prompt
 
         # Store images by copy
@@ -1889,15 +1901,20 @@ class ChatContinuationManager:
 
     async def _create_shared_cache(self, copies_data: List[Dict[str, Any]], initial_prompt: str):
         """Create ONE shared cache for all copies (batch mode)."""
+        
         # Collect ALL images from ALL copies
         all_images = []
         for copy_data in copies_data:
             all_images.extend(copy_data.get('image_paths', []))
+        
 
         # Create ONE shared cache per provider
         for name, provider in self.providers:
             cache_id = None
-            if self._check_caching_support(name, provider):
+            caching_ok = self._check_caching_support(name, provider)
+            
+            if caching_ok:
+                
                 cache_id = provider.create_cached_context(
                     system_prompt=initial_prompt,
                     images=all_images,
@@ -2011,6 +2028,14 @@ class ChatContinuationManager:
             session_id = f"copy_{copy_idx}"
             images = _collect_disagreement_images(copy_disagreements, copy_filter=copy_idx)
 
+            # Warn if no cache (images will cost tokens)
+            has_cache = any(
+                session_id in self.caches_by_provider.get(name, {}) or "shared" in self.caches_by_provider.get(name, {})
+                for name in [llm1_name, llm2_name]
+            )
+            if not has_cache:
+                logger.warning(f"No cache for {session_id} - images will use tokens")
+
             prompt1 = build_dual_llm_verification_prompt(
                 copy_disagreements, llm1_name, llm2_name, True, language
             )
@@ -2053,6 +2078,14 @@ class ChatContinuationManager:
         for copy_idx, copy_disagreements in by_copy.items():
             session_id = f"copy_{copy_idx}"
             images = _collect_disagreement_images(copy_disagreements, copy_filter=copy_idx)
+
+            # Warn if no cache (images will cost tokens)
+            has_cache = any(
+                session_id in self.caches_by_provider.get(name, {}) or "shared" in self.caches_by_provider.get(name, {})
+                for name in [llm1_name, llm2_name]
+            )
+            if not has_cache:
+                logger.warning(f"No cache for {session_id} - images will use tokens")
 
             prompt1 = build_ultimatum_prompt(copy_disagreements, llm1_name, llm2_name, language)
             prompt2 = build_ultimatum_prompt(copy_disagreements, llm2_name, llm1_name, language)

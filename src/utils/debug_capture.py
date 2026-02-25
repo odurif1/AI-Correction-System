@@ -38,6 +38,7 @@ class DebugCall:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     error: Optional[str] = None
+    llm_id: int = 0  # 0=unknown, 1=LLM1, 2=LLM2
 
 
 class DebugCapture:
@@ -60,7 +61,8 @@ class DebugCapture:
         response_json: Dict = None,
         duration_ms: float = 0,
         tokens: Dict = None,
-        error: str = None
+        error: str = None,
+        llm_id: int = 0
     ):
         """Capture an API call."""
         if not self.enabled:
@@ -78,7 +80,8 @@ class DebugCapture:
             duration_ms=duration_ms,
             prompt_tokens=tokens.get("prompt", 0) if tokens else 0,
             completion_tokens=tokens.get("completion", 0) if tokens else 0,
-            error=error
+            error=error,
+            llm_id=llm_id
         )
         self.calls.append(call)
 
@@ -103,7 +106,8 @@ class DebugCapture:
                         "prompt": c.prompt_tokens,
                         "completion": c.completion_tokens
                     },
-                    "error": c.error
+                    "error": c.error,
+                    "llm_id": c.llm_id
                 }
                 for c in self.calls
             ]

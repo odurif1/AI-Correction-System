@@ -74,13 +74,15 @@ def print_summary(data: dict):
         print(f"\n⚠️  Erreurs: {errors}")
 
 
-def print_call(call: dict, index: int, show_prompt: bool = True, show_response: bool = True):
+def print_call(call: dict, index: int, show_prompt: bool = True, show_response: bool = True, llm_num: int = None, call_num: int = None):
     """Affiche un appel API de manière lisible."""
     print("\n" + "="*60)
-    print(f"📞 APPEL #{index + 1}")
+    if llm_num is not None and call_num is not None:
+        print(f"📞 APPEL #{llm_num}.{call_num}")
+    else:
+        print(f"📞 APPEL #{index + 1}")
     print("="*60)
 
-    print(f"Timestamp: {call.get('timestamp', 'N/A')}")
     print(f"Provider: {call.get('provider', 'N/A')}")
     print(f"Model: {call.get('model', 'N/A')}")
     print(f"Type: {call.get('call_type', 'N/A')}")
@@ -104,24 +106,13 @@ def print_call(call: dict, index: int, show_prompt: bool = True, show_response: 
         prompt = call['prompt']
         print(f"\n📝 PROMPT ({len(prompt)} chars):")
         print("-"*40)
-        # Limiter l'affichage
-        if len(prompt) > 2000:
-            print(prompt[:1000])
-            print("\n... [tronqué] ...\n")
-            print(prompt[-500:])
-        else:
-            print(prompt)
+        print(prompt)
 
     if show_response and call.get('response'):
         response = call['response']
         print(f"\n📤 RÉPONSE ({len(response)} chars):")
         print("-"*40)
-        if len(response) > 2000:
-            print(response[:1000])
-            print("\n... [tronqué] ...\n")
-            print(response[-500:])
-        else:
-            print(response)
+        print(response)
 
 
 def main():
@@ -160,27 +151,145 @@ def main():
     if args.type:
         calls = [c for c in calls if args.type.lower() in c.get('call_type', '').lower()]
 
+    # Calculer les numéros Y.X et trier par vague (X) puis LLM (Y)
+    llm_nums = _compute_parallel_groups(calls)
+
+    # Créer liste avec indices et trier par (llm_num, call_num) - grouper par LLM
+    indexed_calls = list(enumerate(calls))
+    indexed_calls.sort(key=lambda x: (llm_nums[x[0]][0], llm_nums[x[0]][1]))
+
     # Afficher
     if args.summary:
         print_summary(data)
     elif args.list:
         print("\n📋 LISTE DES APPELS:")
-        for i, call in enumerate(calls):
-            print(f"  [{i}] {call.get('provider', '?'):20} | {call.get('call_type', '?'):8} | {call.get('duration_ms', 0):6.0f}ms | {call.get('model', '?')}")
+        for orig_idx, call in indexed_calls:
+            lnum, cnum = llm_nums[orig_idx]
+            print(f"  [{lnum}.{cnum}] {call.get('provider', '?'):20} | {call.get('call_type', '?'):8} | {call.get('duration_ms', 0):6.0f}ms | {call.get('model', '?')}")
     elif args.call is not None:
         if 0 <= args.call < len(calls):
+            lnum, cnum = llm_nums[args.call]
             print_call(calls[args.call], args.call,
                       show_prompt=not args.no_prompt,
-                      show_response=not args.no_response)
+                      show_response=not args.no_response,
+                      llm_num=lnum, call_num=cnum)
         else:
             print(f"❌ Appel {args.call} non trouvé (0-{len(calls)-1})")
     else:
-        # Afficher le résumé puis tous les appels
+        # Afficher le résumé puis tous les appels (triés par vague)
         print_summary(data)
-        for i, call in enumerate(calls):
-            print_call(call, i,
+        for orig_idx, call in indexed_calls:
+            lnum, cnum = llm_nums[orig_idx]
+            print_call(call, orig_idx,
                       show_prompt=not args.no_prompt,
-                      show_response=not args.no_response)
+                      show_response=not args.no_response,
+                      llm_num=lnum, call_num=cnum)
+
+
+def _detect_phase(call: dict) -> int:
+    """
+    Détecte la phase d'un appel basée sur son contenu.
+
+    Returns:
+        1 = batch initial, 2 = vérification, 3 = ultimatum
+    """
+    prompt = call.get('prompt', '').lower()
+    call_type = call.get('call_type', '')
+
+    # Phase 3: Ultimatum
+    if 'ultimatum' in prompt or 'décision finale' in prompt:
+        return 3
+
+    # Phase 2: Vérification
+    if 'désaccord' in prompt or 'réexamine' in prompt or call_type == 'chat':
+        return 2
+
+    # Phase 1: Batch initial (vision calls without verification keywords)
+    return 1
+
+
+def _compute_parallel_groups(calls: list, tolerance_seconds: float = 2.0) -> list:
+    """
+    Calcule les numéros d'appels: (numéro_llm, numéro_phase).
+
+    X = LLM (1 ou 2) - extrait de llm_id dans le log, ou deviné par timestamp
+    Y = Phase (1=batch, 2=vérification, 3=ultimatum)
+
+    Returns:
+        Liste de tuples (llm_number, phase_number) pour chaque appel
+    """
+    if not calls:
+        return []
+
+    result = []
+
+    # D'abord, vérifier si llm_id est disponible dans les logs
+    has_llm_id = any(call.get('llm_id', 0) > 0 for call in calls)
+
+    if has_llm_id:
+        # Utiliser llm_id du log
+        for call in calls:
+            llm_id = call.get('llm_id', 1)
+            phase = _detect_phase(call)
+            result.append((llm_id, phase))
+    else:
+        # Fallback: deviner par timestamp (ancien comportement)
+        from datetime import datetime
+
+        phase_groups = {}
+        for idx, call in enumerate(calls):
+            phase = _detect_phase(call)
+            if phase not in phase_groups:
+                phase_groups[phase] = []
+            phase_groups[phase].append((idx, call))
+
+        result = [None] * len(calls)
+
+        for phase in sorted(phase_groups.keys()):
+            phase_calls = phase_groups[phase]
+
+            def get_timestamp(item):
+                ts = item[1].get('timestamp', '')
+                try:
+                    return datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                except:
+                    return datetime.min
+
+            phase_calls.sort(key=get_timestamp)
+
+            groups = []
+            current_group = []
+
+            for item in phase_calls:
+                if not current_group:
+                    current_group = [item]
+                else:
+                    t1 = get_timestamp(current_group[0])
+                    t2 = get_timestamp(item)
+                    diff = abs((t2 - t1).total_seconds())
+
+                    if diff < tolerance_seconds:
+                        current_group.append(item)
+                    else:
+                        groups.append(current_group)
+                        current_group = [item]
+
+            if current_group:
+                groups.append(current_group)
+
+            for group in groups:
+                if len(group) == 1:
+                    idx = group[0][0]
+                    result[idx] = (1, phase)
+                else:
+                    for i, (idx, call) in enumerate(sorted(group, key=lambda x: x[0])):
+                        result[idx] = (i + 1, phase)
+
+        for idx in range(len(result)):
+            if result[idx] is None:
+                result[idx] = (1, _detect_phase(calls[idx]))
+
+    return result
 
 
 if __name__ == "__main__":

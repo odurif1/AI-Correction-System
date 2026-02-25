@@ -1027,6 +1027,7 @@ class GradingSessionOrchestrator:
                 # ===== CONTEXT CACHING + CHAT SESSIONS SETUP =====
                 # Create chat sessions with cached context for verification/ultimatum
                 chat_manager = None
+                
                 if self._use_chat_continuation:
                     from ai.batch_grader import ChatContinuationManager
                     from prompts.batch import build_batch_grading_prompt
@@ -1038,6 +1039,7 @@ class GradingSessionOrchestrator:
                         provider1.supports_context_caching() or
                         provider2.supports_context_caching()
                     )
+                    
 
                     if caching_supported:
                         logger.info("Creating chat sessions with cached context for verification/ultimatum")
@@ -1047,6 +1049,7 @@ class GradingSessionOrchestrator:
                         # Build copies data for sessions
                         copies_for_session = []
                         copy_indices_with_disagreements = set(d.copy_index for d in disagreements)
+                        
 
                         for copy_result in batch_result.copies:
                             if copy_result.copy_index in copy_indices_with_disagreements:
@@ -1054,6 +1057,8 @@ class GradingSessionOrchestrator:
                                     'copy_index': copy_result.copy_index,
                                     'image_paths': getattr(copy_result, 'image_paths', [])
                                 })
+
+                        
 
                         # Build initial prompt (same as batch grading)
                         initial_prompt = build_batch_grading_prompt(
