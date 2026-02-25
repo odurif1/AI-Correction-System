@@ -66,3 +66,5 @@ TODO
 # Debug outputs
 debug/
 outputs/
+
+.*
