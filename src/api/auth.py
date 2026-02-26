@@ -205,9 +205,9 @@ async def login(
     db: Session = Depends(get_db)
 ):
     """Login and get an access token. Rate limited to 5 attempts per 15 minutes per IP."""
-    # Apply rate limit (5 per 15 minutes per IP)
+    # Apply rate limit
     limiter = request.app.state.limiter
-    limiter.check("5/15minute")
+    limiter._check_request_limit(request, "5/15minute")
 
     # Find user
     user = db.query(User).filter(User.email == credentials.email).first()

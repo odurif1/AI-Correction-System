@@ -4,10 +4,12 @@ FastAPI application for La Corrigeuse.
 Provides web API for grading operations with WebSocket support for real-time progress.
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Depends, Security
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Depends, Security, Request, status
 from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from pathlib import Path
@@ -18,8 +20,28 @@ import json
 import logging
 import os
 
+# Rate limiting
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
 # Maximum file size for uploads (50 MB)
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
+
+
+def get_user_id(request: Request) -> str:
+    """
+    Extract user ID from JWT token, fallback to IP.
+
+    For authenticated requests, rate limit per user.
+    For unauthenticated requests (e.g., login), rate limit per IP.
+    """
+    # Try to get user from request state (set by auth middleware)
+    if hasattr(request.state, 'user_id'):
+        return f"user:{request.state.user_id}"
+    # Fallback to IP for unauthenticated requests
+    return f"ip:{get_remote_address(request)}"
+
 
 from config.settings import get_settings
 from pydantic import ValidationError
@@ -80,6 +102,19 @@ def create_app() -> FastAPI:
         description="Correction automatique par IA pour les professeurs de collège et lycée",
         version="1.0.0"
     )
+
+    # Configure rate limiting
+    limiter = Limiter(key_func=get_user_id)
+    app.state.limiter = limiter
+
+    # Rate limit exception handler
+    @app.exception_handler(RateLimitExceeded)
+    async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+        return JSONResponse(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            content={"detail": "Trop de requêtes. Réessayez plus tard."},
+            headers={"Retry-After": str(exc.retry_after)}
+        )
 
     # Configure CORS
     app.add_middleware(
