@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: Phase 1 (Security Foundation)
 current_plan: 01-03 (User-Scoped Session Storage)
 status: executing
-last_updated: "2026-02-26T23:19:30.031Z"
+last_updated: "2026-02-26T23:23:09.606Z"
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 6
-  completed_plans: 3
-  percent: 50
+  completed_plans: 5
+  percent: 83
 ---
 
 # State: La Corrigeuse
@@ -36,7 +36,7 @@ Establishing security foundation before commercial release. Critical vulnerabili
 **Phase:** 1 - Security Foundation
 **Plan:** 03 - User-Scoped Session Storage
 **Status:** Complete
-**Progress:** [█████░░░░░] 50%
+**Progress:** [████████░░] 83%
 
 **What's being built:**
 Secure authentication with environment-based secrets, multi-tenant data isolation (user-scoped sessions), input validation, and file upload security.
@@ -80,6 +80,8 @@ Security vulnerabilities are BLOCKING for production. Hardcoded JWT secrets allo
 - [Phase 01-security-foundation]: Use Pydantic field_validator for default value rejection - Declarative validation integrates with Settings initialization, fail-fast on startup
 - [Phase 01-security-foundation]: Dynamic secret fetching in JWT operations - Allows settings reload without restart, avoids stale SECRET_KEY references
 - [Phase 01-security-foundation]: Single startup event for validation - Database init already runs on startup, security validation should happen first
+- [Phase 01-security-foundation]: User-scoped rate limiting key function - extracts user_id from JWT for authenticated requests, falls back to IP for unauthenticated
+- [Phase 01-security-foundation]: Rate limit exception handler returns 429 with French message and retry-after header
 
 ### Active Todos
 

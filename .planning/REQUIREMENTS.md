@@ -16,10 +16,10 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 - [x] **SEC-05**: User-scoped session storage (data/sessions/{user_id}/)
 - [ ] **SEC-06**: Access control middleware verifies ownership on every data access request
 - [x] **SEC-07**: Input validation on all API endpoints (Pydantic models)
-- [ ] **SEC-08**: File upload security — validate PDF structure, enforce size limits, reject malicious files
-- [ ] **SEC-09**: Rate limiting per user on uploads and API calls
-- [ ] **SEC-10**: CORS properly configured for production domains
-- [ ] **SEC-11**: Security headers applied (HSTS, X-Frame-Options, X-Content-Type-Options)
+- [x] **SEC-08**: File upload security — validate PDF structure, enforce size limits, reject malicious files
+- [x] **SEC-09**: Rate limiting per user on uploads and API calls
+- [x] **SEC-10**: CORS properly configured for production domains
+- [x] **SEC-11**: Security headers applied (HSTS, X-Frame-Options, X-Content-Type-Options)
 
 ### Authentication
 
@@ -133,10 +133,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SEC-05 | Phase 1 | Complete |
 | SEC-06 | Phase 1 | Pending |
 | SEC-07 | Phase 1 | Complete |
-| SEC-08 | Phase 1 | Pending |
-| SEC-09 | Phase 1 | Pending |
-| SEC-10 | Phase 1 | Pending |
-| SEC-11 | Phase 1 | Pending |
+| SEC-08 | Phase 1 | Complete |
+| SEC-09 | Phase 1 | Complete |
+| SEC-10 | Phase 1 | Complete |
+| SEC-11 | Phase 1 | Complete |
 | AUTH-01 | Phase 1 | Complete |
 | AUTH-02 | Phase 1 | Complete |
 | AUTH-03 | Phase 1 | Complete |
