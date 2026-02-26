@@ -18,6 +18,7 @@ numpy==1.26.0
 # API
 fastapi==0.115.0
 uvicorn[standard]==0.40.0
+slowapi>=2022.1.0
 
 # Utils
 tenacity==9.1.4
