@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 from passlib.context import CryptContext
@@ -11,6 +11,7 @@ import jwt
 from sqlalchemy.orm import Session
 from db import get_db, User, SubscriptionTier
 from config.settings import get_settings
+from utils.validators import validate_password
 
 # Configuration
 ALGORITHM = "HS256"
@@ -165,13 +166,16 @@ async def register(
     db: Session = Depends(get_db)
 ):
     """Register a new user."""
+    # Validate password
+    is_valid, error_msg = validate_password(user_data.password)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail=error_msg)
+
     # Check if email already exists
     existing_user = db.query(User).filter(User.email == user_data.email).first()
     if existing_user:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Un compte existe déjà avec cet email"
-        )
+        # Per CONTEXT.md: Specific error acceptable for signup
+        raise HTTPException(status_code=400, detail="Email déjà utilisé")
 
     # Create user
     user = User(
