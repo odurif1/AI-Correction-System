@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: Phase 1 (Security Foundation)
 current_plan: 01-03 (User-Scoped Session Storage)
 status: executing
-last_updated: "2026-02-26T23:23:09.606Z"
+last_updated: "2026-02-26T23:28:58.025Z"
 progress:
   total_phases: 1
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 6
-  completed_plans: 5
-  percent: 83
+  completed_plans: 6
+  percent: 100
 ---
 
 # State: La Corrigeuse
@@ -36,7 +36,7 @@ Establishing security foundation before commercial release. Critical vulnerabili
 **Phase:** 1 - Security Foundation
 **Plan:** 03 - User-Scoped Session Storage
 **Status:** Complete
-**Progress:** [████████░░] 83%
+**Progress:** [██████████] 100%
 
 **What's being built:**
 Secure authentication with environment-based secrets, multi-tenant data isolation (user-scoped sessions), input validation, and file upload security.
@@ -82,6 +82,8 @@ Security vulnerabilities are BLOCKING for production. Hardcoded JWT secrets allo
 - [Phase 01-security-foundation]: Single startup event for validation - Database init already runs on startup, security validation should happen first
 - [Phase 01-security-foundation]: User-scoped rate limiting key function - extracts user_id from JWT for authenticated requests, falls back to IP for unauthenticated
 - [Phase 01-security-foundation]: Rate limit exception handler returns 429 with French message and retry-after header
+- [Phase 01]: Access control middleware returns user_id for downstream SessionStore construction - Avoids duplicate current_user.id references in endpoint logic
+- [Phase 01]: Path traversal protection uses Path.resolve().relative_to() for validation - More robust against symlinks and edge cases than string prefix checking
 
 ### Active Todos
 

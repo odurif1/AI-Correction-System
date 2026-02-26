@@ -14,7 +14,7 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 - [x] **SEC-03**: All API keys (Gemini, OpenAI, GLM) loaded from environment variables
 - [x] **SEC-04**: Multi-tenant data isolation — users cannot access other users' sessions or grading data
 - [x] **SEC-05**: User-scoped session storage (data/sessions/{user_id}/)
-- [ ] **SEC-06**: Access control middleware verifies ownership on every data access request
+- [x] **SEC-06**: Access control middleware verifies ownership on every data access request
 - [x] **SEC-07**: Input validation on all API endpoints (Pydantic models)
 - [x] **SEC-08**: File upload security — validate PDF structure, enforce size limits, reject malicious files
 - [x] **SEC-09**: Rate limiting per user on uploads and API calls
@@ -131,7 +131,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SEC-03 | Phase 1 | Complete |
 | SEC-04 | Phase 1 | Complete |
 | SEC-05 | Phase 1 | Complete |
-| SEC-06 | Phase 1 | Pending |
+| SEC-06 | Phase 1 | Complete |
 | SEC-07 | Phase 1 | Complete |
 | SEC-08 | Phase 1 | Complete |
 | SEC-09 | Phase 1 | Complete |
