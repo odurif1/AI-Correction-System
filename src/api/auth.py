@@ -200,10 +200,15 @@ async def register(
 
 @router.post("/login", response_model=Token)
 async def login(
+    request: Request,
     credentials: UserLogin,
     db: Session = Depends(get_db)
 ):
-    """Login and get an access token."""
+    """Login and get an access token. Rate limited to 5 attempts per 15 minutes per IP."""
+    # Apply rate limit (5 per 15 minutes per IP)
+    limiter = request.app.state.limiter
+    limiter.check("5/15minute")
+
     # Find user
     user = db.query(User).filter(User.email == credentials.email).first()
     if user is None:
@@ -230,7 +235,12 @@ async def login(
 
 @router.post("/logout")
 async def logout():
-    """Logout (client should discard the token)."""
+    """
+    Logout endpoint.
+
+    Per CONTEXT.md: Client-side logout only (delete token from browser).
+    Server returns 200 OK to confirm logout request received.
+    """
     return {"message": "Déconnexion réussie"}
 
 
