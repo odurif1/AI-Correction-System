@@ -5,6 +5,7 @@ All configuration comes from environment variables or .env file.
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, field_validator, ValidationError
 from typing import Optional
 from functools import lru_cache
 
@@ -18,6 +19,9 @@ class Settings(BaseSettings):
         env_prefix="AI_CORRECTION_",
         case_sensitive=False
     )
+
+    # Security (required)
+    jwt_secret: str = Field(..., min_length=32)
 
     # AI Provider (required)
     ai_provider: str  # "gemini", "openai", "glm", "openrouter"
@@ -68,6 +72,26 @@ class Settings(BaseSettings):
 
     # CORS
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+    # Validators
+    @field_validator('jwt_secret')
+    @classmethod
+    def reject_default_values(cls, v: str) -> str:
+        """Reject default/weak JWT secrets."""
+        forbidden = ['your-secret-key-change-in-production', 'secret', 'test', 'password', 'change-me', 'default-secret']
+        if v.lower() in forbidden:
+            raise ValueError("JWT_SECRET cannot be a default value. Generate with: openssl rand -base64 32")
+        return v
+
+    @field_validator('ai_provider')
+    @classmethod
+    def validate_api_keys(cls, v: str, info) -> str:
+        """Ensure required API key is set for the configured provider."""
+        # Ensure corresponding API key is set
+        api_key_field = f"{v}_api_key"
+        if not info.data.get(api_key_field):
+            raise ValueError(f"AI_CORRECTION_{v.upper()}_API_KEY required when provider={v}")
+        return v
 
 
 @lru_cache()
