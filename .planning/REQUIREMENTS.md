@@ -9,9 +9,9 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 
 ### Security (Critical)
 
-- [ ] **SEC-01**: JWT secret loaded from environment variable, never hardcoded
-- [ ] **SEC-02**: Application fails fast on startup if critical secrets are missing or default values detected
-- [ ] **SEC-03**: All API keys (Gemini, OpenAI, GLM) loaded from environment variables
+- [x] **SEC-01**: JWT secret loaded from environment variable, never hardcoded
+- [x] **SEC-02**: Application fails fast on startup if critical secrets are missing or default values detected
+- [x] **SEC-03**: All API keys (Gemini, OpenAI, GLM) loaded from environment variables
 - [x] **SEC-04**: Multi-tenant data isolation — users cannot access other users' sessions or grading data
 - [x] **SEC-05**: User-scoped session storage (data/sessions/{user_id}/)
 - [ ] **SEC-06**: Access control middleware verifies ownership on every data access request
@@ -24,9 +24,9 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 ### Authentication
 
 - [ ] **AUTH-01**: User can sign up with email and password
-- [ ] **AUTH-02**: Password hashing with bcrypt (no plain text storage)
+- [x] **AUTH-02**: Password hashing with bcrypt (no plain text storage)
 - [ ] **AUTH-03**: User can log in with email and password
-- [ ] **AUTH-04**: JWT token issued on successful login with configurable expiration
+- [x] **AUTH-04**: JWT token issued on successful login with configurable expiration
 - [ ] **AUTH-05**: User session persists across browser refresh (token stored securely)
 - [ ] **AUTH-06**: User can log out (token invalidation)
 - [ ] **AUTH-07**: User can request password reset via email link
@@ -126,9 +126,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| SEC-01 | Phase 1 | Pending |
-| SEC-02 | Phase 1 | Pending |
-| SEC-03 | Phase 1 | Pending |
+| SEC-01 | Phase 1 | Complete |
+| SEC-02 | Phase 1 | Complete |
+| SEC-03 | Phase 1 | Complete |
 | SEC-04 | Phase 1 | Complete |
 | SEC-05 | Phase 1 | Complete |
 | SEC-06 | Phase 1 | Pending |
@@ -138,9 +138,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SEC-10 | Phase 1 | Pending |
 | SEC-11 | Phase 1 | Pending |
 | AUTH-01 | Phase 1 | Pending |
-| AUTH-02 | Phase 1 | Pending |
+| AUTH-02 | Phase 1 | Complete |
 | AUTH-03 | Phase 1 | Pending |
-| AUTH-04 | Phase 1 | Pending |
+| AUTH-04 | Phase 1 | Complete |
 | AUTH-05 | Phase 1 | Pending |
 | AUTH-06 | Phase 1 | Pending |
 | AUTH-07 | Phase 2 | Pending |
