@@ -15,7 +15,7 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 - [x] **SEC-04**: Multi-tenant data isolation — users cannot access other users' sessions or grading data
 - [x] **SEC-05**: User-scoped session storage (data/sessions/{user_id}/)
 - [ ] **SEC-06**: Access control middleware verifies ownership on every data access request
-- [ ] **SEC-07**: Input validation on all API endpoints (Pydantic models)
+- [x] **SEC-07**: Input validation on all API endpoints (Pydantic models)
 - [ ] **SEC-08**: File upload security — validate PDF structure, enforce size limits, reject malicious files
 - [ ] **SEC-09**: Rate limiting per user on uploads and API calls
 - [ ] **SEC-10**: CORS properly configured for production domains
@@ -23,12 +23,12 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 
 ### Authentication
 
-- [ ] **AUTH-01**: User can sign up with email and password
+- [x] **AUTH-01**: User can sign up with email and password
 - [x] **AUTH-02**: Password hashing with bcrypt (no plain text storage)
-- [ ] **AUTH-03**: User can log in with email and password
+- [x] **AUTH-03**: User can log in with email and password
 - [x] **AUTH-04**: JWT token issued on successful login with configurable expiration
-- [ ] **AUTH-05**: User session persists across browser refresh (token stored securely)
-- [ ] **AUTH-06**: User can log out (token invalidation)
+- [x] **AUTH-05**: User session persists across browser refresh (token stored securely)
+- [x] **AUTH-06**: User can log out (token invalidation)
 - [ ] **AUTH-07**: User can request password reset via email link
 - [ ] **AUTH-08**: Password reset tokens expire after reasonable time (15-60 minutes)
 
@@ -132,17 +132,17 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SEC-04 | Phase 1 | Complete |
 | SEC-05 | Phase 1 | Complete |
 | SEC-06 | Phase 1 | Pending |
-| SEC-07 | Phase 1 | Pending |
+| SEC-07 | Phase 1 | Complete |
 | SEC-08 | Phase 1 | Pending |
 | SEC-09 | Phase 1 | Pending |
 | SEC-10 | Phase 1 | Pending |
 | SEC-11 | Phase 1 | Pending |
-| AUTH-01 | Phase 1 | Pending |
+| AUTH-01 | Phase 1 | Complete |
 | AUTH-02 | Phase 1 | Complete |
-| AUTH-03 | Phase 1 | Pending |
+| AUTH-03 | Phase 1 | Complete |
 | AUTH-04 | Phase 1 | Complete |
-| AUTH-05 | Phase 1 | Pending |
-| AUTH-06 | Phase 1 | Pending |
+| AUTH-05 | Phase 1 | Complete |
+| AUTH-06 | Phase 1 | Complete |
 | AUTH-07 | Phase 2 | Pending |
 | AUTH-08 | Phase 2 | Pending |
 | OBS-01 | Phase 2 | Pending |
