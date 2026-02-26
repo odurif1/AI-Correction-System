@@ -1,8 +1,25 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: milestone
+current_phase: Phase 1 (Security Foundation)
+current_plan: 01-03 (User-Scoped Session Storage)
+status: executing
+last_updated: "2026-02-26T23:14:40.834Z"
+progress:
+  total_phases: 1
+  completed_phases: 0
+  total_plans: 6
+  completed_plans: 2
+  percent: 33
+---
+
 # State: La Corrigeuse
 
 **Last updated:** 2026-02-26
 **Current phase:** Phase 1 (Security Foundation)
-**Status:** Not started
+**Current plan:** 01-03 (User-Scoped Session Storage)
+**Status:** In Progress
 
 ## Project Reference
 
@@ -17,9 +34,9 @@ Establishing security foundation before commercial release. Critical vulnerabili
 ## Current Position
 
 **Phase:** 1 - Security Foundation
-**Plan:** TBD (not yet planned)
-**Status:** Not started
-**Progress:** █░░░░░░░░░ 10%
+**Plan:** 03 - User-Scoped Session Storage
+**Status:** Complete
+**Progress:** [███░░░░░░░] 33%
 
 **What's being built:**
 Secure authentication with environment-based secrets, multi-tenant data isolation (user-scoped sessions), input validation, and file upload security.
@@ -34,7 +51,7 @@ Security vulnerabilities are BLOCKING for production. Hardcoded JWT secrets allo
 **Estimated timeline:** 3-4 weeks to commercial release (from PROJECT.md)
 
 **Cumulative progress:**
-- Phase 1: 0/17 requirements complete
+- Phase 1: 5/17 requirements complete (SEC-01, SEC-02, SEC-03, SEC-04, SEC-05)
 - Phase 2: 0/9 requirements complete
 - Phase 3: 0/13 requirements complete
 - Phase 4: 0/7 requirements complete
@@ -43,6 +60,12 @@ Security vulnerabilities are BLOCKING for production. Hardcoded JWT secrets allo
 ## Accumulated Context
 
 ### Decisions Made
+
+**Multi-tenant session storage (2026-02-26):**
+- Changed base path from `data/{user_id}/` to `data/sessions/{user_id}/` for clearer organization
+- Made user_id mandatory in SessionStore - no backward compatibility fallback
+- Fresh start approach: delete legacy shared sessions on startup rather than migrate
+- Enforced file-level isolation with ValueError on missing user_id
 
 **Roadmap structure (2026-02-26):**
 - Chose 5-phase structure following risk-mitigation ordering from research
@@ -54,6 +77,9 @@ Security vulnerabilities are BLOCKING for production. Hardcoded JWT secrets allo
 - Quick depth: Combined aggressive, focus on critical path only
 
 **Rationale:** This ordering ensures we don't build features on an insecure foundation. Security vulnerabilities are irreversible if deployed to production. Observability is required before we can safely debug production issues. Core grading delivers the primary value proposition. UI polish and production automation complete the commercial offering.
+- [Phase 01-security-foundation]: Use Pydantic field_validator for default value rejection - Declarative validation integrates with Settings initialization, fail-fast on startup
+- [Phase 01-security-foundation]: Dynamic secret fetching in JWT operations - Allows settings reload without restart, avoids stale SECRET_KEY references
+- [Phase 01-security-foundation]: Single startup event for validation - Database init already runs on startup, security validation should happen first
 
 ### Active Todos
 
@@ -70,8 +96,8 @@ Security vulnerabilities are BLOCKING for production. Hardcoded JWT secrets allo
 ### Known Blockers
 
 **Security vulnerabilities (BLOCKING):**
-- JWT secret hardcoded in source code — allows attackers to forge tokens
-- Multi-tenant data isolation missing — teachers can access each other's sessions
+- ~~JWT secret hardcoded in source code — allows attackers to forge tokens~~ FIXED in plan 01-02
+- ~~Multi-tenant data isolation missing — teachers can access each other's sessions~~ FIXED in plan 01-03
 - Input validation incomplete — risk of prompt injection attacks
 - File upload security missing — DoS vulnerability from malicious PDFs
 
@@ -100,8 +126,8 @@ Security vulnerabilities are BLOCKING for production. Hardcoded JWT secrets allo
 
 ## Session Continuity
 
-**Last action:** Roadmap created with 5 phases covering 53 v1 requirements
-**Next action:** Execute `/gsd:plan-phase 1` to create detailed plans for Phase 1 (Security Foundation)
+**Last action:** Completed plan 01-03 - User-scoped session storage with mandatory user_id enforcement
+**Next action:** Continue with plan 01-04 - Input validation and sanitization
 
 **Quick context for next session:**
 We're building an AI-powered grading SaaS for French teachers. The codebase exists but has critical security vulnerabilities. We created a 5-phase roadmap starting with security. We need to plan Phase 1 in detail and begin implementation.

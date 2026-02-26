@@ -12,8 +12,8 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 - [ ] **SEC-01**: JWT secret loaded from environment variable, never hardcoded
 - [ ] **SEC-02**: Application fails fast on startup if critical secrets are missing or default values detected
 - [ ] **SEC-03**: All API keys (Gemini, OpenAI, GLM) loaded from environment variables
-- [ ] **SEC-04**: Multi-tenant data isolation — users cannot access other users' sessions or grading data
-- [ ] **SEC-05**: User-scoped session storage (data/sessions/{user_id}/)
+- [x] **SEC-04**: Multi-tenant data isolation — users cannot access other users' sessions or grading data
+- [x] **SEC-05**: User-scoped session storage (data/sessions/{user_id}/)
 - [ ] **SEC-06**: Access control middleware verifies ownership on every data access request
 - [ ] **SEC-07**: Input validation on all API endpoints (Pydantic models)
 - [ ] **SEC-08**: File upload security — validate PDF structure, enforce size limits, reject malicious files
@@ -129,8 +129,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | SEC-01 | Phase 1 | Pending |
 | SEC-02 | Phase 1 | Pending |
 | SEC-03 | Phase 1 | Pending |
-| SEC-04 | Phase 1 | Pending |
-| SEC-05 | Phase 1 | Pending |
+| SEC-04 | Phase 1 | Complete |
+| SEC-05 | Phase 1 | Complete |
 | SEC-06 | Phase 1 | Pending |
 | SEC-07 | Phase 1 | Pending |
 | SEC-08 | Phase 1 | Pending |
