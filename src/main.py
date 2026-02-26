@@ -1306,8 +1306,9 @@ async def command_correct(args):
         cli.console.print(f"\n[bold cyan]📊 Token Usage par Phase:[/bold cyan]")
 
         # Phase order for display
-        phase_order = ['grading', 'verification', 'ultimatum', 'calibration', 'annotation']
+        phase_order = ['detection', 'grading', 'verification', 'ultimatum', 'calibration', 'annotation']
         phase_labels = {
+            'detection': 'Détection',
             'grading': 'Correction',
             'verification': 'Vérification',
             'ultimatum': 'Ultimatum',
