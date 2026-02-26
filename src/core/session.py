@@ -48,6 +48,7 @@ class GradingSessionOrchestrator:
         self,
         pdf_paths: List[str] = None,
         session_id: str = None,
+        user_id: str = None,
         disagreement_callback: callable = None,
         name_disagreement_callback: callable = None,
         reading_disagreement_callback: callable = None,
@@ -68,6 +69,7 @@ class GradingSessionOrchestrator:
         Args:
             pdf_paths: List of paths to student PDF copies (optional if resuming)
             session_id: Session ID to resume (optional)
+            user_id: User ID for multi-tenant storage (optional)
             disagreement_callback: Optional async callback for LLM disagreements
                                    Signature: async def callback(question_id, question_text,
                                                                  llm1_name, llm1_result,
@@ -93,6 +95,7 @@ class GradingSessionOrchestrator:
 
         self.pdf_paths = pdf_paths or []
         self.base_dir = Path(DATA_DIR)
+        self.user_id = user_id
         self._disagreement_callback = disagreement_callback
         self._name_disagreement_callback = name_disagreement_callback
         self._reading_disagreement_callback = reading_disagreement_callback
@@ -117,7 +120,7 @@ class GradingSessionOrchestrator:
         # Initialize session
         if session_id:
             self.session_id = session_id
-            self.store = SessionStore(session_id)
+            self.store = SessionStore(session_id, user_id=user_id)
             self.session = self.store.load_session()
             if not self.session:
                 raise ValueError(f"Session {session_id} not found")
@@ -127,9 +130,10 @@ class GradingSessionOrchestrator:
                 session_id=self.session_id,
                 created_at=datetime.now(),
                 status=SessionStatus.ANALYZING,
+                user_id=user_id,
                 pages_per_copy=pages_per_copy
             )
-            self.store = SessionStore(self.session_id)
+            self.store = SessionStore(self.session_id, user_id=user_id)
 
         # Initialize AI provider (single or comparison mode)
         settings = get_settings()
@@ -147,7 +151,18 @@ class GradingSessionOrchestrator:
 
         # Grading scale: max_points per question
         # Filled from LLM detection or user confirmation
-        self.grading_scale: Dict[str, float] = {}
+        # grading_scale is now an alias to session.policy.question_weights
+        # Use self.session.policy.question_weights directly as the single source of truth
+
+    @property
+    def grading_scale(self) -> Dict[str, float]:
+        """Alias to session.policy.question_weights (single source of truth)."""
+        return self.session.policy.question_weights
+
+    @grading_scale.setter
+    def grading_scale(self, value: Dict[str, float]):
+        """Set question_weights via grading_scale alias."""
+        self.session.policy.question_weights = value
 
         # Store detected questions (text content)
         self.detected_questions: Dict[str, str] = {}
@@ -159,6 +174,13 @@ class GradingSessionOrchestrator:
         self._analysis_complete = False
         self._grading_complete = False
 
+        # Restore _analysis_complete if session was already analyzed
+        # (session has copies and they have content, or grading_scale is set)
+        if self.session.copies and any(c.content_summary for c in self.session.copies):
+            self._analysis_complete = True
+        elif self.grading_scale:  # If grading_scale is already set, analysis was done
+            self._analysis_complete = True
+
         # Callback to ask user for scale (set by main.py)
         self.scale_callback: Optional[callable] = None
 
@@ -168,7 +190,7 @@ class GradingSessionOrchestrator:
         if self._workflow_state is None:
             self._workflow_state = CorrectionState(
                 session_id=self.session_id,
-                phase=WorkflowPhase.INITIALIZATION
+                phase=WorkflowPhase.DETECTION
             )
         return self._workflow_state
 
@@ -273,6 +295,7 @@ class GradingSessionOrchestrator:
         # Default scale of 1.0 for each question (will be detected during grading)
         detected_scale = {q: 1.0 for q in detected_questions.keys()}
 
+        # grading_scale is an alias to session.policy.question_weights (single source of truth)
         self.grading_scale = detected_scale
         self.detected_questions = detected_questions
         self.scale_detected = False  # Scale will be detected during grading
@@ -312,6 +335,7 @@ class GradingSessionOrchestrator:
                 if points_key in parsed:
                     try:
                         points = float(parsed[points_key])
+                        # grading_scale is an alias to session.policy.question_weights
                         self.grading_scale[q_id] = points
                         updated[q_id] = {
                             'points': points,
@@ -362,6 +386,7 @@ class GradingSessionOrchestrator:
             if max_pts and max_pts > 0:
                 # Only update if not already confirmed by user
                 if not self._scale_confirmed_by_user or qid not in self.grading_scale:
+                    # grading_scale is an alias to session.policy.question_weights
                     self.grading_scale[qid] = max_pts
 
         self._save_sync()
@@ -957,11 +982,12 @@ class GradingSessionOrchestrator:
                     for qid, qdata in copy_data.get('questions', {}).items():
                         llm1_q = qdata.get(llm1_name, {})
                         llm2_q = qdata.get(llm2_name, {})
+                        # Use frozen max_points from question weights
+                        frozen_max_pts = self.session.policy.question_weights.get(qid, 1.0)
                         copy_summary['questions'][qid] = {
                             'llm1_grade': llm1_q.get('grade'),
-                            'llm1_max_points': llm1_q.get('max_points'),
                             'llm2_grade': llm2_q.get('grade'),
-                            'llm2_max_points': llm2_q.get('max_points'),
+                            'max_points': frozen_max_pts,  # Frozen barème
                             'agreement': qdata.get('_initial_final', {}).get('agreement', True)
                         }
                     comparison_summary['copies'].append(copy_summary)
@@ -1024,12 +1050,12 @@ class GradingSessionOrchestrator:
                         'mode': self._batch_verify
                     })
 
-                # ===== CONTEXT CACHING + CHAT SESSIONS SETUP =====
-                # Create chat sessions with cached context for verification/ultimatum
+                # ===== CONTEXT CACHING SETUP =====
+                # Create cached context for verification/ultimatum (saves ~50% tokens vs Chat API)
                 chat_manager = None
 
                 if self._use_chat_continuation:
-                    from ai.batch_grader import ChatContinuationManager
+                    from ai.batch_grader import CacheManager
                     from prompts.batch import build_batch_grading_prompt
 
                     _, provider1 = self.ai.providers[0]
@@ -1041,14 +1067,14 @@ class GradingSessionOrchestrator:
                     )
 
                     if caching_supported:
-                        logger.info("Creating chat sessions with cached context for verification/ultimatum")
+                        logger.info("Creating cached context for verification/ultimatum (saves ~50% tokens)")
                         # Use shared cache in batch mode (all copies in one cache)
-                        chat_manager = ChatContinuationManager(self.ai.providers, cache_mode="shared")
+                        chat_manager = CacheManager(self.ai.providers, cache_mode="shared")
 
                         # Build copies data for sessions
                         copies_for_session = []
                         copy_indices_with_disagreements = set(d.copy_index for d in disagreements)
-                        
+
 
                         for copy_result in batch_result.copies:
                             if copy_result.copy_index in copy_indices_with_disagreements:
@@ -1057,18 +1083,18 @@ class GradingSessionOrchestrator:
                                     'image_paths': getattr(copy_result, 'image_paths', [])
                                 })
 
-                        
+
 
                         # Build initial prompt (same as batch grading)
                         initial_prompt = build_batch_grading_prompt(
                             copies_data, questions, language
                         )
 
-                        # Create sessions with cache + chat
+                        # Create cached context (no chat sessions - uses generate_with_cache instead)
                         await chat_manager.create_sessions(copies_for_session, initial_prompt)
 
                         logger.info(
-                            f"Created {len(copies_for_session)} chat sessions with cached context"
+                            f"Created cached context for {len(copies_for_session)} copies"
                         )
                     else:
                         logger.warning(
@@ -1258,20 +1284,8 @@ class GradingSessionOrchestrator:
                         grade_flip_flop = (llm1_new != llm1_initial and llm2_new != llm2_initial and
                                           abs(llm1_new - llm2_initial) < 0.01 and abs(llm2_new - llm1_initial) < 0.01)
 
-                        # Check max_points agreement and flip-flop
-                        llm1_new_mp = v.get('llm1_new_max_points', d.llm1_max_points)
-                        llm2_new_mp = v.get('llm2_new_max_points', d.llm2_max_points)
-                        llm1_initial_mp = d.llm1_max_points
-                        llm2_initial_mp = d.llm2_max_points
-
-                        # max_points disagreement: different values after verification
-                        max_points_disagreement = (llm1_new_mp is not None and llm2_new_mp is not None and
-                                                  abs(llm1_new_mp - llm2_new_mp) > 0.01)
-
-                        # max_points flip-flop: LLMs swapped their max_points values
-                        max_points_flip_flop = (llm1_new_mp != llm1_initial_mp and llm2_new_mp != llm2_initial_mp and
-                                               abs(llm1_new_mp - llm2_initial_mp) < 0.01 and
-                                               abs(llm2_new_mp - llm1_initial_mp) < 0.01)
+                        # Barème is frozen - no max_points disagreement possible
+                        frozen_max_pts = d.max_points
 
                         # Check if original disagreement included reading disagreement
                         original_has_reading = hasattr(d, 'disagreement_type') and 'reading' in getattr(d, 'disagreement_type', '')
@@ -1285,11 +1299,10 @@ class GradingSessionOrchestrator:
                             reading_similarity = SequenceMatcher(None, llm1_new_reading.lower(), llm2_new_reading.lower()).ratio()
                             reading_still_differs = reading_similarity < 0.8
 
-                        # Persistent disagreement if: grade gap persists OR max_points disagree OR any flip-flop OR reading disagreement
+                        # Persistent disagreement if: grade gap persists OR flip-flop OR reading disagreement
+                        # (No more max_points disagreement - barème is frozen)
                         is_persistent = (gap >= relative_threshold or
-                                        max_points_disagreement or
                                         grade_flip_flop or
-                                        max_points_flip_flop or
                                         (original_has_reading and reading_still_differs))
 
                         if is_persistent:
@@ -1298,19 +1311,13 @@ class GradingSessionOrchestrator:
                                 'question_id': d.question_id,
                                 'llm1_grade': llm1_new,
                                 'llm2_grade': llm2_new,
+                                'max_points': frozen_max_pts,  # Frozen barème
                                 'llm1_initial_grade': llm1_initial,
                                 'llm2_initial_grade': llm2_initial,
-                                'llm1_max_points': llm1_new_mp if llm1_new_mp is not None else d.llm1_max_points,
-                                'llm2_max_points': llm2_new_mp if llm2_new_mp is not None else d.llm2_max_points,
-                                'llm1_initial_max_points': llm1_initial_mp,
-                                'llm2_initial_max_points': llm2_initial_mp,
-                                'max_points': max_pts,
                                 'llm1_reasoning': v.get('llm1_reasoning', d.llm1_reasoning),
                                 'llm2_reasoning': v.get('llm2_reasoning', d.llm2_reasoning),
                                 'image_paths': d.image_paths,
-                                'flip_flop_detected': grade_flip_flop or max_points_flip_flop,
-                                'max_points_flip_flop': max_points_flip_flop,
-                                'max_points_disagreement': max_points_disagreement,
+                                'flip_flop_detected': grade_flip_flop,
                                 'reading_disagreement': (original_has_reading and reading_still_differs)
                             })
 
@@ -1425,6 +1432,9 @@ class GradingSessionOrchestrator:
                                 # Update feedback with consolidated feedback from ultimatum
                                 if ultimate.get('final_feedback'):
                                     qdata['feedback'] = ultimate['final_feedback']
+                                # Update reading if provided in ultimatum
+                                if ultimate.get('llm1_final_reading'):
+                                    qdata['student_answer_read'] = ultimate['llm1_final_reading']
 
                                 # Update comparison data with ultimatum result
                                 comp_key = f"copy_{copy_result.copy_index}"
@@ -1448,6 +1458,8 @@ class GradingSessionOrchestrator:
                                         ultimatum_data = {
                                             "llm1_final_grade": ultimate.get('llm1_final_grade'),
                                             "llm2_final_grade": ultimate.get('llm2_final_grade'),
+                                            "llm1_final_reading": ultimate.get('llm1_final_reading'),
+                                            "llm2_final_reading": ultimate.get('llm2_final_reading'),
                                             "llm1_decision": ultimate.get('llm1_decision'),
                                             "llm2_decision": ultimate.get('llm2_decision'),
                                             "llm1_reasoning": ultimate.get('llm1_reasoning', ''),
@@ -1508,52 +1520,7 @@ class GradingSessionOrchestrator:
                     if progress_callback:
                         await self._call_callback(progress_callback, 'batch_ultimatum_done', ultimatum_summary)
 
-                    # ===== PHASE 3: Ask user for max_points disagreements after ultimatum =====
-                    max_points_disagreements = []
-                    for copy_result in batch_result.copies:
-                        for qid, qdata in copy_result.questions.items():
-                            key = f"copy_{copy_result.copy_index}_{qid}"
-                            if key in ultimatum_results:
-                                ultimate = ultimatum_results[key]
-                                if ultimate.get('max_points_disagreement'):
-                                    max_points_disagreements.append({
-                                        'copy_index': copy_result.copy_index,
-                                        'question_id': qid,
-                                        'llm1_max_points': ultimate.get('llm1_final_max_points'),
-                                        'llm2_max_points': ultimate.get('llm2_final_max_points'),
-                                        'llm1_grade': ultimate.get('llm1_final_grade'),
-                                        'llm2_grade': ultimate.get('llm2_final_grade')
-                                    })
-
-                    if max_points_disagreements:
-                        logger.warning(f"{len(max_points_disagreements)} max_points disagreements after ultimatum, asking user")
-
-                        if progress_callback:
-                            await self._call_callback(progress_callback, 'max_points_disagreement', {
-                                'disagreements': max_points_disagreements
-                            })
-
-                        # Ask user to resolve each max_points disagreement
-                        for mpd in max_points_disagreements:
-                            comp_key = f"copy_{mpd['copy_index']}"
-                            qid = mpd['question_id']
-
-                            # Use the interactive method to ask user
-                            resolved_max_points = await self._ask_max_points_resolution(mpd, llm1_name, llm2_name)
-
-                            # Update the max_points in the question data
-                            if comp_key in llm_comparison_data.get("llm_comparison", {}):
-                                if qid in llm_comparison_data["llm_comparison"][comp_key].get("questions", {}):
-                                    q_data = llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]
-
-                                    # Update ultimatum section with user resolution
-                                    if "ultimatum" in q_data:
-                                        q_data["ultimatum"]["user_resolved_max_points"] = resolved_max_points
-
-                                    # Update the copy_result max_points (used for max_points_per_question summary)
-                                    for copy_result in batch_result.copies:
-                                        if copy_result.copy_index == mpd['copy_index'] and qid in copy_result.questions:
-                                            copy_result.questions[qid]['max_points'] = resolved_max_points
+                    # ===== PHASE 3: Build final results (no more max_points disagreements - barème is frozen) =====
 
                 # ===== CLEANUP: Close chat sessions and caches =====
                 if chat_manager:
@@ -2721,37 +2688,19 @@ class GradingSessionOrchestrator:
         """
         Ask user to resolve a max_points disagreement after ultimatum.
 
+        NOTE: This method is kept for backward compatibility but should no longer
+        be called since the barème is now frozen after diagnostic confirmation.
+
         Args:
-            disagreement: Dict with copy_index, question_id, llm1_max_points, llm2_max_points
+            disagreement: Dict with copy_index, question_id, max_points (frozen)
             llm1_name: Name of first LLM
             llm2_name: Name of second LLM
 
         Returns:
-            Resolved max_points value
+            Frozen max_points value (no longer asks user)
         """
-        from interaction.cli import console
-        from rich.prompt import Prompt
-        from rich.panel import Panel
-        from rich.table import Table
-
-        copy_idx = disagreement['copy_index']
-        qid = disagreement['question_id']
-        llm1_mp = disagreement['llm1_max_points']
-        llm2_mp = disagreement['llm2_max_points']
-
-        # Display the disagreement
-        console.print(Panel(
-            f"[bold yellow]Désaccord sur le barème après ultimatum[/bold yellow]\n\n"
-            f"Copie {copy_idx}, {qid}\n\n"
-            f"[cyan]{llm1_name}[/cyan]: {llm1_mp} pts\n"
-            f"[magenta]{llm2_name}[/magenta]: {llm2_mp} pts",
-            title="Résolution requise",
-            border_style="yellow"
-        ))
-
-        # Calculate options
-        avg_mp = (llm1_mp + llm2_mp) / 2
-        max_mp = max(llm1_mp, llm2_mp)
+        # Since barème is frozen, just return the frozen value
+        return disagreement.get('max_points', 1.0)
 
         console.print(f"\nOptions:")
         console.print(f"  1. {llm1_name}: {llm1_mp} pts")
@@ -3234,6 +3183,7 @@ IMPORTANT:
         if bareme:
             for q_id, points in bareme.items():
                 if q_id not in self.grading_scale:
+                    # grading_scale is an alias to session.policy.question_weights
                     self.grading_scale[q_id] = points
 
         return students if students else self._build_default_students(page_images, language)

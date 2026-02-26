@@ -11,8 +11,8 @@ from enum import Enum
 
 class WorkflowPhase(str, Enum):
     """Phases of the correction workflow."""
-    INITIALIZATION = "initialization"  # Chargement PDF + découpe + pré-vérification
-    GRADING = "grading"                # Correction + détection élèves/questions/langue
+    DETECTION = "detection"            # Chargement PDF + détection structure/barème
+    GRADING = "grading"                # Correction
     VERIFICATION = "verification"      # Cross-verification
     ULTIMATUM = "ultimatum"            # Résolution désaccords persistants
     CALIBRATION = "calibration"        # Consistency check
@@ -40,7 +40,7 @@ class CorrectionState:
     auto_mode: bool = False
 
     # Current phase
-    phase: WorkflowPhase = WorkflowPhase.INITIALIZATION
+    phase: WorkflowPhase = WorkflowPhase.DETECTION
 
     # Jurisprudence: store user decisions to inform future grading
     # Format: {question_id: {'decision': grade, 'reasoning': str, 'llm1_grade': x, 'llm2_grade': y}}
@@ -338,7 +338,7 @@ class CorrectionState:
         return cls(
             language=data.get('language', 'fr'),
             auto_mode=data.get('auto_mode', False),
-            phase=WorkflowPhase(data.get('phase', 'initialization')),
+            phase=WorkflowPhase(data.get('phase', 'detection')),
             jurisprudence=data.get('jurisprudence', {}),
             session_id=data.get('session_id'),
             total_copies=data.get('total_copies', 0),

@@ -24,7 +24,7 @@ import asyncio
 import sys
 import argparse
 from pathlib import Path
-from typing import Dict
+from typing import Dict, List
 
 from rich.console import Console
 from rich.table import Table
@@ -385,7 +385,7 @@ async def command_correct(args):
     state = CorrectionState(
         language='fr',
         auto_mode=args.auto_confirm,
-        phase=WorkflowPhase.INITIALIZATION
+        phase=WorkflowPhase.DETECTION
     )
 
     # Jurisprudence: store user decisions to inform future grading
@@ -464,77 +464,8 @@ async def command_correct(args):
     )
 
     # ============================================================
-    # Phase 1: Initialisation
-    # - Chargement du PDF
-    # - Découpe si --pages-per-copy
-    # - Pré-vérification optionnelle (ex: ordre des copies)
+    # Token tracking setup (before any LLM calls)
     # ============================================================
-    state = state.with_phase(WorkflowPhase.INITIALIZATION)
-
-    try:
-        analysis = await orchestrator.analyze_only()
-    except Exception as e:
-        cli.show_error(f"Analysis failed: {e}")
-        return 1
-
-    # Get detected language and update state
-    language = analysis.get('language', 'fr')
-    state = state.with_language(language)
-
-    # Show analysis result
-    copies_count = analysis['copies_count']
-    questions_detected_during_grading = analysis.get('questions_detected_during_grading', False)
-
-    if questions_detected_during_grading:
-        # Structure will be detected during grading
-        if language == 'fr':
-            pdf_word = "fichier" if copies_count == 1 else "fichiers"
-            cli.console.print(f"[green]✓ {copies_count} {pdf_word} PDF chargé(s) - structure détectée pendant la correction[/green]\n")
-        else:
-            pdf_word = "file" if copies_count == 1 else "files"
-            cli.console.print(f"[green]✓ {copies_count} PDF {pdf_word} loaded - structure detected during grading[/green]\n")
-    else:
-        # Structure was pre-detected
-        if language == 'fr':
-            copy_word = "copie" if copies_count == 1 else "copies"
-            cli.console.print(f"[green]✓ {copies_count} {copy_word} détectée(s)[/green]\n")
-        else:
-            copy_word = "copy" if copies_count == 1 else "copies"
-            cli.console.print(f"[green]✓ {copies_count} {copy_word} detected[/green]\n")
-
-    # Check if questions were detected or will be detected during grading
-    if not analysis['questions'] and not questions_detected_during_grading:
-        cli.show_error("Aucune question détectée. L'analyse a peut-être échoué.")
-        return 1
-
-    # Scale will be empty - it will be detected during grading
-    # If not detected and not auto mode, user will be prompted after grading
-    scale = {}
-    orchestrator.confirm_scale(scale)
-
-    # Helper function to prompt user for missing scale
-    async def prompt_for_missing_scale(question_ids: List[str]) -> Dict[str, float]:
-        """Prompt user for max points of questions without scale."""
-        if args.auto_confirm:
-            # Auto mode: default to 1.0 for all
-            return {qid: 1.0 for qid in question_ids}
-
-        cli.console.print(f"\n[bold yellow]Barème non détecté pour {len(question_ids)} question(s)[/bold yellow]")
-        new_scale = {}
-        for qid in question_ids:
-            if orchestrator.get_max_points(qid) <= 0:
-                from rich.prompt import Prompt
-                value = Prompt.ask(
-                    f"  {qid} - Points max",
-                    default="1"
-                )
-                try:
-                    new_scale[qid] = float(value.replace(',', '.'))
-                except ValueError:
-                    new_scale[qid] = 1.0
-        return new_scale
-
-    # Helper to record token usage for current phase (delta from previous)
     _prev_tokens = {'prompt': 0, 'completion': 0, 'cached': 0}
     _current_sub_phase = WorkflowPhase.GRADING  # Track sub-phase within grading (verification, ultimatum)
     _token_debug_log = []  # Debug log for token tracking
@@ -577,6 +508,147 @@ async def command_correct(args):
 
             # Store current for next delta calculation
             _prev_tokens = {'prompt': current_prompt, 'completion': current_completion, 'cached': current_cached}
+
+    # ============================================================
+    # Phase 1: Détection (Initialisation + Diagnostic)
+    # - Chargement du PDF
+    # - Découpe si --pages-per-copy
+    # - Détection du barème (diagnostic)
+    # - Confirmation utilisateur du barème
+    # ============================================================
+    state = state.with_phase(WorkflowPhase.DETECTION)
+
+    try:
+        analysis = await orchestrator.analyze_only()
+    except Exception as e:
+        cli.show_error(f"Analysis failed: {e}")
+        return 1
+
+    # Get detected language and update state
+    language = analysis.get('language', 'fr')
+    state = state.with_language(language)
+
+    # Show analysis result
+    copies_count = analysis['copies_count']
+    questions_detected_during_grading = analysis.get('questions_detected_during_grading', False)
+
+    if questions_detected_during_grading:
+        # Structure will be detected during grading
+        if language == 'fr':
+            pdf_word = "fichier" if copies_count == 1 else "fichiers"
+            cli.console.print(f"[green]✓ {copies_count} {pdf_word} PDF chargé(s) - structure détectée pendant la correction[/green]\n")
+        else:
+            pdf_word = "file" if copies_count == 1 else "files"
+            cli.console.print(f"[green]✓ {copies_count} PDF {pdf_word} loaded - structure detected during grading[/green]\n")
+    else:
+        # Structure was pre-detected
+        if language == 'fr':
+            copy_word = "copie" if copies_count == 1 else "copies"
+            cli.console.print(f"[green]✓ {copies_count} {copy_word} détectée(s)[/green]\n")
+        else:
+            copy_word = "copy" if copies_count == 1 else "copies"
+            cli.console.print(f"[green]✓ {copies_count} {copy_word} detected[/green]\n")
+
+    # Check if questions were detected or will be detected during grading
+    if not analysis['questions'] and not questions_detected_during_grading:
+        cli.show_error("Aucune question détectée. L'analyse a peut-être échoué.")
+        return 1
+
+    # ============================================================
+    # Phase 1.5: Diagnostic du Barème (Détection + Confirmation)
+    # ============================================================
+    detected_scale = analysis.get('scale', {})
+
+    # If no scale detected yet, try to detect it via pre-analysis
+    if not detected_scale and pdf_paths:
+        cli.console.print(f"\n[bold cyan]🔍 Détection de la structure...[/bold cyan]")
+
+        try:
+            from analysis.pre_analysis import PreAnalyzer
+            pre_analyzer = PreAnalyzer(
+                user_id=user_id if hasattr(args, 'user_id') else 'default',
+                session_id=orchestrator.session_id,
+                language=language
+            )
+
+            # Analyze first PDF for barème detection
+            pre_result = pre_analyzer.analyze(pdf_paths[0])
+            if pre_result and pre_result.grading_scale:
+                detected_scale = pre_result.grading_scale
+                cli.console.print(f"[green]✓ Barème détecté automatiquement[/green]")
+        except Exception as e:
+            cli.console.print(f"[dim]Détection automatique non disponible: {e}[/dim]")
+
+    # Display detected scale and ask for confirmation
+    if detected_scale:
+        cli.console.print(f"\n[bold cyan]📊 Barème détecté:[/bold cyan]")
+        for qid in sorted(detected_scale.keys(), key=natural_sort_key):
+            pts = detected_scale[qid]
+            cli.console.print(f"  {qid}: [bold]{pts}[/bold] point(s)")
+
+    # Get user confirmation or modification
+    if not args.auto_confirm:
+        from rich.prompt import Prompt, Confirm
+
+        if detected_scale:
+            cli.console.print(f"\n[yellow]Confirmer ce barème ?[/yellow]")
+            confirm = Confirm.ask("Barème correct", default=True)
+
+            if not confirm:
+                # Allow user to modify
+                cli.console.print("[dim]Modifiez les valeurs (Entrée pour garder la valeur actuelle)[/dim]")
+                modified_scale = {}
+                for qid in sorted(detected_scale.keys(), key=natural_sort_key):
+                    current = detected_scale[qid]
+                    value = Prompt.ask(
+                        f"  {qid}",
+                        default=str(current)
+                    )
+                    try:
+                        modified_scale[qid] = float(value.replace(',', '.'))
+                    except ValueError:
+                        modified_scale[qid] = current
+                detected_scale = modified_scale
+        else:
+            # No scale detected - ask user to input
+            cli.console.print(f"\n[bold yellow]⚠ Barème non détecté automatiquement[/bold yellow]")
+            cli.console.print("[dim]Entrez le barème manuellement (laissez vide pour 1 point)[/dim]")
+
+            questions_to_ask = sorted(analysis.get('questions', {}).keys(), key=natural_sort_key) if analysis.get('questions') else ['Q1', 'Q2', 'Q3']
+            detected_scale = {}
+            for qid in questions_to_ask:
+                value = Prompt.ask(
+                    f"  {qid} - Points max",
+                    default="1"
+                )
+                try:
+                    detected_scale[qid] = float(value.replace(',', '.'))
+                except ValueError:
+                    detected_scale[qid] = 1.0
+
+            # Ask if more questions
+            while True:
+                more = Prompt.ask("Ajouter une autre question (ex: Q4)", default="")
+                if not more:
+                    break
+                try:
+                    value = Prompt.ask(f"  {more} - Points max", default="1")
+                    detected_scale[more] = float(value.replace(',', '.'))
+                except ValueError:
+                    detected_scale[more] = 1.0
+    else:
+        # Auto mode: use detected scale or default to 1.0
+        if not detected_scale and analysis.get('questions'):
+            detected_scale = {qid: 1.0 for qid in analysis['questions'].keys()}
+        elif not detected_scale:
+            detected_scale = {}
+
+    # Freeze the scale
+    cli.console.print(f"\n[green]📌 Barème figé:[/green] {', '.join([f'{qid}: {pts}pts' for qid, pts in sorted(detected_scale.items(), key=lambda x: natural_sort_key(x[0]))])}")
+    orchestrator.confirm_scale(detected_scale)
+
+    # Record DETECTION phase tokens (PDF loading, structure detection, barème detection)
+    record_phase_tokens(WorkflowPhase.DETECTION, "detection_complete")
 
     # ============================================================
     # Phase 2: Grading
@@ -879,9 +951,11 @@ async def command_correct(args):
                 for qid in sorted(questions.keys(), key=natural_sort_key):
                     q = questions[qid]
                     llm1_grade = q.get('llm1_grade')
-                    llm1_max = q.get('llm1_max_points', 1)
                     llm2_grade = q.get('llm2_grade')
-                    llm2_max = q.get('llm2_max_points', 1)
+                    # Use frozen max_points (same for both LLMs)
+                    max_pts = q.get('max_points')
+                    if max_pts is None:
+                        raise ValueError(f"max_points manquant pour {qid} - le barème figé doit être défini")
                     agreement = q.get('agreement', True)
 
                     # Format grades (show decimals for max_points if needed: 1.5 not 2)
@@ -894,8 +968,8 @@ async def command_correct(args):
                         else:
                             return f"{g:.1f}/{max_pts}"
 
-                    g1_str = format_grade(llm1_grade, llm1_max)
-                    g2_str = format_grade(llm2_grade, llm2_max)
+                    g1_str = format_grade(llm1_grade, max_pts)
+                    g2_str = format_grade(llm2_grade, max_pts)
 
                     # Status
                     if agreement:
@@ -1017,84 +1091,39 @@ async def command_correct(args):
     # Record any remaining tokens for the current sub-phase
     record_phase_tokens(_current_sub_phase, "grading_complete")
 
-    # Check if scale was detected, prompt user if not
-    if graded:
-        # Check for max_points disagreements in dual LLM mode
-        if is_comparison_mode:
-            max_points_disagreements = []
-            name_disagreements = []
+    # Check for name disagreements in dual LLM mode (max_points disagreements no longer exist - barème is frozen)
+    if graded and is_comparison_mode:
+        name_disagreements = []
 
-            for g in graded:
-                audit = g.grading_audit
-                if not audit:
-                    continue
-
-                # Check for max_points disagreements in questions
-                for qid, qdata in audit.questions.items():
-                    # Check if there was a max_points disagreement (different values in llm_results)
-                    llm_results = qdata.llm_results
-                    if len(llm_results) >= 2:
-                        max_points_values = [r.max_points for r in llm_results.values()]
-                        if len(set(max_points_values)) > 1:  # Different values
-                            # Get the LLM IDs
-                            llm_ids = list(llm_results.keys())
-                            max_points_disagreements.append({
-                                'copy_index': audit.student_detection.resolution.method if audit.student_detection else '?',
-                                'question_id': qid,
-                                'llm1_max_points': llm_results[llm_ids[0]].max_points,
-                                'llm2_max_points': llm_results[llm_ids[1]].max_points if len(llm_ids) > 1 else None,
-                                'resolved': qdata.resolution.final_max_points,
-                                'persisted_after_ultimatum': 'ultimatum' in qdata.resolution.phases
-                            })
-
-                # Check for name disagreements
-                if audit.student_detection:
-                    sd = audit.student_detection
-                    # Check if LLMs disagreed on the name
-                    llm_names = list(sd.llm_results.values())
-                    if len(llm_names) >= 2 and llm_names[0] != llm_names[1]:
-                        llm_ids = list(sd.llm_results.keys())
-                        name_disagreements.append({
-                            'copy_index': '?',
-                            'llm1_name': sd.llm_results.get(llm_ids[0], ''),
-                            'llm2_name': sd.llm_results.get(llm_ids[1], ''),
-                            'resolved_name': sd.final_name
-                        })
-
-            # Display max_points disagreements
-            if max_points_disagreements:
-                console.print(f"\n[bold yellow]⚠ Désaccord sur le barème pour {len(max_points_disagreements)} question(s)[/bold yellow]")
-                for mpd in max_points_disagreements[:3]:  # Show max 3
-                    persisted = " (non résolu après ultimatum)" if mpd['persisted_after_ultimatum'] else ""
-                    console.print(f"  Copie {mpd['copy_index']}, {mpd['question_id']}: LLM1={mpd['llm1_max_points']}pts, LLM2={mpd['llm2_max_points']}pts → résolu à {mpd['resolved']}pts{persisted}")
-                if len(max_points_disagreements) > 3:
-                    console.print(f"  ... et {len(max_points_disagreements) - 3} autre(s)")
-                console.print("[dim]Conseil: Vérifiez le barème dans le sujet et utilisez --bareme pour le spécifier[/dim]")
-
-            # Display name disagreements
-            if name_disagreements:
-                console.print(f"\n[bold yellow]⚠ Désaccord sur le nom pour {len(name_disagreements)} copie(s)[/bold yellow]")
-                for nd in name_disagreements[:3]:  # Show max 3
-                    console.print(f"  Copie {nd['copy_index']}: LLM1=\"{nd['llm1_name']}\", LLM2=\"{nd['llm2_name']}\" → résolu à \"{nd['resolved_name']}\"")
-                if len(name_disagreements) > 3:
-                    console.print(f"  ... et {len(name_disagreements) - 3} autre(s)")
-                console.print("[dim]Conseil: Utilisez --pages-per-copy ou --auto-detect-structure pour une meilleure détection[/dim]")
-
-        # Get all question IDs from graded copies
-        all_questions = set()
         for g in graded:
-            all_questions.update(g.grades.keys())
+            audit = g.grading_audit
+            if not audit:
+                continue
 
-        # Check which questions have no scale (max_points = 0 or not set)
-        missing_scale = [qid for qid in all_questions if orchestrator.get_max_points(qid) <= 0]
+            # Check for name disagreements
+            if audit.student_detection:
+                sd = audit.student_detection
+                # Check if LLMs disagreed on the name
+                llm_names = list(sd.llm_results.values())
+                if len(llm_names) >= 2 and llm_names[0] != llm_names[1]:
+                    llm_ids = list(sd.llm_results.keys())
+                    name_disagreements.append({
+                        'copy_index': '?',
+                        'llm1_name': sd.llm_results.get(llm_ids[0], ''),
+                        'llm2_name': sd.llm_results.get(llm_ids[1], ''),
+                        'resolved_name': sd.final_name
+                    })
 
-        if missing_scale:
-            cli.console.print(f"\n[bold yellow]⚠ Barème non détecté pour {len(missing_scale)} question(s)[/bold yellow]")
-            new_scale = await prompt_for_missing_scale(missing_scale)
-            orchestrator.grading_scale.update(new_scale)
-            orchestrator._save_sync()
+        # Display name disagreements
+        if name_disagreements:
+            console.print(f"\n[bold yellow]⚠ Désaccord sur le nom pour {len(name_disagreements)} copie(s)[/bold yellow]")
+            for nd in name_disagreements[:3]:  # Show max 3
+                console.print(f"  Copie {nd['copy_index']}: LLM1=\"{nd['llm1_name']}\", LLM2=\"{nd['llm2_name']}\" → résolu à \"{nd['resolved_name']}\"")
+            if len(name_disagreements) > 3:
+                console.print(f"  ... et {len(name_disagreements) - 3} autre(s)")
+            console.print("[dim]Conseil: Utilisez --pages-per-copy ou --auto-detect-structure pour une meilleure détection[/dim]")
 
-        # (Re)calculate max_score for all graded copies
+        # (Re)calculate max_score for all graded copies using frozen scale
         total_max = orchestrator.get_total_max_points()
         if total_max > 0:
             for g in graded:
@@ -1298,7 +1327,7 @@ async def command_correct(args):
                 if cached > 0:
                     # Calculate effective tokens (total - cached = actual paid tokens)
                     effective = usage['total'] - cached
-                    cli.console.print(f"  {label}: {usage['total']:,} tokens (🔥 {cached:,} cached → {effective:,} effective)")
+                    cli.console.print(f"  {label}: {usage['total']:,} tokens ({cached:,} cached → {effective:,} effective)")
                 else:
                     cli.console.print(f"  {label}: {usage['total']:,} tokens")
 
@@ -1306,7 +1335,7 @@ async def command_correct(args):
         cli.console.print(f"  [bold]Total: {token_summary['total']:,}[/bold] tokens")
         if total_cached > 0:
             effective_total = token_summary['total'] - total_cached
-            cli.console.print(f"  🔥 Cached: {total_cached:,} → [green]Effective: {effective_total:,}[/green] (cost savings!)")
+            cli.console.print(f"  Cached: {total_cached:,} → [green]Effective: {effective_total:,}[/green]")
         cli.console.print(f"  (Prompt: {token_summary['total_prompt']:,} | Completion: {token_summary['total_completion']:,})")
 
         # Show by provider if available
@@ -1320,7 +1349,7 @@ async def command_correct(args):
                     total = usage.get('total_tokens', 0)
                     calls = usage.get('calls', 0)
                     if cached > 0:
-                        cli.console.print(f"  [{provider_name}] {total:,} tokens ({calls} calls, 🔥 {cached:,} cached)", markup=False)
+                        cli.console.print(f"  [{provider_name}] {total:,} tokens ({calls} calls, {cached:,} cached)", markup=False)
                     else:
                         cli.console.print(f"  [{provider_name}] {total:,} tokens ({calls} calls)", markup=False)
 

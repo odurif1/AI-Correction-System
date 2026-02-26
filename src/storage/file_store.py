@@ -6,6 +6,7 @@ Architecture:
     ├── {session_id}/
     │   ├── session.json          # État complet session
     │   ├── policy.json           # Politique de correction
+    │   ├── diagnostic.json       # Diagnostic PDF (structure, barème)
     │   ├── cache/                # Cache d'analyse
     │   ├── copies/
     │   │   └── {copy_number}/
@@ -32,7 +33,8 @@ from typing import Optional, Dict, Any, List
 
 from core.models import (
     GradingSession, GradedCopy, GradingPolicy,
-    ClassAnswerMap, TeacherDecision, CopyDocument
+    ClassAnswerMap, TeacherDecision, CopyDocument,
+    PreAnalysisResult
 )
 from core.exceptions import SerializationError, ValidationFailedError
 from config.constants import (
@@ -46,13 +48,21 @@ class SessionStore:
     """
     Gestionnaire de stockage pour une session.
 
-    Tout est stocké dans un seul dossier: data/{session_id}/
+    Structure multi-tenant: data/{user_id}/{session_id}/
+    Si user_id est None, utilise l'ancien chemin data/{session_id}/ (pour compatibilité)
     """
 
-    def __init__(self, session_id: str, base_dir: str = None):
+    def __init__(self, session_id: str, user_id: str = None, base_dir: str = None):
         self.session_id = session_id
+        self.user_id = user_id
         self.base_dir = Path(base_dir or DATA_DIR)
-        self.session_dir = self.base_dir / session_id
+
+        # Multi-tenant path: data/{user_id}/{session_id}/
+        if user_id:
+            self.session_dir = self.base_dir / user_id / session_id
+        else:
+            # Fallback for backward compatibility
+            self.session_dir = self.base_dir / session_id
 
     # ==================== INITIALIZATION ====================
 
@@ -73,7 +83,12 @@ class SessionStore:
 
     def exists(self) -> bool:
         """Vérifie si la session existe."""
-        return (self.session_dir / SESSION_JSON).exists()
+        if (self.session_dir / SESSION_JSON).exists():
+            return True
+        # Vérifier aussi le chemin legacy pour les sessions créées avant la migration
+        if self.user_id:
+            return (self.base_dir / self.session_id / SESSION_JSON).exists()
+        return False
 
     # ==================== SESSION STATE ====================
 
@@ -91,8 +106,17 @@ class SessionStore:
         """Charge l'état de la session avec validation."""
         session_file = self.session_dir / SESSION_JSON
 
+        # Si le fichier n'existe pas dans le chemin user-specific, vérifier le chemin legacy
         if not session_file.exists():
-            return None
+            if self.user_id:
+                # Essayer le chemin legacy: data/{session_id}/
+                legacy_session_file = self.base_dir / self.session_id / SESSION_JSON
+                if legacy_session_file.exists():
+                    session_file = legacy_session_file
+                else:
+                    return None
+            else:
+                return None
 
         try:
             with open(session_file, 'r', encoding='utf-8') as f:
@@ -106,9 +130,18 @@ class SessionStore:
 
         # Validate with Pydantic model
         try:
-            return GradingSession(**data)
+            session = GradingSession(**data)
         except Exception as e:
             raise ValidationFailedError(f"Session data validation failed: {e}", {"file": str(session_file)})
+
+        # Vérifier l'appartenance si user_id est fourni (multi-tenant)
+        # Si un user_id est fourni pour le chargement, la session DOIT appartenir à cet utilisateur
+        if self.user_id:
+            # La session doit avoir un user_id qui correspond
+            if not session.user_id or session.user_id != self.user_id:
+                return None  # Session n'appartient pas à cet utilisateur
+
+        return session
 
     # ==================== COPIES (annotation.json) ====================
 
@@ -397,6 +430,38 @@ class SessionStore:
             shutil.rmtree(cache_dir)
             cache_dir.mkdir()
 
+    # ==================== DIAGNOSTIC PDF ====================
+
+    def save_pre_analysis(self, result: PreAnalysisResult) -> None:
+        """Sauvegarde le résultat du diagnostic PDF."""
+        self.create()
+        diagnostic_file = self.session_dir / "diagnostic.json"
+        with open(diagnostic_file, 'w', encoding='utf-8') as f:
+            json.dump(result.model_dump(mode='json'), f, indent=2, ensure_ascii=False)
+        self._log("diagnostic_saved", f"Analysis ID: {result.analysis_id}")
+
+    def load_pre_analysis(self) -> Optional[PreAnalysisResult]:
+        """Charge le résultat du diagnostic PDF."""
+        diagnostic_file = self.session_dir / "diagnostic.json"
+
+        if not diagnostic_file.exists():
+            return None
+
+        try:
+            with open(diagnostic_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except json.JSONDecodeError as e:
+            raise SerializationError(f"Invalid JSON in diagnostic file: {e}")
+
+        # Convert datetime strings
+        if 'analyzed_at' in data and isinstance(data['analyzed_at'], str):
+            data['analyzed_at'] = datetime.fromisoformat(data['analyzed_at'])
+
+        try:
+            return PreAnalysisResult(**data)
+        except Exception as e:
+            raise ValidationFailedError(f"PreAnalysisResult validation failed: {e}", {"file": str(diagnostic_file)})
+
     # ==================== JSON HELPERS ====================
 
     def _save_json(self, file_path: Path, data: Dict[str, Any]) -> None:
@@ -518,14 +583,17 @@ class SessionStore:
 
     def _update_index(self) -> None:
         """Met à jour l'index global des sessions avec verrouillage fichier."""
-        index_file = self.base_dir / SESSIONS_INDEX
+        # Use user-specific index file if user_id is set
+        if self.user_id:
+            index_file = self.base_dir / self.user_id / SESSIONS_INDEX
+        else:
+            index_file = self.base_dir / SESSIONS_INDEX
 
         # Ensure base directory exists
-        self.base_dir.mkdir(parents=True, exist_ok=True)
+        index_file.parent.mkdir(parents=True, exist_ok=True)
 
         # Use a dedicated lock file (not the index file itself)
-        # Using 'a' mode is atomic on POSIX - file is created if it doesn't exist
-        lock_path = self.base_dir / ".index.lock"
+        lock_path = index_file.parent / ".index.lock"
 
         # Use context manager pattern for clean lock handling
         lock_fd = None
@@ -546,7 +614,8 @@ class SessionStore:
                 # Mettre à jour l'entrée
                 index[self.session_id] = {
                     'created_at': datetime.now().isoformat(),
-                    'path': str(self.session_dir)
+                    'path': str(self.session_dir),
+                    'user_id': self.user_id
                 }
 
                 # Sauvegarder atomiquement (write to temp, then rename)
@@ -579,26 +648,75 @@ class SessionStore:
 class SessionIndex:
     """
     Gestionnaire de l'index des sessions.
+    Supporte le multi-tenant avec user_id.
     """
 
-    def __init__(self, base_dir: str = None):
+    def __init__(self, user_id: str = None, base_dir: str = None):
+        self.user_id = user_id
         self.base_dir = Path(base_dir or DATA_DIR)
-        self.index_file = self.base_dir / SESSIONS_INDEX
+
+        # User-specific index file if user_id is set
+        if user_id:
+            self.index_file = self.base_dir / user_id / SESSIONS_INDEX
+        else:
+            self.index_file = self.base_dir / SESSIONS_INDEX
 
     def list_sessions(self) -> List[str]:
-        """Liste toutes les sessions."""
-        # D'abord vérifier l'index
+        """Liste toutes les sessions de l'utilisateur."""
+        # Si user_id est défini, on doit filtrer les sessions par propriétaire
+        if self.user_id:
+            # Vérifier d'abord l'index utilisateur
+            if self.index_file.exists():
+                with open(self.index_file, 'r', encoding='utf-8') as f:
+                    index = json.load(f)
+                return list(index.keys())
+
+            # Fallback: scanner le dossier utilisateur
+            if self.index_file.parent.exists():
+                return [
+                    d.name for d in self.index_file.parent.iterdir()
+                    if d.is_dir() and (d / SESSION_JSON).exists()
+                ]
+
+            # Dernier fallback: scanner toutes les sessions et filtrer par user_id
+            # Cela gère le cas des sessions créées avant la migration multi-tenant
+            global_index_file = self.base_dir / SESSIONS_INDEX
+            if global_index_file.exists():
+                with open(global_index_file, 'r', encoding='utf-8') as f:
+                    global_index = json.load(f)
+
+                user_sessions = []
+                for session_id, info in global_index.items():
+                    # Vérifier si la session appartient à cet utilisateur
+                    session_user_id = info.get('user_id')
+                    if session_user_id == self.user_id:
+                        user_sessions.append(session_id)
+                    elif session_user_id is None:
+                        # Session sans user_id - vérifier dans le fichier session.json
+                        session_file = self.base_dir / session_id / SESSION_JSON
+                        if session_file.exists():
+                            try:
+                                with open(session_file, 'r', encoding='utf-8') as f:
+                                    session_data = json.load(f)
+                                if session_data.get('user_id') == self.user_id:
+                                    user_sessions.append(session_id)
+                            except (json.JSONDecodeError, IOError):
+                                pass
+                return user_sessions
+
+            return []
+
+        # Mode sans user_id (admin/debug) - retourne toutes les sessions
         if self.index_file.exists():
             with open(self.index_file, 'r', encoding='utf-8') as f:
                 index = json.load(f)
             return list(index.keys())
 
-        # Sinon, scanner le dossier
-        if not self.base_dir.exists():
+        if not self.index_file.parent.exists():
             return []
 
         return [
-            d.name for d in self.base_dir.iterdir()
+            d.name for d in self.index_file.parent.iterdir()
             if d.is_dir() and (d / SESSION_JSON).exists()
         ]
 
@@ -622,7 +740,7 @@ class SessionIndex:
 
         cleaned = 0
         for session_id in list(index.keys()):
-            session_dir = self.base_dir / session_id
+            session_dir = self.index_file.parent / session_id
             if not session_dir.exists() or not (session_dir / SESSION_JSON).exists():
                 del index[session_id]
                 cleaned += 1

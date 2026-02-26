@@ -361,61 +361,59 @@ class BaseProvider(ABC):
         """Get embeddings for multiple texts."""
         pass
 
-    # ==================== CHAT SESSION METHODS ====================
+    # ==================== GENERATE WITH CACHE METHOD ====================
 
-    def start_chat(self, system_prompt: str = None) -> Any:
-        """
-        Start a new chat session for multi-turn conversations.
-
-        Args:
-            system_prompt: Optional system prompt for the session
-
-        Returns:
-            A chat session object (provider-specific)
-
-        Note:
-            Not all providers support chat sessions. Default implementation
-            raises NotImplementedError. GeminiProvider and OpenAIProvider
-            should override this.
-        """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support chat sessions. "
-            "Use stateless call_vision/call_text instead."
-        )
-
-    def send_chat_message(
+    def generate_with_cache(
         self,
-        chat_session: Any,
+        cache_id: str,
         prompt: str,
         images: List[str] = None
     ) -> str:
         """
-        Send a message in an existing chat session.
+        Generate content using a cached context.
+
+        Unlike Chat API, this does NOT maintain conversation history.
+        Each call is independent but references the same cached content.
+
+        This is more token-efficient than Chat API for multi-phase workflows
+        where each phase is self-contained (e.g., verification, ultimatum).
 
         Args:
-            chat_session: Session returned by start_chat()
-            prompt: User message
-            images: Optional list of image paths
+            cache_id: Cache ID from create_cached_context()
+            prompt: User prompt for this call
+            images: Optional list of image paths (additional, not cached)
 
         Returns:
             Model response text
 
         Note:
-            Not all providers support chat sessions. Default implementation
-            raises NotImplementedError.
+            Not all providers support context caching. Default implementation
+            falls back to regular call_vision.
         """
-        raise NotImplementedError(
-            f"{self.__class__.__name__} does not support chat sessions. "
-            "Use stateless call_vision/call_text instead."
+        # Default implementation: fall back to regular vision call
+        # Subclasses that support caching (like GeminiProvider) should override this
+        logger.warning(
+            f"{self.__class__.__name__} does not support generate_with_cache. "
+            "Falling back to regular vision call (no cache savings)."
         )
+        return self.call_vision(prompt, image_path=images or [])
 
-    def supports_chat(self) -> bool:
-        """Check if this provider supports chat sessions."""
-        try:
-            # Check if start_chat is overridden
-            return self.start_chat.__func__ is not BaseProvider.start_chat
-        except AttributeError:
-            return False
+    def delete_cached_context(self, cache_id: str) -> bool:
+        """
+        Delete a cached context from the provider's server.
+
+        Args:
+            cache_id: The cache ID to delete
+
+        Returns:
+            True if deleted successfully, False otherwise
+
+        Note:
+            Not all providers support context caching. Default implementation
+            does nothing and returns True.
+        """
+        # Default: no-op (providers without caching don't need to delete)
+        return True
 
     # ==================== GRADING METHODS ====================
 

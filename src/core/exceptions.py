@@ -178,6 +178,11 @@ class InvalidPDFError(PDFError):
     pass
 
 
+class AnalysisError(PDFError):
+    """Raised when PDF analysis fails."""
+    pass
+
+
 # ==================== Storage Errors ====================
 
 class StorageError(AICorrectionError):

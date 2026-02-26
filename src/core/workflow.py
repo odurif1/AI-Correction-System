@@ -42,15 +42,14 @@ class CorrectionWorkflow:
     Orchestrates the multi-phase correction workflow.
 
     Phases:
-    1. INITIALIZATION: Setup and validation
-    2. PDF_LOADING: Load and parse PDF files
-    3. ANALYSIS: Analyze document structure
-    4. SCALE_DETECTION: Detect grading scale
-    5. GRADING: Grade student copies
-    6. VERIFICATION: Resolve disagreements
-    7. CALIBRATION: Apply retroactive changes
-    8. EXPORT: Generate reports
-    9. COMPLETE: Final cleanup
+    1. DETECTION: PDF loading, structure detection, barème detection (figé)
+    2. GRADING: Grade student copies with dual LLM
+    3. VERIFICATION: Cross-verification between LLMs
+    4. ULTIMATUM: Resolve persistent disagreements
+    5. CALIBRATION: Consistency check across copies
+    6. EXPORT: Generate CSV, JSON, analytics
+    7. ANNOTATION: Generate annotated PDFs (optional)
+    8. COMPLETE: Final cleanup
     """
 
     def __init__(
@@ -75,7 +74,7 @@ class CorrectionWorkflow:
         self.state = CorrectionState(
             language=self.config.language,
             auto_mode=self.config.auto_mode,
-            phase=WorkflowPhase.INITIALIZATION
+            phase=WorkflowPhase.DETECTION
         )
 
         # Jurisprudence tracking (can be updated during workflow)
@@ -306,30 +305,20 @@ class CorrectionWorkflow:
         Returns:
             Workflow results with grades and audit trail
         """
-        self._set_phase(WorkflowPhase.PDF_LOADING)
+        # Phase 1: DETECTION (PDF loading + structure/barème detection)
+        self._set_phase(WorkflowPhase.DETECTION)
 
         try:
-            # Phase 1: Load PDFs
             await self._notify_progress('phase_start', {
-                'phase': 'loading',
+                'phase': 'detection',
                 'num_files': len(pdf_paths)
             })
 
             await self.orchestrator.load_pdfs(pdf_paths)
-
-            # Phase 2: Analyze
-            self._set_phase(WorkflowPhase.ANALYSIS)
-            await self._notify_progress('phase_start', {
-                'phase': 'analysis'
-            })
-
             await self.orchestrator.analyze_only()
-
-            # Phase 3: Scale detection
-            self._set_phase(WorkflowPhase.SCALE_DETECTION)
             detected_scale = self.orchestrator.get_detected_scale()
 
-            # Phase 4: Grading
+            # Phase 2: GRADING
             self._set_phase(WorkflowPhase.GRADING)
             await self._notify_progress('phase_start', {
                 'phase': 'grading',
@@ -340,7 +329,7 @@ class CorrectionWorkflow:
                 progress_callback=self._create_progress_callback()
             )
 
-            # Phase 5: Export (if output_dir specified)
+            # Phase 5: EXPORT (if output_dir specified)
             if output_dir:
                 self._set_phase(WorkflowPhase.EXPORT)
                 await self._notify_progress('phase_start', {

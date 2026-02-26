@@ -17,7 +17,7 @@ class DisagreementType(Enum):
     GRADE_DIFFERENCE = "grade_difference"
     READING_DIFFERENCE = "reading_difference"
     NOT_FOUND_CONFLICT = "not_found_conflict"
-    SCALE_DIFFERENCE = "scale_difference"  # Barème détecté différent
+    # SCALE_DIFFERENCE removed - barème is frozen after diagnostic
 
 
 @dataclass
@@ -49,8 +49,6 @@ class QuestionDisagreement:
     llm2_reading: str
     llm1_confidence: float
     llm2_confidence: float
-    llm1_max_points: float = 1.0  # Barème détecté par LLM1
-    llm2_max_points: float = 1.0  # Barème détecté par LLM2
     reading_difference_type: Optional[str] = None
     reason: str = ""
 
@@ -61,14 +59,12 @@ class QuestionDisagreement:
             "llm1": {
                 "grade": self.llm1_grade,
                 "reading": self.llm1_reading,
-                "confidence": self.llm1_confidence,
-                "max_points": self.llm1_max_points
+                "confidence": self.llm1_confidence
             },
             "llm2": {
                 "grade": self.llm2_grade,
                 "reading": self.llm2_reading,
-                "confidence": self.llm2_confidence,
-                "max_points": self.llm2_max_points
+                "confidence": self.llm2_confidence
             },
             "grade_difference": self.grade_difference,
             "reason": self.reason
@@ -325,12 +321,10 @@ class DisagreementAnalyzer:
         reading2 = q2.get("student_answer_read", "") or ""
         conf1 = float(q1.get("confidence", 1.0))
         conf2 = float(q2.get("confidence", 1.0))
-        max_pts1 = float(q1.get("max_points", 1.0))
-        max_pts2 = float(q2.get("max_points", 1.0))
 
         grade_diff = abs(grade1 - grade2)
-        scale_diff = abs(max_pts1 - max_pts2)
-        grade_threshold = max_pts1 * get_settings().grade_agreement_threshold
+        # Scale difference removed - barème is frozen
+        grade_threshold = 1.0 * get_settings().grade_agreement_threshold  # Use 1.0 as base
         grades_differ = grade_diff >= grade_threshold
 
         # Compute reading similarity (only matters if grades are identical)
@@ -339,18 +333,6 @@ class DisagreementAnalyzer:
         ratio = SequenceMatcher(None, r1, r2).ratio()
         partial = (r1 in r2) or (r2 in r1)
         reading_similar = (ratio >= READING_SIMILARITY_THRESHOLD) or partial
-
-        # Check FIRST: barème différent (scale difference)
-        if scale_diff > 0.1:
-            return QuestionDisagreement(
-                question_id=qid,
-                disagreement_type=DisagreementType.SCALE_DIFFERENCE,
-                llm1_grade=grade1, llm2_grade=grade2, grade_difference=grade_diff,
-                llm1_reading=reading1, llm2_reading=reading2,
-                llm1_confidence=conf1, llm2_confidence=conf2,
-                llm1_max_points=max_pts1, llm2_max_points=max_pts2,
-                reason=f"Barème détecté différent: {max_pts1} vs {max_pts2} points"
-            )
 
         # Check: un LLM trouve, l'autre non
         not_found_indicators = ['non', 'no', 'pas visible', 'not visible', 'absent', 'not found', 'non trouvé']
@@ -363,7 +345,6 @@ class DisagreementAnalyzer:
                 llm1_grade=grade1, llm2_grade=grade2, grade_difference=grade_diff,
                 llm1_reading=reading1, llm2_reading=reading2,
                 llm1_confidence=conf1, llm2_confidence=conf2,
-                llm1_max_points=max_pts1, llm2_max_points=max_pts2,
                 reason="Un LLM a trouvé la réponse, l'autre non"
             )
 
@@ -375,7 +356,6 @@ class DisagreementAnalyzer:
                 llm1_grade=grade1, llm2_grade=grade2, grade_difference=grade_diff,
                 llm1_reading=reading1, llm2_reading=reading2,
                 llm1_confidence=conf1, llm2_confidence=conf2,
-                llm1_max_points=max_pts1, llm2_max_points=max_pts2,
                 reason=f"Lectures et notes différentes: '{reading1}' vs '{reading2}'"
             )
 
@@ -387,7 +367,6 @@ class DisagreementAnalyzer:
                 llm1_grade=grade1, llm2_grade=grade2, grade_difference=grade_diff,
                 llm1_reading=reading1, llm2_reading=reading2,
                 llm1_confidence=conf1, llm2_confidence=conf2,
-                llm1_max_points=max_pts1, llm2_max_points=max_pts2,
                 reason=f"Différence de note: {grade_diff:.2f} pts (seuil: {grade_threshold:.2f})"
             )
 

@@ -157,8 +157,8 @@ def _build_batch_json_example(t: dict) -> str:
       "questions": {{
         "Q1": {{
           "student_answer_read": "{t['json_student_answer']}",
-          "grade": "<note sur le barème>",
-          "max_points": "<barème de la question>",
+          "grade": "{t['json_grade_placeholder']}",
+          "max_points": "{t['json_max_points_placeholder']}",
           "confidence": "<0.0 à 1.0>",
           "reasoning": "{t['json_reasoning']}",
           "feedback": "{t['json_feedback']}"
@@ -169,7 +169,7 @@ def _build_batch_json_example(t: dict) -> str:
     }},
     {{
       "copy_index": 2,
-      "student_name": "Autre élève",
+      "student_name": "{t['json_other_student']}",
       "pages": [3, 4],
       ...
     }}
@@ -287,12 +287,10 @@ def _build_disagreements_section(
         # Get disagreement type
         disp_type = getattr(d, 'disagreement_type', 'grade')
 
-        # Build warnings
+        # Build warnings (only reading warning - no rubric warning since barème is frozen)
         warnings = []
-        if abs(your_max_pts - other_max_pts) > 0.01:
-            warnings.append(f"\n**{t['rubric_warning']}** Toi: {your_max_pts} pts, Autre: {other_max_pts} pts")
         if disp_type in ("reading", "both"):
-            warnings.append(f"\n**{t['reading_warning']}**: Ta lecture: \"{your_reading}\" | Autre lecture: \"{other_reading}\"")
+            warnings.append(f"\n**{t['reading_warning']}**: {t['your_reading']}: \"{your_reading}\" | {t['their_reading']}: \"{other_reading}\"")
 
         warnings_text = "".join(warnings)
 
@@ -316,24 +314,30 @@ def _build_disagreements_section(
 
 
 def _extract_disagreement_data(d: Any, provider_name: str, is_own_perspective: bool) -> tuple:
-    """Extract disagreement data based on provider perspective."""
+    """Extract disagreement data based on provider perspective.
+
+    Note: max_points is frozen (from pre-analysis), not detected by LLMs.
+    """
+    # Get frozen max_points (same for both LLMs)
+    frozen_max_pts = d.max_points
+
     if is_own_perspective:
         is_llm1 = (d.llm1_name == provider_name)
         your_grade = d.llm1_grade if is_llm1 else d.llm2_grade
-        your_max_pts = d.llm1_max_points if is_llm1 else d.llm2_max_points
+        your_max_pts = frozen_max_pts  # Use frozen barème
         your_reading = d.llm1_reading if is_llm1 else d.llm2_reading
         your_reasoning = d.llm1_reasoning if is_llm1 else d.llm2_reasoning
         other_grade = d.llm2_grade if is_llm1 else d.llm1_grade
-        other_max_pts = d.llm2_max_points if is_llm1 else d.llm1_max_points
+        other_max_pts = frozen_max_pts  # Use frozen barème
         other_reading = d.llm2_reading if is_llm1 else d.llm1_reading
         other_reasoning = d.llm2_reasoning if is_llm1 else d.llm1_reasoning
     else:
         your_grade = d.llm2_grade
-        your_max_pts = d.llm2_max_points
+        your_max_pts = frozen_max_pts  # Use frozen barème
         your_reading = d.llm2_reading
         your_reasoning = d.llm2_reasoning
         other_grade = d.llm1_grade
-        other_max_pts = d.llm1_max_points
+        other_max_pts = frozen_max_pts  # Use frozen barème
         other_reading = d.llm1_reading
         other_reasoning = d.llm1_reasoning
 
@@ -356,7 +360,7 @@ def _build_name_disagreements_section(
         your_name = d.get('llm1_name') if is_llm1 else d.get('llm2_name')
         other_name = d.get('llm2_name') if is_llm1 else d.get('llm1_name')
 
-        other_provider_display = "l'autre correcteur"
+        other_provider_display = t['other_grader_label']
         lines.append(f"""## {t['name_disagreement_header']} {i}: Copie {d['copy_index']}
 
 **{t['you_read'].format(provider=provider_name)}**: **"{your_name}"**
@@ -381,7 +385,6 @@ def _build_verification_json_example(t: dict, has_name_disagreements: bool) -> s
     {
       "copy_index": 1,
       "my_new_name": "Jean Du Pont",
-      "changed": true,
       "confidence": 0.9
     },
     ...
@@ -393,11 +396,8 @@ def _build_verification_json_example(t: dict, has_name_disagreements: bool) -> s
     {
       "copy_index": 1,
       "question_id": "Q1",
-      "my_initial_grade": 1.0,
       "my_new_grade": 0.5,
-      "my_new_max_points": 2.0,
       "my_new_reading": "%s",
-      "changed": true,
       "reasoning": "%s",
       "feedback": "%s",
       "confidence": 0.9
@@ -446,6 +446,25 @@ def build_ultimatum_prompt(
     # Build warnings
     warnings = "\n".join(f"- {w}" for w in t["warnings"])
 
+    # Build JSON example with translatable strings
+    json_example = f"""```json
+{{
+  "ultimatum_decisions": [
+    {{
+      "copy_index": 1,
+      "question_id": "Q1",
+      "my_final_grade": 0.5,
+      "my_final_reading": "{t['json_final_reading']}",
+      "decision": {t['json_decision_options']},
+      "reasoning": "{t['json_reasoning']}",
+      "feedback": "{t['json_feedback']}",
+      "confidence": 0.9
+    }},
+    ...
+  ]
+}}
+```"""
+
     return f"""═══════════════════════════════════════════════════════════════════
 {t['header']}
 ═══════════════════════════════════════════════════════════════════
@@ -468,23 +487,7 @@ def build_ultimatum_prompt(
 
 # RESPONSE FORMAT (JSON)
 
-```json
-{{
-  "ultimatum_decisions": [
-    {{
-      "copy_index": 1,
-      "question_id": "Q1",
-      "my_final_grade": 0.5,
-      "my_final_max_points": 2.0,
-      "decision": "maintained" ou "yielded" ou "compromise",
-      "reasoning": "{t['json_reasoning']}",
-      "feedback": "Feedback final pour l'élève",
-      "confidence": 0.9
-    }},
-    ...
-  ]
-}}
-```
+{json_example}
 
 ═══════════════════════════════════════════════════════════════════
 
@@ -500,24 +503,19 @@ def _build_ultimatum_disagreements_section(
     """Build the ultimatum disagreements section."""
     lines = []
     for i, d in enumerate(disagreements, 1):
-        llm1_max = d.get('llm1_max_points', d.get('max_points', 1))
-        llm2_max = d.get('llm2_max_points', d.get('max_points', 1))
+        # Use frozen max_points (barème is frozen)
+        frozen_max = d.get('max_points', 1)
 
-        # Build rubric warning if needed
-        rubric_note = ""
-        if abs(llm1_max - llm2_max) > 0.01:
-            rubric_note = f"\n**{t['rubric_still_warning']}**: Toi: {llm1_max} pts, Autre: {llm2_max} pts"
-
-        other_provider_display = "l'autre correcteur"
+        other_provider_display = t['other_grader_label']
         lines.append(f"""## {t['ultimatum_header']} {i}: Copie {d['copy_index']}, {d['question_id']}
 
-**{t['you_after']}**: **{d['llm1_grade']}/{llm1_max}** pts
+**{t['you_after']}**: **{d['llm1_grade']}/{frozen_max}** pts
 - {t['your_reasoning']}: {d.get('llm1_reasoning', '')}
 
-**{t['other_after']}**: **{d['llm2_grade']}/{llm2_max}** pts
+**{t['other_after']}**: **{d['llm2_grade']}/{frozen_max}** pts
 - {t['their_reasoning']}: {d.get('llm2_reasoning', '')}
 
-{t['persistent_diff']}: {abs(d['llm1_grade'] - d['llm2_grade'])} points{rubric_note}
+{t['persistent_diff']}: {abs(d['llm1_grade'] - d['llm2_grade'])} points
 
 """)
 

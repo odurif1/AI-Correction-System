@@ -86,7 +86,8 @@ class GeminiProvider(BaseProvider):
             self.client = genai.Client(api_key=self.api_key)
 
         self.model = model or settings.gemini_model
-        self.vision_model = vision_model or settings.gemini_vision_model
+        # Vision model falls back to text model if not specified
+        self.vision_model = vision_model or settings.gemini_vision_model or self.model
         self.embedding_model = embedding_model or settings.gemini_embedding_model
 
         if not self.model:
@@ -349,56 +350,28 @@ class GeminiProvider(BaseProvider):
         response = self.call_vision(prompt, image_path=image_path)
         return self._parse_grading_response(response)
 
-    # ==================== CHAT SESSION METHODS ====================
+    # ==================== GENERATE WITH CACHE METHOD ====================
 
-    def start_chat(self, system_prompt: str = None, cached_context: str = None) -> Any:
-        """
-        Start a new chat session for multi-turn conversations.
-
-        Uses Gemini's Chat API which maintains conversation history.
-        Can optionally reference a cached context for cost savings.
-
-        Args:
-            system_prompt: Optional system instruction for the session
-            cached_context: Optional cache ID to reference cached content
-
-        Returns:
-            A Gemini chat session object
-        """
-        if self.mock_mode:
-            return {"mock": True, "messages": []}
-
-        from google.genai import types
-
-        config_kwargs = {}
-
-        # IMPORTANT: Cannot use both cached_content AND system_instruction
-        # If cached_context is provided, system_prompt is already in the cache
-        if cached_context:
-            config_kwargs["cached_content"] = cached_context
-        elif system_prompt:
-            config_kwargs["system_instruction"] = system_prompt
-
-        config = types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
-
-        return self.client.chats.create(
-            model=self.vision_model,
-            config=config
-        )
-
-    def send_chat_message(
+    def generate_with_cache(
         self,
-        chat_session: Any,
+        cache_id: str,
         prompt: str,
         images: List[str] = None
     ) -> str:
         """
-        Send a message in an existing chat session.
+        Generate content using cached context.
+
+        Unlike Chat API, this does NOT maintain conversation history.
+        Each call is independent but references the same cached content.
+
+        This is more token-efficient than Chat API because:
+        - Chat API re-sends the entire conversation history on each call
+        - generate_with_cache only sends the new prompt + cache reference
 
         Args:
-            chat_session: Session returned by start_chat()
-            prompt: User message
-            images: Optional list of image paths
+            cache_id: Cache ID from create_cached_context()
+            prompt: User prompt for this call
+            images: Optional list of image paths (additional, not cached)
 
         Returns:
             Model response text
@@ -406,29 +379,16 @@ class GeminiProvider(BaseProvider):
         start_time = time.time()
 
         if self.mock_mode:
-            return "Mock chat response"
+            return "Mock cached response"
 
-        # Build content using types.Part for Chat API compatibility
         from google.genai import types
 
+        # Build parts for the new content
         parts = [types.Part(text=prompt)]
 
         if images:
-            if isinstance(images, list):
-                for i, img_path in enumerate(images):
-                    image_data = self._prepare_image(image_path=img_path)
-                    if image_data and 'inline_data' in image_data:
-                        parts.append(types.Part(
-                            text=f"\n--- IMAGE {i + 1} ---"
-                        ))
-                        parts.append(types.Part(
-                            inline_data=types.Blob(
-                                mime_type=image_data['inline_data']['mime_type'],
-                                data=image_data['inline_data']['data']
-                            )
-                        ))
-            else:
-                image_data = self._prepare_image(image_path=images)
+            for img_path in images:
+                image_data = self._prepare_image(image_path=img_path)
                 if image_data and 'inline_data' in image_data:
                     parts.append(types.Part(
                         inline_data=types.Blob(
@@ -437,25 +397,34 @@ class GeminiProvider(BaseProvider):
                         )
                     ))
 
-        response = chat_session.send_message(parts)  # Chat API accepts list of Parts directly
+        # Use generate_content with cached_content reference
+        config = types.GenerateContentConfig(
+            cached_content=cache_id
+        )
+
+        response = self.client.models.generate_content(
+            model=self.vision_model,
+            contents=[types.Content(role="user", parts=parts)],
+            config=config
+        )
+
         result = response.text or ""
 
-        # Extract token usage (including cached tokens if using cached context)
+        # Extract token usage including cached tokens
         prompt_tokens = None
         completion_tokens = None
         cached_tokens = None
         if hasattr(response, 'usage_metadata') and response.usage_metadata:
             prompt_tokens = getattr(response.usage_metadata, 'prompt_token_count', None)
             completion_tokens = getattr(response.usage_metadata, 'candidates_token_count', None)
-            # Extract cached tokens when chat session references a cached context
             cached_tokens = getattr(response.usage_metadata, 'cached_content_token_count', None)
 
         # Log call
         duration = (time.time() - start_time) * 1000
         num_images = len(images) if isinstance(images, list) else (1 if images else 0)
         self._log_call(
-            prompt_type="chat",
-            input_summary=f"Chat message ({num_images} images): {prompt[:100]}...",
+            prompt_type="cached_generation",
+            input_summary=f"Cached generation ({num_images} new images): {prompt[:100]}...",
             response_summary=result[:200],
             duration_ms=duration,
             prompt_tokens=prompt_tokens,
@@ -463,15 +432,17 @@ class GeminiProvider(BaseProvider):
             cached_tokens=cached_tokens,
             full_prompt=prompt,
             full_response=result,
-            images=images if isinstance(images, list) else [images] if images else None,
+            images=images,
             model_name=self.vision_model
         )
 
-        return result
+        if cached_tokens:
+            logger.info(
+                f"Context caching: Used {cached_tokens} cached tokens "
+                f"(~${self._estimate_cache_savings(cached_tokens):.4f} saved)"
+            )
 
-    def supports_chat(self) -> bool:
-        """Gemini supports chat sessions."""
-        return True
+        return result
 
     # ==================== CONTEXT CACHING (OPTIONAL) ====================
 
@@ -604,6 +575,31 @@ class GeminiProvider(BaseProvider):
                 "Falling back to regular API calls (higher cost)."
             )
             return None
+
+    def delete_cached_context(self, cache_id: str) -> bool:
+        """
+        Delete a cached context from Gemini's server.
+
+        Args:
+            cache_id: The cache ID to delete
+
+        Returns:
+            True if deleted successfully, False otherwise
+        """
+        if self.mock_mode:
+            logger.info(f"Context caching: Mock mode - pretending to delete cache {cache_id}")
+            return True
+
+        if not cache_id:
+            return False
+
+        try:
+            self.client.caches.delete(name=cache_id)
+            logger.info(f"Context caching: Deleted cache '{cache_id}'")
+            return True
+        except Exception as e:
+            logger.warning(f"Context caching: Failed to delete cache '{cache_id}': {e}")
+            return False
 
     def use_cached_context(
         self,

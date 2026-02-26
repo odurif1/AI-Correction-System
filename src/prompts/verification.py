@@ -17,12 +17,14 @@ def build_unified_verification_prompt(
     """
     Build unified verification prompt for ALL disagreements.
 
+    The barème (max_points) is FROZEN and provided in the prompt - LLM does NOT detect it.
+
     Args:
         questions: List of all question dicts with id, text, criteria, max_points
         disagreements: List of disagreement dicts, each with:
             - question_id: str
-            - llm1: {grade, reading, confidence, max_points}
-            - llm2: {grade, reading, confidence, max_points}
+            - llm1: {grade, reading, confidence}
+            - llm2: {grade, reading, confidence}
             - type: disagreement type
             - reason: str
         name_disagreement: Optional dict with llm1_name, llm2_name
@@ -68,10 +70,8 @@ def build_unified_verification_prompt(
         q_text = q.get('text', '')
         q_criteria = q.get('criteria', '')
 
-        # Check for scale disagreement
-        llm1_max = llm1.get('max_points', 1)
-        llm2_max = llm2.get('max_points', 1)
-        scale_disagreement = abs(llm1_max - llm2_max) > 0.1
+        # Get frozen max_points from question lookup
+        frozen_max = q.get('max_points', 1)
 
         if language == "fr":
             if q_text:
@@ -82,23 +82,14 @@ def build_unified_verification_prompt(
                 q_text_section = "⚠ ANOMALIE: Question détectée automatiquement - texte non disponible\n"
                 auto_detect_warning = True
 
-            # Add scale disagreement warning if applicable
-            scale_warning = ""
-            if scale_disagreement:
-                scale_warning = f"""
-⚠ DÉSACCORD SUR LE BARÈME: Vous avez détecté {llm1_max} pts, l'autre a détecté {llm2_max} pts.
-→ CHERCHEZ le barème sur la copie et METTEZ-VOUS D'ACCORD sur le barème correct.
-→ Utilisez ce barème convenu dans votre "max_points" final.
-"""
-
             questions_section += f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ─── QUESTION {qid} ───
-{q_text_section}Barème que vous avez détecté: {llm1_max} point(s)
-{scale_warning}
-- Votre note initiale: {llm1.get('grade', 0)}/{llm1_max}
+{q_text_section}Barème: {frozen_max} point(s)
+
+- Votre note initiale: {llm1.get('grade', 0)}/{frozen_max}
 - Votre lecture initiale: "{llm1.get('reading', '')}"
-- L'autre note: {llm2.get('grade', 0)}/{llm2_max}
+- L'autre note: {llm2.get('grade', 0)}/{frozen_max}
 - Lecture de l'autre: "{llm2.get('reading', '')}"
 """
         else:
@@ -110,23 +101,14 @@ def build_unified_verification_prompt(
                 q_text_section = "⚠ ANOMALY: Auto-detected question - text not available\n"
                 auto_detect_warning = True
 
-            # Add scale disagreement warning if applicable
-            scale_warning = ""
-            if scale_disagreement:
-                scale_warning = f"""
-⚠ SCALE DISAGREEMENT: You detected {llm1_max} pts, the other detected {llm2_max} pts.
-→ SEARCH for the scale on the copy and AGREE on the correct scale.
-→ Use this agreed scale in your final "max_points".
-"""
-
             questions_section += f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ─── QUESTION {qid} ───
-{q_text_section}Scale you detected: {llm1_max} point(s)
-{scale_warning}
-- Your initial grade: {llm1.get('grade', 0)}/{llm1_max}
+{q_text_section}Scale: {frozen_max} point(s)
+
+- Your initial grade: {llm1.get('grade', 0)}/{frozen_max}
 - Your initial reading: "{llm1.get('reading', '')}"
-- Other's grade: {llm2.get('grade', 0)}/{llm2_max}
+- Other's grade: {llm2.get('grade', 0)}/{frozen_max}
 - Other's reading: "{llm2.get('reading', '')}"
 """
 
@@ -134,8 +116,10 @@ def build_unified_verification_prompt(
     questions_json = ""
     for d in disagreements:
         qid = d["question_id"]
+        q = question_lookup.get(qid, {})
         llm1 = d.get("llm1", {})
         original_reading = llm1.get('reading', '').replace('"', "'")  # Escape quotes
+        frozen_max = q.get('max_points', 1)
         # Use language-specific placeholders
         if language == "fr":
             questions_json += f'''
@@ -143,7 +127,6 @@ def build_unified_verification_prompt(
       "student_answer_read": "<votre lecture de la copie>",
       "original_reading": "{original_reading}",
       "grade": <note>,
-      "max_points": {llm1.get('max_points', 1)},
       "confidence": <0.0-1.0>,
       "reasoning": "<analysez les deux lectures, identifiez la correcte>",
       "feedback": f"<{FEEDBACK_GUIDELINE_FR}>"
@@ -154,7 +137,6 @@ def build_unified_verification_prompt(
       "student_answer_read": "<your reading of the student's copy>",
       "original_reading": "{original_reading}",
       "grade": <grade>,
-      "max_points": {llm1.get('max_points', 1)},
       "confidence": <0.0-1.0>,
       "reasoning": "<analyze both readings, identify the correct one>",
       "feedback": f"<{FEEDBACK_GUIDELINE_EN}>"
@@ -312,15 +294,18 @@ You MUST use this reading. Do not invent another one.'''
         else:
             evolution_text = ""
 
+        # Get frozen max_points from question lookup
+        frozen_max = q.get('max_points', 1)
+
         if language == "fr":
             questions_section += f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 ─── QUESTION {qid} (TOUJOURS EN DÉSACCORD) ───
 Texte: {q.get('text', 'N/A')}
-Barème: {llm1.get('max_points', 1)} point(s)
+Barème: {frozen_max} point(s)
 
-- Votre note actuelle: {llm1.get('grade', 0)}/{llm1.get('max_points', 1)}
-- Note de l'autre: {llm2.get('grade', 0)}/{llm2.get('max_points', 1)}
+- Votre note actuelle: {llm1.get('grade', 0)}/{frozen_max}
+- Note de l'autre: {llm2.get('grade', 0)}/{frozen_max}
 - {evolution_text}
 {anchor_warning}
 """
@@ -329,10 +314,10 @@ Barème: {llm1.get('max_points', 1)} point(s)
 
 ─── QUESTION {qid} (STILL IN DISAGREEMENT) ───
 Text: {q.get('text', 'N/A')}
-Scale: {llm1.get('max_points', 1)} point(s)
+Scale: {frozen_max} point(s)
 
-- Your current grade: {llm1.get('grade', 0)}/{llm1.get('max_points', 1)}
-- Other's grade: {llm2.get('grade', 0)}/{llm2.get('max_points', 1)}
+- Your current grade: {llm1.get('grade', 0)}/{frozen_max}
+- Other's grade: {llm2.get('grade', 0)}/{frozen_max}
 - {evolution_text}
 {anchor_warning}
 """
@@ -361,7 +346,6 @@ Scale: {llm1.get('max_points', 1)} point(s)
     "{qid}": {{
       {reading_field}
       "grade": <note finale>,
-      "max_points": {llm1.get('max_points', 1)},
       "confidence": <0.0-1.0>,
       "reasoning": "<justification finale>",
       "feedback": "{feedback_placeholder}"

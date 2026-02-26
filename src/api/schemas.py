@@ -207,3 +207,74 @@ class ProgressEvent(BaseModel):
 
     # session_complete fields
     average_score: Optional[float] = None
+
+
+# ============================================================================
+# Pre-Analysis Schemas
+# ============================================================================
+
+class StudentInfoSchema(BaseModel):
+    """Information about a detected student."""
+    index: int
+    name: Optional[str] = None
+    start_page: int
+    end_page: int
+    confidence: float = 0.5
+
+
+class PreAnalysisRequest(BaseModel):
+    """Request to start pre-analysis."""
+    force_refresh: bool = False
+
+
+class PreAnalysisResponse(BaseModel):
+    """Response from pre-analysis."""
+    analysis_id: str
+    is_valid_pdf: bool
+    page_count: int
+
+    # Document type
+    document_type: str
+    confidence_document_type: float
+
+    # Structure
+    structure: str
+    subject_integration: str
+    num_students_detected: int
+    students: List[StudentInfoSchema] = Field(default_factory=list)
+
+    # Grading scale
+    grading_scale: Dict[str, float] = Field(default_factory=dict)
+    confidence_grading_scale: float
+    questions_detected: List[str] = Field(default_factory=list)
+
+    # Issues
+    blocking_issues: List[str] = Field(default_factory=list)
+    has_blocking_issues: bool
+    warnings: List[str] = Field(default_factory=list)
+    quality_issues: List[str] = Field(default_factory=list)
+    overall_quality_score: float
+
+    # Metadata
+    detected_language: str
+    cached: bool
+    analysis_duration_ms: float
+
+
+class ConfirmPreAnalysisRequest(BaseModel):
+    """Request to confirm pre-analysis and prepare for grading."""
+    confirm: bool = True
+    adjustments: Optional[Dict[str, Any]] = None
+    # adjustments can include:
+    # - grading_scale: {"Q1": 3.0} to override detected scale
+    # - students: [...] to override detected students
+    # - structure: "one_pdf_one_student" to override detected structure
+
+
+class ConfirmPreAnalysisResponse(BaseModel):
+    """Response after confirming pre-analysis."""
+    success: bool
+    session_id: str
+    status: str
+    grading_scale: Dict[str, float]
+    num_students: int

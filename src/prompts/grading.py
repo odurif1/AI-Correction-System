@@ -3,7 +3,7 @@ Grading prompts for the AI correction system.
 
 Contains:
 - Single question grading
-- Multi-question grading  
+- Multi-question grading
 - Vision-based grading
 - Auto-detect grading
 - Feedback generation
@@ -11,6 +11,10 @@ Contains:
 
 from typing import Dict, Any, Optional, List
 from prompts.common import detect_language
+
+# Feedback guidelines for LLM responses
+FEEDBACK_GUIDELINE_FR = "retour sobre et professionnel. Questions faciles: 1-5 mots. Questions difficiles: diagnostic + correction. Pas de félicitations. Max 25 mots."
+FEEDBACK_GUIDELINE_EN = "sober professional feedback. Easy questions: 1-5 words. Difficult questions: diagnosis + correction. No congratulations. Max 25 words."
 
 def build_grading_prompt(
     question_text: str,
@@ -282,51 +286,54 @@ def build_multi_question_grading_prompt(
     """
     Build prompt for grading multiple questions in a single API call.
 
+    The barème (max_points) is FROZEN and provided in the prompt - LLM does NOT detect it.
+
     Args:
         questions: List of question dicts with:
             - id: Question identifier (e.g., "Q1")
             - text: The question text
             - criteria: Grading criteria
-            - max_points: Maximum points
+            - max_points: Maximum points (FROZEN - comes from pre-analysis)
         language: Language for prompt
         second_reading: If True, add second reading instruction in prompt
 
     Returns:
         Formatted prompt for multi-question grading
     """
-    # Build questions section
+    # Build questions section with frozen max_points
     questions_section = ""
     for i, q in enumerate(questions, 1):
-        # Don't show max_points since it needs to be detected by the LLM
+        max_pts = q.get('max_points', 1)
         questions_section += f"""
-━━━ QUESTION {q['id']} ━━━
+━━━ QUESTION {q['id']} ({max_pts} pts) ━━━
 TEXTE: {q['text']}
 CRITÈRES: {q['criteria']}
 
 """
 
+    # Build frozen barème summary
+    bareme_summary = ", ".join([f"{q['id']}: {q.get('max_points', 1)} pts" for q in questions])
+
     if language == "fr":
         base_prompt = f"""Tu es un correcteur expérimenté. Analyse cette copie et corrige TOUTES les questions.
+
+━━━ BARÈME FIGÉ (ne pas modifier) ━━━
+{bareme_summary}
 
 ━━━ QUESTIONS À CORRIGER ━━━
 {questions_section}
 
 ━━━ INSTRUCTIONS IMPORTANTES ━━━
-1. CHERCHE D'ABORD LE BARÈME sur le document:
-   - Regarde en haut de la page, à côté de chaque question
-   - Le barème est souvent indiqué comme "(1pt)", "(2 pts)", "/1", "/2", etc.
-   - Si tu ne trouves pas le barème, utilise 1 point par défaut
-
-2. Pour CHAQUE question:
+1. Pour CHAQUE question:
    - Localise la réponse de l'élève
    - Lis EXACTEMENT ce qu'il a écrit
-   - Note sur le barème détecté (0 à max)
+   - Note sur le barème indiqué (0 à max)
    - Évalue ta certitude (0-1)
 
-3. Génère un feedback sobre
+2. Génère un feedback sobre
 
 ━━━ NOTATION RELATIVE AU BARÈME ━━━
-- La note DOIT être comprise entre 0 et le barème détecté
+- La note DOIT être comprise entre 0 et le barème de la question
 - Exemple: si barème = 2 points, la note peut être 0, 0.5, 1, 1.5 ou 2
 - 0 = réponse fausse ou absente
 - Max = réponse complète et correcte
@@ -342,7 +349,6 @@ Réponds UNIQUEMENT avec un JSON valide. Tous les textes doivent être EN FRANÇ
     "Q1": {{
       "location": "<page X, zone Y>",
       "student_answer_read": "<texte exact écrit par l'élève>",
-      "max_points": <barème détecté sur la copie>,
       "grade": <note sur le barème>,
       "confidence": <0.0-1.0>,
       "reasoning": "<analyse technique EN FRANÇAIS>",
@@ -354,25 +360,23 @@ Réponds UNIQUEMENT avec un JSON valide. Tous les textes doivent être EN FRANÇ
     else:
         base_prompt = f"""You are an experienced grader. Analyze this copy and grade ALL questions.
 
+━━━ FROZEN SCALE (do not modify) ━━━
+{bareme_summary}
+
 ━━━ QUESTIONS TO GRADE ━━━
 {questions_section}
 
 ━━━ IMPORTANT INSTRUCTIONS ━━━
-1. FIRST FIND THE SCALE on the document:
-   - Look at the top of the page, next to each question
-   - Scale is often indicated as "(1pt)", "(2 pts)", "/1", "/2", etc.
-   - If you can't find the scale, use 1 point as default
-
-2. For EACH question:
+1. For EACH question:
    - Locate the student's answer
    - Read EXACTLY what they wrote
-   - Grade on the detected scale (0 to max)
+   - Grade on the indicated scale (0 to max)
    - Evaluate your certainty (0-1)
 
-3. Generate sober feedback
+2. Generate sober feedback
 
 ━━━ GRADING RELATIVE TO SCALE ━━━
-- Grade MUST be between 0 and the detected scale
+- Grade MUST be between 0 and the question's scale
 - Example: if scale = 2 points, grade can be 0, 0.5, 1, 1.5 or 2
 - 0 = wrong or missing answer
 - Max = complete and correct answer
@@ -386,7 +390,6 @@ Respond ONLY with valid JSON:
     "Q1": {{
       "location": "<page X, zone Y>",
       "student_answer_read": "<exact text written by student>",
-      "max_points": <scale detected on copy>,
       "grade": <score on scale>,
       "confidence": <0.0-1.0>,
       "reasoning": "<technical analysis>",
@@ -404,7 +407,7 @@ Respond ONLY with valid JSON:
 ━━━ DEUXIÈME LECTURE (IMPORTANT) ━━━
 Après ta première correction:
 1. RELIS ta correction en entier
-2. Vérifie que chaque note correspond au barème détecté
+2. Vérifie que chaque note correspond au barème indiqué
 3. Vérifie que tes lectures des réponses sont exactes
 4. Ajuste si nécessaire
 
@@ -415,7 +418,7 @@ Tu dois faire ce travail de vérification DANS CETTE MÊME RÉPONSE."""
 ━━━ SECOND READING (IMPORTANT) ━━━
 After your first grading pass:
 1. RE-READ your corrections entirely
-2. Verify each grade matches the detected scale
+2. Verify each grade matches the indicated scale
 3. Verify your readings of answers are accurate
 4. Adjust if necessary
 
@@ -427,22 +430,34 @@ You must do this verification IN THIS SAME RESPONSE."""
 
 def build_auto_detect_grading_prompt(
     language: str = "fr",
-    second_reading: bool = False
+    second_reading: bool = False,
+    frozen_scale: Dict[str, float] = None
 ) -> str:
     """
     Build prompt for detecting and grading questions when none are pre-defined.
 
     Used in INDIVIDUAL mode where questions are not known ahead of time.
+    If frozen_scale is provided, the LLM uses those values instead of detecting.
 
     Args:
         language: Language for prompt
         second_reading: If True, add second reading instruction
+        frozen_scale: Optional dict of {question_id: max_points} from pre-analysis
 
     Returns:
         Formatted prompt for auto-detect grading
     """
+    # Build frozen scale section if provided
+    scale_section = ""
+    if frozen_scale:
+        scale_items = ", ".join([f"{qid}: {pts} pts" for qid, pts in frozen_scale.items()])
+        scale_section = f"""
+━━━ BARÈME FIGÉ (ne pas modifier) ━━━
+{scale_items}
+"""
+
     if language == "fr":
-        base_prompt = """Tu es un correcteur expérimenté. Analyse cette copie d'élève.
+        base_prompt = f"""Tu es un correcteur expérimenté. Analyse cette copie d'élève.
 
 ━━━ TA MISSION ━━━
 1. IDENTIFIE le nom de l'élève (si visible)
@@ -453,15 +468,11 @@ def build_auto_detect_grading_prompt(
 - Cherche les numéros de questions: Q1, Q2, 1., 2., Question 1, etc.
 - Chaque question a généralement une zone de réponse associée
 - Numérote-les Q1, Q2, Q3... dans l'ordre d'apparition
-
-━━━ BARÈME ━━━
-- CHERCHE le barème sur le document (souvent indiqué comme "(1pt)", "/2", etc.)
-- Si tu ne trouves pas le barème, utilise 1 point par défaut
-
+{scale_section}
 ━━━ POUR CHAQUE QUESTION DÉTECTÉE ━━━
 - Localise la réponse de l'élève
 - Lis EXACTEMENT ce qu'il a écrit
-- Note sur le barème détecté (0 à max)
+- Note sur 1 point par défaut (ou le barème figé si indiqué)
 - Évalue ta certitude (0-1)
 - Génère un feedback sobre et professionnel
 
@@ -475,24 +486,23 @@ NE JAMAIS mettre 0 si une partie de la démarche est correcte.
 ━━━ FORMAT DE RÉPONSE (JSON) ━━━
 Réponds UNIQUEMENT avec un JSON valide:
 
-{
+{{
   "student_name": "<nom détecté ou null>",
-  "questions": {
-    "Q1": {
+  "questions": {{
+    "Q1": {{
       "question_text": "<texte de la question détectée>",
       "location": "<page X, zone Y>",
       "student_answer_read": "<texte exact écrit par l'élève>",
-      "max_points": <barème détecté>,
       "grade": <note sur le barème>,
       "confidence": <0.0-1.0>,
       "reasoning": "<analyse technique>",
       "feedback": f"<{FEEDBACK_GUIDELINE_FR}>"
-    },
-    "Q2": { ... }
-  }
-}"""
+    }},
+    "Q2": {{ ... }}
+  }}
+}}"""
     else:
-        base_prompt = """You are an experienced grader. Analyze this student copy.
+        base_prompt = f"""You are an experienced grader. Analyze this student copy.
 
 ━━━ YOUR MISSION ━━━
 1. IDENTIFY the student name (if visible)
@@ -503,15 +513,11 @@ Réponds UNIQUEMENT avec un JSON valide:
 - Look for question numbers: Q1, Q2, 1., 2., Question 1, etc.
 - Each question usually has an associated answer area
 - Number them Q1, Q2, Q3... in order of appearance
-
-━━━ SCALE ━━━
-- FIND the scale on the document (often indicated as "(1pt)", "/2", etc.)
-- If you can't find the scale, use 1 point as default
-
+{scale_section}
 ━━━ FOR EACH DETECTED QUESTION ━━━
 - Locate the student's answer
 - Read EXACTLY what they wrote
-- Grade on the detected scale (0 to max)
+- Grade on 1 point default (or the frozen scale if indicated)
 - Evaluate your certainty (0-1)
 - Generate sober, professional feedback
 
@@ -525,22 +531,21 @@ NEVER give 0 if part of the approach is correct.
 ━━━ RESPONSE FORMAT (JSON) ━━━
 Respond ONLY with valid JSON:
 
-{
+{{
   "student_name": "<detected name or null>",
-  "questions": {
-    "Q1": {
+  "questions": {{
+    "Q1": {{
       "question_text": "<detected question text>",
       "location": "<page X, zone Y>",
       "student_answer_read": "<exact text written by student>",
-      "max_points": <detected scale>,
       "grade": <grade on scale>,
       "confidence": <0.0-1.0>,
       "reasoning": "<technical analysis>",
       "feedback": f"<{FEEDBACK_GUIDELINE_EN}>"
-    },
-    "Q2": { ... }
-  }
-}"""
+    }},
+    "Q2": {{ ... }}
+  }}
+}}"""
 
     # Add second reading instruction if enabled
     if second_reading:
@@ -550,7 +555,7 @@ Respond ONLY with valid JSON:
 ━━━ DEUXIÈME LECTURE (IMPORTANT) ━━━
 Après ta première correction:
 1. RELIS ta correction en entier
-2. Vérifie que chaque note correspond au barème détecté
+2. Vérifie que chaque note correspond au barème indiqué
 3. Vérifie que tes lectures des réponses sont exactes
 4. Ajuste si nécessaire
 
@@ -561,7 +566,7 @@ Tu dois faire ce travail de vérification DANS CETTE MÊME RÉPONSE."""
 ━━━ SECOND READING (IMPORTANT) ━━━
 After your first grading pass:
 1. RE-READ your corrections entirely
-2. Verify each grade matches the detected scale
+2. Verify each grade matches the indicated scale
 3. Verify your readings of answers are accurate
 4. Adjust if necessary
 

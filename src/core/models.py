@@ -38,6 +38,30 @@ class SessionStatus(str, Enum):
     CALIBRATING = "calibrating"
     COMPLETE = "complete"
     PAUSED = "paused"
+    PRE_ANALYZING = "pre_analyzing"
+    READY_FOR_GRADING = "ready_for_grading"
+
+
+class DocumentType(str, Enum):
+    """Type of document detected during pre-analysis."""
+    STUDENT_COPIES = "student_copies"
+    SUBJECT_ONLY = "subject_only"
+    RANDOM_DOCUMENT = "random_document"
+    UNCLEAR = "unclear"
+
+
+class PDFStructure(str, Enum):
+    """Structure of the PDF detected during pre-analysis."""
+    ONE_PDF_ONE_STUDENT = "one_pdf_one_student"
+    ONE_PDF_ALL_STUDENTS = "one_pdf_all_students"
+    AMBIGUOUS = "ambiguous"
+
+
+class SubjectIntegration(str, Enum):
+    """How the subject is integrated in the PDF."""
+    INTEGRATED = "integrated"
+    SEPARATE = "separate"
+    NOT_DETECTED = "not_detected"
 
 
 def generate_id() -> str:
@@ -48,6 +72,64 @@ def generate_id() -> str:
     For display purposes, callers can truncate to first 8 characters.
     """
     return str(uuid.uuid4())
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PRE-ANALYSIS MODELS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class StudentInfo(BaseModel):
+    """Information about a detected student in the PDF."""
+    index: int  # 1-based index
+    name: Optional[str] = None
+    start_page: int  # 1-based page number
+    end_page: int  # 1-based page number
+    confidence: float = 0.5
+
+
+class PreAnalysisResult(BaseModel):
+    """
+    Result of pre-analyzing a PDF before grading.
+
+    This validates that the PDF contains student copies and detects
+    structure, grading scale, and potential issues.
+    """
+    # Validation PDF
+    is_valid_pdf: bool = True
+    page_count: int = 0
+
+    # Type document
+    document_type: DocumentType = DocumentType.UNCLEAR
+    confidence_document_type: float = 0.0
+
+    # Structure
+    structure: PDFStructure = PDFStructure.AMBIGUOUS
+    subject_integration: SubjectIntegration = SubjectIntegration.NOT_DETECTED
+    num_students_detected: int = 0
+    students: List[StudentInfo] = Field(default_factory=list)
+
+    # Barème (grading scale)
+    grading_scale: Dict[str, float] = Field(default_factory=dict)  # {"Q1": 2.0, "Q2": 3.0}
+    confidence_grading_scale: float = 0.0
+    questions_detected: List[str] = Field(default_factory=list)
+
+    # Qualité
+    quality_issues: List[str] = Field(default_factory=list)
+    overall_quality_score: float = 1.0
+
+    # Problèmes
+    blocking_issues: List[str] = Field(default_factory=list)
+    has_blocking_issues: bool = False
+    warnings: List[str] = Field(default_factory=list)
+
+    # Langue détectée
+    detected_language: str = "fr"
+
+    # Métadonnées
+    analysis_id: str = Field(default_factory=generate_id)
+    cached: bool = False
+    analysis_duration_ms: float = 0.0
+    analyzed_at: datetime = Field(default_factory=datetime.now)
 
 
 class CopyDocument(BaseModel):
@@ -124,6 +206,9 @@ class GradingSession(BaseModel):
     session_id: str = Field(default_factory=generate_id)
     created_at: datetime = Field(default_factory=datetime.now)
     status: SessionStatus = SessionStatus.ANALYZING
+
+    # User ownership (for multi-tenant)
+    user_id: Optional[str] = None
 
     # Data
     copies: List[CopyDocument] = Field(default_factory=list)
@@ -213,7 +298,6 @@ class ProviderInfo(BaseModel):
 class LLMResult(BaseModel):
     """Result from a single LLM for a question."""
     grade: float
-    max_points: float  # Each LLM detects its own barème
     reading: str = ""
     reasoning: str = ""
     feedback: str = ""

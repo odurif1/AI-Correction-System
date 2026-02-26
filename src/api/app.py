@@ -1,5 +1,5 @@
 """
-FastAPI application for the AI correction system.
+FastAPI application for La Corrigeuse.
 
 Provides web API for grading operations with WebSocket support for real-time progress.
 """
@@ -30,8 +30,13 @@ from api.schemas import (
     GradeResponse, TeacherDecisionRequest,
     DisagreementResponse, ResolveDisagreementRequest,
     AnalyticsResponse, ProviderResponse, ProviderModel,
-    SettingsResponse, UpdateSettingsRequest, ExportOptions
+    SettingsResponse, UpdateSettingsRequest, ExportOptions,
+    PreAnalysisRequest, PreAnalysisResponse, ConfirmPreAnalysisRequest,
+    ConfirmPreAnalysisResponse, StudentInfoSchema
 )
+
+# Import auth module
+from api.auth import router as auth_router, get_current_user, get_admin_user
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +75,8 @@ def create_app() -> FastAPI:
     settings = get_settings()
 
     app = FastAPI(
-        title="AI Correction System",
-        description="Intelligent grading system with cross-copy analysis and retroactive calibration",
+        title="La Corrigeuse",
+        description="Correction automatique par IA pour les professeurs de collège et lycée",
         version="1.0.0"
     )
 
@@ -83,6 +88,16 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "X-API-Key"],
     )
+
+    # Initialize database on startup
+    @app.on_event("startup")
+    async def startup_event():
+        from db import init_db
+        init_db()
+        logger.info("Database initialized")
+
+    # Include auth router
+    app.include_router(auth_router, prefix="/api")
 
     # Session storage (in-memory for active grading)
     active_sessions: Dict[str, GradingSessionOrchestrator] = {}
@@ -126,7 +141,7 @@ def create_app() -> FastAPI:
     async def root():
         """Root endpoint."""
         return {
-            "name": "AI Correction System",
+            "name": "La Corrigeuse",
             "version": "1.0.0",
             "docs": "/docs"
         }
@@ -140,15 +155,17 @@ def create_app() -> FastAPI:
     async def create_session(
         request: CreateSessionRequest,
         background_tasks: BackgroundTasks,
-        api_key: str = Depends(get_api_key)
+        current_user = Depends(get_current_user)
     ):
         """
         Create a new grading session.
 
         Upload PDFs via /api/sessions/{id}/upload
         """
-        session_id = str(uuid.uuid4())[:8]
-        orchestrator = GradingSessionOrchestrator(session_id=session_id)
+        user_id = current_user.id
+
+        # Create orchestrator WITHOUT session_id - it will generate a new one
+        orchestrator = GradingSessionOrchestrator(user_id=user_id)
 
         # Set policy from request
         if request.subject:
@@ -161,12 +178,14 @@ def create_app() -> FastAPI:
         # Save initial session
         orchestrator._save_sync()
 
+        session_id = orchestrator.session_id
         active_sessions[session_id] = orchestrator
         session_progress[session_id] = {
             "status": "created",
             "copies_uploaded": 0,
             "copies_graded": 0,
-            "disagreements": []
+            "disagreements": [],
+            "user_id": user_id
         }
 
         return SessionResponse(
@@ -183,14 +202,33 @@ def create_app() -> FastAPI:
     async def upload_copies(
         session_id: str,
         files: List[UploadFile] = File(...),
-        api_key: str = Depends(get_api_key)
+        current_user = Depends(get_current_user)
     ):
         """
         Upload PDF copies to a session.
         """
+        from db import SessionLocal, User
+
+        user_id = current_user.id
+
+        # Check quota
+        db = SessionLocal()
+        try:
+            db_user = db.query(User).filter(User.id == user_id).first()
+            if db_user:
+                # Count PDF files
+                pdf_count = sum(1 for f in files if f.filename and f.filename.lower().endswith(".pdf"))
+                if not db_user.can_grade_copies(pdf_count):
+                    raise HTTPException(
+                        status_code=402,  # Payment Required
+                        detail=f"Quota dépassé. Vous avez {db_user.remaining_copies} copies restantes sur {pdf_count} demandées."
+                    )
+        finally:
+            db.close()
+
         if session_id not in active_sessions:
             # Try to load existing session
-            store = SessionStore(session_id)
+            store = SessionStore(session_id, user_id=user_id)
             if not store.exists():
                 raise HTTPException(status_code=404, detail="Session not found")
             # Create orchestrator for existing session
@@ -252,10 +290,192 @@ def create_app() -> FastAPI:
             "paths": pdf_paths
         }
 
+    @app.post("/api/sessions/{session_id}/pre-analyze", response_model=PreAnalysisResponse)
+    async def pre_analyze_session(
+        session_id: str,
+        request: PreAnalysisRequest,
+        background_tasks: BackgroundTasks,
+        current_user = Depends(get_current_user)
+    ):
+        """
+        Pre-analyze the uploaded PDF to detect structure and grading scale.
+
+        This analysis is performed before grading to:
+        - Validate the PDF contains student copies
+        - Detect document structure (one student or multiple per PDF)
+        - Detect grading scale / barème
+        - Identify blocking issues
+
+        Results are cached for the session.
+        """
+        from analysis.pre_analysis import PreAnalyzer
+
+        user_id = current_user.id
+
+        # Check session exists
+        store = SessionStore(session_id, user_id=user_id)
+        if not store.exists():
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Get uploaded PDF
+        upload_dir = Path(f"temp/{session_id}")
+        if not upload_dir.exists():
+            raise HTTPException(status_code=400, detail="No PDF uploaded yet")
+
+        pdf_files = list(upload_dir.glob("*.pdf"))
+        if not pdf_files:
+            raise HTTPException(status_code=400, detail="No PDF file found")
+
+        # Use the first PDF (we only support one PDF per session)
+        pdf_path = str(pdf_files[0])
+
+        # Check tier-based limits for re-diagnosis (force_refresh)
+        if request.force_refresh:
+            from db import SubscriptionTier
+            tier = current_user.subscription_tier
+
+            # FREE tier cannot re-diagnose (consumes ~5-7K tokens)
+            if tier == SubscriptionTier.FREE:
+                raise HTTPException(
+                    status_code=403,
+                    detail="Re-diagnostic non disponible sur le plan FREE. Passez à ESSENTIEL pour re-analyser."
+                )
+
+            # ESSENTIEL can only re-diagnose once per session
+            if tier == SubscriptionTier.ESSENTIEL:
+                existing = store.load_pre_analysis()
+                if existing and not existing.cached:
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Re-diagnostic limité à 1x par session sur ESSENTIEL. Passez à PRO pour illimité."
+                    )
+
+        # Update session progress
+        if session_id in session_progress:
+            session_progress[session_id]["status"] = "pre_analyzing"
+
+        try:
+            # Run pre-analysis
+            analyzer = PreAnalyzer(
+                user_id=user_id,
+                session_id=session_id,
+                language="fr"  # TODO: Get from user preferences
+            )
+
+            result = analyzer.analyze(pdf_path, force_refresh=request.force_refresh)
+
+            # Store result in session for later use
+            store.save_pre_analysis(result)
+
+            # Convert students to schema
+            students = [
+                StudentInfoSchema(
+                    index=s.index,
+                    name=s.name,
+                    start_page=s.start_page,
+                    end_page=s.end_page,
+                    confidence=s.confidence
+                )
+                for s in result.students
+            ]
+
+            # Update progress
+            if session_id in session_progress:
+                session_progress[session_id]["status"] = "pre_analyzed"
+
+            return PreAnalysisResponse(
+                analysis_id=result.analysis_id,
+                is_valid_pdf=result.is_valid_pdf,
+                page_count=result.page_count,
+                document_type=result.document_type.value,
+                confidence_document_type=result.confidence_document_type,
+                structure=result.structure.value,
+                subject_integration=result.subject_integration.value,
+                num_students_detected=result.num_students_detected,
+                students=students,
+                grading_scale=result.grading_scale,
+                confidence_grading_scale=result.confidence_grading_scale,
+                questions_detected=result.questions_detected,
+                blocking_issues=result.blocking_issues,
+                has_blocking_issues=result.has_blocking_issues,
+                warnings=result.warnings,
+                quality_issues=result.quality_issues,
+                overall_quality_score=result.overall_quality_score,
+                detected_language=result.detected_language,
+                cached=result.cached,
+                analysis_duration_ms=result.analysis_duration_ms
+            )
+
+        except Exception as e:
+            logger.error(f"Pre-analysis error: {e}")
+            if session_id in session_progress:
+                session_progress[session_id]["status"] = "error"
+                session_progress[session_id]["error"] = str(e)
+            raise HTTPException(status_code=500, detail=f"Pre-analysis failed: {str(e)}")
+
+    @app.post("/api/sessions/{session_id}/confirm-pre-analysis", response_model=ConfirmPreAnalysisResponse)
+    async def confirm_pre_analysis(
+        session_id: str,
+        request: ConfirmPreAnalysisRequest,
+        current_user = Depends(get_current_user)
+    ):
+        """
+        Confirm pre-analysis and prepare for grading.
+
+        Allows adjusting the detected grading scale and structure
+        before starting the actual grading process.
+        """
+        user_id = current_user.id
+
+        # Check session exists
+        store = SessionStore(session_id, user_id=user_id)
+        if not store.exists():
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Load pre-analysis result
+        pre_analysis = store.load_pre_analysis()
+        if not pre_analysis:
+            raise HTTPException(status_code=400, detail="No pre-analysis found. Run /pre-analyze first.")
+
+        # Check for blocking issues
+        if pre_analysis.has_blocking_issues:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot confirm: blocking issues detected: {pre_analysis.blocking_issues}"
+            )
+
+        # Apply adjustments if provided
+        grading_scale = pre_analysis.grading_scale
+        if request.adjustments:
+            if "grading_scale" in request.adjustments:
+                # Merge adjustments with detected scale
+                grading_scale.update(request.adjustments["grading_scale"])
+
+        # Update session with confirmed settings
+        session = store.load_session()
+        if session:
+            # Set question weights from grading scale
+            session.policy.question_weights = grading_scale
+            session.status = "ready_for_grading"
+            store.save_session(session)
+
+        # Update progress
+        if session_id in session_progress:
+            session_progress[session_id]["status"] = "ready_for_grading"
+
+        return ConfirmPreAnalysisResponse(
+            success=True,
+            session_id=session_id,
+            status="ready_for_grading",
+            grading_scale=grading_scale,
+            num_students=pre_analysis.num_students_detected
+        )
+
     @app.get("/api/sessions/{session_id}", response_model=SessionDetailResponse)
-    async def get_session(session_id: str, api_key: str = Depends(get_api_key)):
+    async def get_session(session_id: str, current_user = Depends(get_current_user)):
         """Get detailed session information."""
-        store = SessionStore(session_id)
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
         session = store.load_session()
 
         if not session:
@@ -304,9 +524,10 @@ def create_app() -> FastAPI:
         )
 
     @app.delete("/api/sessions/{session_id}")
-    async def delete_session(session_id: str, api_key: str = Depends(get_api_key)):
+    async def delete_session(session_id: str, current_user = Depends(get_current_user)):
         """Delete a session and all its data."""
-        store = SessionStore(session_id)
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
 
         if not store.exists():
             raise HTTPException(status_code=404, detail="Session not found")
@@ -323,13 +544,14 @@ def create_app() -> FastAPI:
         return {"success": success}
 
     @app.post("/api/sessions/{session_id}/grade", response_model=GradeResponse)
-    async def start_grading(session_id: str, background_tasks: BackgroundTasks, api_key: str = Depends(get_api_key)):
+    async def start_grading(session_id: str, background_tasks: BackgroundTasks, current_user = Depends(get_current_user)):
         """
         Start the grading process for a session.
 
         Progress updates are sent via WebSocket at /api/sessions/{session_id}/ws
         """
-        store = SessionStore(session_id)
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
         session = store.load_session()
 
         if not session:
@@ -337,7 +559,7 @@ def create_app() -> FastAPI:
 
         # Get or create orchestrator
         if session_id not in active_sessions:
-            orchestrator = GradingSessionOrchestrator(session_id=session_id)
+            orchestrator = GradingSessionOrchestrator(session_id=session_id, user_id=user_id)
             active_sessions[session_id] = orchestrator
         else:
             orchestrator = active_sessions[session_id]
@@ -353,6 +575,8 @@ def create_app() -> FastAPI:
 
         # Start grading in background
         async def grade_task():
+            from db import SessionLocal, User
+
             try:
                 # Run analysis phase
                 await orchestrator.analyze_only()
@@ -380,6 +604,16 @@ def create_app() -> FastAPI:
                     session_progress[session_id]["status"] = "complete"
                     session_progress[session_id]["copies_graded"] = len(session.graded_copies)
 
+                # Increment user usage counter
+                db = SessionLocal()
+                try:
+                    db_user = db.query(User).filter(User.id == user_id).first()
+                    if db_user and len(session.graded_copies) > 0:
+                        db_user.increment_usage(len(session.graded_copies))
+                        db.commit()
+                finally:
+                    db.close()
+
             except Exception as e:
                 logger.error(f"Grading error: {e}")
                 await ws_manager.broadcast_event(session_id, "session_error", {
@@ -404,21 +638,22 @@ def create_app() -> FastAPI:
         )
 
     @app.post("/api/sessions/{session_id}/decisions")
-    async def submit_decision(session_id: str, decision: TeacherDecisionRequest, api_key: str = Depends(get_api_key)):
+    async def submit_decision(session_id: str, decision: TeacherDecisionRequest, current_user = Depends(get_current_user)):
         """
         Submit a teacher's grading decision.
 
         The system will extract a generalizable rule and propose
         applying it to similar copies.
         """
-        store = SessionStore(session_id)
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
         session = store.load_session()
 
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
 
         if session_id not in active_sessions:
-            orchestrator = GradingSessionOrchestrator(session_id=session_id)
+            orchestrator = GradingSessionOrchestrator(session_id=session_id, user_id=user_id)
             active_sessions[session_id] = orchestrator
         else:
             orchestrator = active_sessions[session_id]
@@ -438,25 +673,27 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/api/sessions/{session_id}/analytics", response_model=AnalyticsResponse)
-    async def get_analytics(session_id: str, api_key: str = Depends(get_api_key)):
+    async def get_analytics(session_id: str, current_user = Depends(get_current_user)):
         """Get analytics for a session."""
-        orchestrator = GradingSessionOrchestrator(session_id=session_id)
+        user_id = current_user.id
+        orchestrator = GradingSessionOrchestrator(session_id=session_id, user_id=user_id)
         analytics = orchestrator.get_analytics()
 
         return AnalyticsResponse(**analytics)
 
     @app.get("/api/sessions")
-    async def list_sessions(api_key: str = Depends(get_api_key)):
-        """List all sessions."""
+    async def list_sessions(current_user = Depends(get_current_user)):
+        """List all sessions for the current user."""
         from storage.file_store import SessionIndex
 
-        index = SessionIndex()
+        user_id = current_user.id
+        index = SessionIndex(user_id=user_id)
         sessions = index.list_sessions()
 
         # Build detailed session list
         session_list = []
         for session_id in sessions:
-            store = SessionStore(session_id)
+            store = SessionStore(session_id, user_id=user_id)
             session = store.load_session()
             if session:
                 avg = None
@@ -482,9 +719,10 @@ def create_app() -> FastAPI:
     # ============================================================================
 
     @app.get("/api/sessions/{session_id}/disagreements", response_model=List[DisagreementResponse])
-    async def get_disagreements(session_id: str, api_key: str = Depends(get_api_key)):
+    async def get_disagreements(session_id: str, current_user = Depends(get_current_user)):
         """Get all disagreements for a session."""
-        store = SessionStore(session_id)
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
         session = store.load_session()
 
         if not session:
@@ -557,10 +795,11 @@ def create_app() -> FastAPI:
         session_id: str,
         question_id: str,
         request: ResolveDisagreementRequest,
-        api_key: str = Depends(get_api_key)
+        current_user = Depends(get_current_user)
     ):
         """Resolve a disagreement."""
-        store = SessionStore(session_id)
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
         session = store.load_session()
 
         if not session:
@@ -577,11 +816,12 @@ def create_app() -> FastAPI:
     # ============================================================================
 
     @app.get("/api/sessions/{session_id}/export/{format}")
-    async def export_session(session_id: str, format: str, api_key: str = Depends(get_api_key)):
+    async def export_session(session_id: str, format: str, current_user = Depends(get_current_user)):
         """Export session results in the specified format."""
         from export.analytics import DataExporter
 
-        store = SessionStore(session_id)
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
         session = store.load_session()
 
         if not session:
@@ -673,8 +913,8 @@ def create_app() -> FastAPI:
     # ============================================================================
 
     @app.get("/api/settings", response_model=SettingsResponse)
-    async def get_settings_api():
-        """Get application settings."""
+    async def get_settings_api(admin_user = Depends(get_admin_user)):
+        """Get application settings (admin only)."""
         settings = get_settings()
 
         return SettingsResponse(
@@ -689,8 +929,8 @@ def create_app() -> FastAPI:
         )
 
     @app.put("/api/settings", response_model=SettingsResponse)
-    async def update_settings_api(request: UpdateSettingsRequest, api_key: str = Depends(get_api_key)):
-        """Update application settings.
+    async def update_settings_api(request: UpdateSettingsRequest, admin_user = Depends(get_admin_user)):
+        """Update application settings (admin only).
 
         Note: This only updates runtime settings. For persistent changes,
         modify the .env file.

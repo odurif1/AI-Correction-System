@@ -54,7 +54,8 @@ TRANSLATIONS_FR = {
             ("COHÉRENCE ABSOLUE", "Si deux élèves ont écrit la même réponse, ils doivent avoir la même note"),
             ("LECTURE ATTENTIVE", "Utilise le CONTEXTE (question, cohérence entre copies) pour déchiffrer l'écriture manuscrite"),
             ("FEEDBACK SOBRE", "Commentaire court, constructif, adapté à la difficulté"),
-            ("DÉTECTION PATTERNS", "Note si beaucoup d'élèves ont la même réponse (correcte ou non)")
+            ("DÉTECTION PATTERNS", "Note si beaucoup d'élèves ont la même réponse (correcte ou non)"),
+            ("RESPECT DU BARÈME", "Note en fonction du barème indiqué pour chaque question")
         ],
 
         # JSON format
@@ -62,11 +63,19 @@ TRANSLATIONS_FR = {
         "json_copy_index": "1",
         "json_student_name": "Nom de l'élève ou null",
         "json_student_answer": "Ce que l'élève a écrit",
+        "json_grade_placeholder": "<note sur le barème>",
+        "json_max_points_placeholder": "<barème de la question>",
         "json_feedback": "Feedback sobre",
         "json_overall_feedback": "Commentaire général sur la copie",
+        "json_other_student": "Autre élève",
         "json_common_answer": "fiole jaugée",
         "json_reason_similarity": "Réponses identiques mot pour mot",
         "json_reasoning": "Pourquoi cette note",
+
+        # Labels
+        "you_label": "Toi",
+        "other_label": "Autre",
+        "other_grader_label": "l'autre correcteur",
 
         # Final
         "final_instruction": "Analyse maintenant le document et retourne ta correction au format JSON.",
@@ -78,7 +87,7 @@ TRANSLATIONS_FR = {
         "mission_intro": "Tu dois maintenant RÉEXAMINER ta correction en tenant compte de l'avis de l'autre correcteur.",
         "disagreements_title": "DÉSACCORDS À RÉEXAMINER",
         "disagreement_header": "Désaccord",
-        "you_gave": "TOI ({provider}) as donné",
+        "you_gave": "TOI as donné",
         "other_gave": "L'AUTRE IA a donné",
         "your_reading": "Ta lecture",
         "your_reasoning": "Ton raisonnement",
@@ -87,7 +96,6 @@ TRANSLATIONS_FR = {
         "difference": "Écart",
 
         # Warnings
-        "rubric_warning": "ATTENTION: Désaccord sur le barème!",
         "reading_warning": "⚠️ DÉSACCORD DE LECTURE",
 
         # Name section
@@ -101,6 +109,7 @@ TRANSLATIONS_FR = {
         "mission_steps": [
             "RELIS l'image de la copie attentivement",
             "COMPARE ta lecture avec celle de l'autre correcteur",
+            "VÉRIFIE le barème de la question",
             "DÉCIDE si tu maintiens ta note ou si tu l'ajustes",
             "JUSTIFIE ta décision"
         ],
@@ -118,7 +127,7 @@ TRANSLATIONS_FR = {
 
         # Final
         "final_instruction": "Réexamine les copies et retourne ta décision au format JSON.",
-        "max_points_note": "Si tu changes ton barème (max_points), indique le nouveau barème dans `my_new_max_points`. Si tu corriges ta lecture, indique la nouvelle lecture dans `my_new_reading`.",
+        "max_points_note": "Si tu corriges ta lecture de la réponse, indique la nouvelle lecture dans `my_new_reading`.",
     },
 
     # Ultimatum prompts
@@ -129,8 +138,8 @@ TRANSLATIONS_FR = {
         "ultimatum_header": "ULTIMATUM",
         "you_after": "Toi après vérification",
         "other_after": "L'autre correcteur après vérification",
+        "other_grader_label": "l'autre correcteur",
         "persistent_diff": "Écart persistant",
-        "rubric_still_warning": "Barème toujours en désaccord",
         "your_reasoning": "Ton raisonnement",
         "their_reasoning": "Son raisonnement",
 
@@ -151,6 +160,9 @@ TRANSLATIONS_FR = {
 
         # JSON
         "json_reasoning": "Pourquoi j'ai pris cette décision finale",
+        "json_final_reading": "Lecture finale de la réponse",
+        "json_feedback": "Feedback final pour l'élève",
+        "json_decision_options": "\"maintained\" ou \"yielded\" ou \"compromise\"",
         "final_instruction": "Relis les copies et prends ta DÉCISION FINALE au format JSON.",
     },
 
@@ -222,7 +234,8 @@ TRANSLATIONS_EN = {
             ("ABSOLUTE CONSISTENCY", "If two students wrote the same answer, they must get the same grade"),
             ("CAREFUL READING", "Use CONTEXT (question, consistency across copies) to decipher handwriting"),
             ("CONCISE FEEDBACK", "Short, constructive comment adapted to difficulty"),
-            ("PATTERN DETECTION", "Note if many students have the same answer (correct or not)")
+            ("PATTERN DETECTION", "Note if many students have the same answer (correct or not)"),
+            ("RESPECT THE SCALE", "Grade according to the scale indicated for each question")
         ],
 
         # JSON format
@@ -230,11 +243,19 @@ TRANSLATIONS_EN = {
         "json_copy_index": "1",
         "json_student_name": "Student name or null",
         "json_student_answer": "What the student wrote",
+        "json_grade_placeholder": "<grade on scale>",
+        "json_max_points_placeholder": "<question scale>",
         "json_feedback": "Concise feedback",
         "json_overall_feedback": "General comment on the copy",
+        "json_other_student": "Another student",
         "json_common_answer": "volumetric flask",
         "json_reason_similarity": "Word-for-word identical answers",
         "json_reasoning": "Why this grade",
+
+        # Labels
+        "you_label": "You",
+        "other_label": "Other",
+        "other_grader_label": "the other grader",
 
         # Final
         "final_instruction": "Now analyze the document and return your grading in JSON format.",
@@ -254,8 +275,7 @@ TRANSLATIONS_EN = {
         "their_reasoning": "Their reasoning",
         "difference": "Difference",
 
-        # Warnings
-        "rubric_warning": "WARNING: Rubric disagreement!",
+        # Warnings (rubric_warning removed - barème is frozen)
         "reading_warning": "⚠️ READING DISAGREEMENT",
 
         # Name section
@@ -269,6 +289,7 @@ TRANSLATIONS_EN = {
         "mission_steps": [
             "REREAD the copy image carefully",
             "COMPARE your reading with the other grader's",
+            "CHECK the question's grading scale",
             "DECIDE whether to maintain or adjust your grade",
             "JUSTIFY your decision"
         ],
@@ -286,7 +307,7 @@ TRANSLATIONS_EN = {
 
         # Final
         "final_instruction": "Reexamine the copies and return your decision in JSON format.",
-        "max_points_note": "If you change your rubric (max_points), indicate the new rubric in `my_new_max_points`. If you correct your reading, indicate the new reading in `my_new_reading`.",
+        "max_points_note": "If you correct your reading of the answer, indicate the new reading in `my_new_reading`.",
     },
 
     # Ultimatum prompts
@@ -297,8 +318,8 @@ TRANSLATIONS_EN = {
         "ultimatum_header": "ULTIMATUM",
         "you_after": "YOU after verification",
         "other_after": "THE OTHER GRADER after verification",
+        "other_grader_label": "the other grader",
         "persistent_diff": "Persistent difference",
-        "rubric_still_warning": "Rubric still in disagreement",
         "your_reasoning": "Your reasoning",
         "their_reasoning": "Their reasoning",
 
@@ -319,6 +340,9 @@ TRANSLATIONS_EN = {
 
         # JSON
         "json_reasoning": "Why I made this final decision",
+        "json_final_reading": "Final reading of the answer",
+        "json_feedback": "Final feedback for the student",
+        "json_decision_options": "\"maintained\" or \"yielded\" or \"compromise\"",
         "final_instruction": "Reread the copies and make your FINAL DECISION in JSON format.",
     },
 
