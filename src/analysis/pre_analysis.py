@@ -53,7 +53,8 @@ class PreAnalyzer:
         user_id: str,
         session_id: str,
         language: str = "fr",
-        cache_dir: Path = None
+        cache_dir: Path = None,
+        provider = None  # Optional: pass existing provider for token tracking
     ):
         """
         Initialize the pre-analyzer.
@@ -63,6 +64,7 @@ class PreAnalyzer:
             session_id: Session ID for caching
             language: Language for prompts (fr, en)
             cache_dir: Directory for caching results
+            provider: Optional AI provider (if None, creates new one)
         """
         self.user_id = user_id
         self.session_id = session_id
@@ -70,8 +72,8 @@ class PreAnalyzer:
         self.cache_dir = cache_dir or Path(f"data/{user_id}/{session_id}/cache")
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create AI provider
-        self.provider = create_ai_provider()
+        # Use provided provider or create new one
+        self.provider = provider if provider else create_ai_provider()
 
     def analyze(
         self,

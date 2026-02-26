@@ -567,7 +567,8 @@ async def command_correct(args):
             pre_analyzer = PreAnalyzer(
                 user_id=user_id if hasattr(args, 'user_id') else 'default',
                 session_id=orchestrator.session_id,
-                language=language
+                language=language,
+                provider=orchestrator.ai  # Use orchestrator's provider for token tracking
             )
 
             # Analyze first PDF for barème detection
