@@ -10,9 +10,9 @@ import jwt
 
 from sqlalchemy.orm import Session
 from db import get_db, User, SubscriptionTier
+from config.settings import get_settings
 
 # Configuration
-SECRET_KEY = "your-secret-key-change-in-production"  # TODO: Move to env
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24 * 7  # 7 days
 
@@ -67,19 +67,21 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 
 def create_access_token(user_id: str) -> str:
     """Create a JWT access token."""
+    settings = get_settings()
     expire = datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
     payload = {
         "sub": user_id,
         "exp": expire,
         "iat": datetime.utcnow(),
     }
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 
 def decode_token(token: str) -> Optional[dict]:
     """Decode and validate a JWT token."""
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        settings = get_settings()
+        payload = jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM])
         return payload
     except jwt.ExpiredSignatureError:
         return None
