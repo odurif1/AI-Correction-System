@@ -93,6 +93,15 @@ def create_app() -> FastAPI:
     # Initialize database on startup
     @app.on_event("startup")
     async def startup_event():
+        """Fail fast if critical security settings are invalid."""
+        try:
+            settings = get_settings()
+            # This will raise ValidationError if JWT_SECRET or API keys are invalid
+            logger.info(f"Security configuration validated. Provider: {settings.ai_provider}")
+        except ValidationError as e:
+            logger.error(f"Configuration error: {e}")
+            raise SystemExit(1)
+
         from db import init_db
         init_db()
         logger.info("Database initialized")
