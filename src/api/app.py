@@ -85,6 +85,32 @@ def get_api_key(api_key: str = Security(api_key_header)) -> str:
 
 
 # ============================================================================
+# Security Headers Middleware
+# ============================================================================
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add security headers to all responses."""
+
+    async def dispatch(self, request: Request, call_next):
+        response: Response = await call_next(request)
+
+        # Prevent MIME type sniffing
+        response.headers["X-Content-Type-Options"] = "nosniff"
+
+        # Prevent clickjacking
+        response.headers["X-Frame-Options"] = "DENY"
+
+        # Referrer policy
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+
+        # HSTS only for HTTPS (skip in development)
+        if request.url.scheme == "https":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+        return response
+
+
+# ============================================================================
 # Application Factory
 # ============================================================================
 
@@ -124,6 +150,9 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "X-API-Key"],
     )
+
+    # Add security headers middleware
+    app.add_middleware(SecurityHeadersMiddleware)
 
     # Initialize database on startup
     @app.on_event("startup")
