@@ -32,3 +32,43 @@ def validate_password(password: str) -> Tuple[bool, str]:
         return False, "Ce mot de passe est trop courant"
 
     return True, ""
+
+
+async def validate_pdf_upload(
+    file: UploadFile,
+    max_size_mb: int = MAX_PDF_SIZE_MB
+) -> bytes:
+    """
+    Validate PDF file type and size, return content.
+
+    Args:
+        file: The uploaded file
+        max_size_mb: Maximum file size in megabytes
+
+    Returns:
+        File content as bytes
+
+    Raises:
+        HTTPException 413: File too large
+        HTTPException 400: Invalid PDF format
+    """
+    # Check file size
+    content = await file.read()
+    if len(content) > max_size_mb * 1024 * 1024:
+        raise HTTPException(
+            status_code=413,
+            detail="Fichier trop volumineux (max 25 MB)"
+        )
+
+    # Check magic bytes (PDF signature)
+    if not content.startswith(PDF_MAGIC_BYTES):
+        # Per CONTEXT.md: Generic error for security
+        raise HTTPException(
+            status_code=400,
+            detail="Format de fichier invalide"
+        )
+
+    # Reset file pointer for further processing
+    await file.seek(0)
+
+    return content
