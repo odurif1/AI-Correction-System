@@ -497,14 +497,13 @@ async def command_correct(args):
                 'total_cached': current_cached
             })
 
-            # Update state with delta
-            if delta_prompt > 0 or delta_completion > 0:
-                state = state.with_token_usage(
-                    phase=current_phase,
-                    prompt_tokens=delta_prompt,
-                    completion_tokens=delta_completion,
-                    cached_tokens=delta_cached
-                )
+            # Update state with delta (always record, even if 0, to track all phases)
+            state = state.with_token_usage(
+                phase=current_phase,
+                prompt_tokens=delta_prompt,
+                completion_tokens=delta_completion,
+                cached_tokens=delta_cached
+            )
 
             # Store current for next delta calculation
             _prev_tokens = {'prompt': current_prompt, 'completion': current_completion, 'cached': current_cached}
