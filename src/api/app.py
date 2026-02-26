@@ -22,6 +22,7 @@ import os
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 
 from config.settings import get_settings
+from pydantic import ValidationError
 from core.session import GradingSessionOrchestrator
 from storage.session_store import SessionStore
 from api.websocket import manager as ws_manager
@@ -95,6 +96,37 @@ def create_app() -> FastAPI:
         from db import init_db
         init_db()
         logger.info("Database initialized")
+
+        # One-time cleanup: Delete shared sessions (pre-multi-tenant)
+        await _cleanup_legacy_sessions()
+
+
+    async def _cleanup_legacy_sessions():
+        """Delete legacy sessions in shared namespace (pre-user-isolation)."""
+        import shutil
+        from pathlib import Path
+
+        sessions_dir = Path("data/sessions")
+
+        # Check if sessions directory exists
+        if not sessions_dir.exists():
+            return
+
+        # Find items in shared namespace (direct children, not user_id subdirs)
+        legacy_items = []
+        for item in sessions_dir.iterdir():
+            if item.is_dir() and not item.name.startswith("__"):  # Exclude __pycache__ etc
+                # If it doesn't look like a UUID, it's likely a user_id dir, keep it
+                # If it looks like a session_id (UUID format), it's legacy
+                if len(item.name) == 36 and item.name.count("-") == 4:  # UUID format
+                    legacy_items.append(item)
+
+        if legacy_items:
+            logger.warning(f"Found {len(legacy_items)} legacy sessions in shared namespace, deleting...")
+            for item in legacy_items:
+                shutil.rmtree(item)
+                logger.info(f"Deleted legacy session: {item.name}")
+            logger.info("Legacy session cleanup complete. Fresh start enforced.")
 
     # Include auth router
     app.include_router(auth_router, prefix="/api")
