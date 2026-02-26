@@ -31,7 +31,12 @@
 4. Application fails fast on startup if JWT secret or API keys are missing/default
 5. File uploads are validated for PDF structure and size limits
 
-**Plans:** TBD
+**Plans:** 5 plans
+- [ ] 01-01-PLAN.md — Environment-based secrets (JWT, API keys) with startup validation
+- [ ] 01-02-PLAN.md — Authentication endpoints (signup, login, logout) with password validation
+- [ ] 01-03-PLAN.md — User-scoped session storage for data isolation
+- [ ] 01-04-PLAN.md — Access control middleware for session ownership verification
+- [ ] 01-05-PLAN.md — File upload security, rate limiting, CORS, security headers
 
 ---
 
