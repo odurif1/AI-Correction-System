@@ -48,21 +48,31 @@ class SessionStore:
     """
     Gestionnaire de stockage pour une session.
 
-    Structure multi-tenant: data/{user_id}/{session_id}/
-    Si user_id est None, utilise l'ancien chemin data/{session_id}/ (pour compatibilité)
+    Structure multi-tenant: data/sessions/{user_id}/{session_id}/
+    Le paramètre user_id est OBLIGATOIRE pour l'isolation des données.
     """
 
-    def __init__(self, session_id: str, user_id: str = None, base_dir: str = None):
+    def __init__(self, session_id: str, user_id: str, base_dir: str = None):
+        """
+        Initialize session store with mandatory user_id for data isolation.
+
+        Args:
+            session_id: Unique session identifier
+            user_id: User identifier (REQUIRED for multi-tenant isolation)
+            base_dir: Base data directory (defaults to DATA_DIR)
+
+        Raises:
+            ValueError: If user_id is None or empty
+        """
+        if not user_id:
+            raise ValueError("user_id is required for data isolation")
+
         self.session_id = session_id
         self.user_id = user_id
         self.base_dir = Path(base_dir or DATA_DIR)
 
-        # Multi-tenant path: data/{user_id}/{session_id}/
-        if user_id:
-            self.session_dir = self.base_dir / user_id / session_id
-        else:
-            # Fallback for backward compatibility
-            self.session_dir = self.base_dir / session_id
+        # Multi-tenant path: data/sessions/{user_id}/{session_id}/
+        self.session_dir = self.base_dir / "sessions" / user_id / session_id
 
     # ==================== INITIALIZATION ====================
 
@@ -82,13 +92,8 @@ class SessionStore:
         return self.session_dir
 
     def exists(self) -> bool:
-        """Vérifie si la session existe."""
-        if (self.session_dir / SESSION_JSON).exists():
-            return True
-        # Vérifier aussi le chemin legacy pour les sessions créées avant la migration
-        if self.user_id:
-            return (self.base_dir / self.session_id / SESSION_JSON).exists()
-        return False
+        """Vérifie si la session existe dans l'espace utilisateur."""
+        return (self.session_dir / SESSION_JSON).exists()
 
     # ==================== SESSION STATE ====================
 
@@ -106,17 +111,8 @@ class SessionStore:
         """Charge l'état de la session avec validation."""
         session_file = self.session_dir / SESSION_JSON
 
-        # Si le fichier n'existe pas dans le chemin user-specific, vérifier le chemin legacy
         if not session_file.exists():
-            if self.user_id:
-                # Essayer le chemin legacy: data/{session_id}/
-                legacy_session_file = self.base_dir / self.session_id / SESSION_JSON
-                if legacy_session_file.exists():
-                    session_file = legacy_session_file
-                else:
-                    return None
-            else:
-                return None
+            return None
 
         try:
             with open(session_file, 'r', encoding='utf-8') as f:
@@ -134,12 +130,10 @@ class SessionStore:
         except Exception as e:
             raise ValidationFailedError(f"Session data validation failed: {e}", {"file": str(session_file)})
 
-        # Vérifier l'appartenance si user_id est fourni (multi-tenant)
-        # Si un user_id est fourni pour le chargement, la session DOIT appartenir à cet utilisateur
-        if self.user_id:
-            # La session doit avoir un user_id qui correspond
-            if not session.user_id or session.user_id != self.user_id:
-                return None  # Session n'appartient pas à cet utilisateur
+        # Vérifier l'appartenance (multi-tenant isolation)
+        # La session doit avoir un user_id qui correspond
+        if not session.user_id or session.user_id != self.user_id:
+            return None  # Session n'appartient pas à cet utilisateur
 
         return session
 
