@@ -2,24 +2,24 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: Phase 2 (Observability & Monitoring)
-current_plan: 02-03 (Health Check & Metrics)
-status: executing
-last_updated: "2026-02-27T00:35:07.781Z"
+current_phase: Phase 3 (Core Grading Experience)
+current_plan: 03-01 (Grading Workflow Completion)
+status: Ready to Start
+last_updated: "2026-02-27T00:42:37.279Z"
 progress:
   total_phases: 2
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 10
-  completed_plans: 9
-  percent: 90
+  completed_plans: 10
+  percent: 100
 ---
 
 # State: La Corrigeuse
 
 **Last updated:** 2026-02-27
-**Current phase:** Phase 2 (Observability & Monitoring)
-**Current plan:** 02-03 (Health Check & Metrics)
-**Status:** In Progress
+**Current phase:** Phase 3 (Core Grading Experience)
+**Current plan:** 03-01 (Grading Workflow Completion)
+**Status:** Ready to Start
 
 ## Project Reference
 
@@ -33,16 +33,16 @@ Establishing security foundation before commercial release. Critical vulnerabili
 
 ## Current Position
 
-**Phase:** 2 - Observability & Monitoring
-**Plan:** 03 - Health Check & Metrics
-**Status:** In Progress
-**Progress:** [█████████░] 90%
+**Phase:** 3 - Core Grading Experience
+**Plan:** 01 - Grading Workflow Completion
+**Status:** Ready to Start
+**Progress:** [██████████] 100% (Phase 2 complete)
 
 **What's being built:**
-Structured JSON logging with correlation IDs, Sentry error tracking, health check endpoints, and password reset functionality via email.
+Core grading workflow completion, student copy management, and UI polish for the primary user experience.
 
 **Why this phase:**
-Production debugging requires observability. Password reset is essential for user support. These provide the foundation for running a production service.
+Phase 2 (Observability) is complete. Core grading functionality is the primary value proposition and needs to be polished for production use.
 
 ## Performance Metrics
 
@@ -79,6 +79,14 @@ Production debugging requires observability. Password reset is essential for use
 - Configured for development/production environments
 - Health check endpoint with database connectivity
 
+**Health check and metrics (2026-02-27):**
+- Log-based metrics collection (latency percentiles, error rate, business metrics)
+- Thread-safe in-memory metrics storage with singleton pattern
+- Health check endpoint (/health) with database connectivity
+- Request middleware records metrics for all requests
+- Business metrics track grading operations and token usage
+- Sentry user context set in get_current_user for error association
+
 **Multi-tenant session storage (2026-02-26):**
 - Changed base path from `data/{user_id}/` to `data/sessions/{user_id}/` for clearer organization
 - Made user_id mandatory in SessionStore - no backward compatibility fallback
@@ -103,12 +111,16 @@ Production debugging requires observability. Password reset is essential for use
 - [Phase 01]: Access control middleware returns user_id for downstream SessionStore construction - Avoids duplicate current_user.id references in endpoint logic
 - [Phase 01]: Path traversal protection uses Path.resolve().relative_to() for validation - More robust against symlinks and edge cases than string prefix checking
 - [Phase 02]: Loguru JSON logging with serialize=True and correlation ID binding for production observability
+- [Phase 02]: Log-based metrics instead of Prometheus for v1
+- [Phase 02]: Thread-safe in-memory metrics storage
+- [Phase 02]: Database check via SELECT 1 query
 
 ### Active Todos
 
-**Immediate (Phase 2):**
-1. Complete remaining Phase 2 plans (01, 02, 03)
-2. Plan Phase 3 details: Core Grading Experience
+**Immediate (Phase 3):**
+1. Complete Phase 3 plans (01-07)
+2. Finish core grading workflow and UI polish
+3. Prepare for production beta testing
 
 **Upcoming:**
 - Phase 3: Core Grading Experience
@@ -148,11 +160,11 @@ Production debugging requires observability. Password reset is essential for use
 
 ## Session Continuity
 
-**Last action:** Completed plan 02-04 - Password reset with SendGrid email integration
-**Next action:** Continue with remaining Phase 2 plans (01, 02, 03)
+**Last action:** Completed Phase 2 (Observability & Monitoring) - All 4 plans complete
+**Next action:** Begin Phase 3 (Core Grading Experience) with plan 01
 
 **Quick context for next session:**
-We're building an AI-powered grading SaaS for French teachers. Phase 1 (Security Foundation) is complete. Phase 2 (Observability & Monitoring) is in progress with password reset (plan 04) complete. Remaining plans: structured logging (01), Sentry integration (02), health/metrics (03).
+We're building an AI-powered grading SaaS for French teachers. Phase 1 (Security Foundation) complete. Phase 2 (Observability & Monitoring) complete with structured logging, Sentry integration, health checks, and metrics. Phase 3 (Core Grading Experience) ready to start - will complete the core user workflow and UI polish.
 
 **State preservation:**
 - PROJECT.md: Core value, requirements, constraints, key decisions

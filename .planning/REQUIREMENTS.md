@@ -38,9 +38,9 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 - [x] **OBS-02**: All API requests logged with method, path, status, latency
 - [x] **OBS-03**: Errors captured with full stack traces and context
 - [x] **OBS-04**: Production error tracking integrated (Sentry or equivalent)
-- [ ] **OBS-05**: Health check endpoint (/health) returns API and database status
-- [ ] **OBS-06**: Request metrics collected (latency, error rates, throughput)
-- [ ] **OBS-07**: Business metrics tracked (grading operations, token usage per phase, active sessions)
+- [x] **OBS-05**: Health check endpoint (/health) returns API and database status
+- [x] **OBS-06**: Request metrics collected (latency, error rates, throughput)
+- [x] **OBS-07**: Business metrics tracked (grading operations, token usage per phase, active sessions)
 
 ### Core Grading
 
@@ -149,9 +149,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | OBS-02 | Phase 2 | Complete |
 | OBS-03 | Phase 2 | Complete |
 | OBS-04 | Phase 2 | Complete |
-| OBS-05 | Phase 2 | Pending |
-| OBS-06 | Phase 2 | Pending |
-| OBS-07 | Phase 2 | Pending |
+| OBS-05 | Phase 2 | Complete |
+| OBS-06 | Phase 2 | Complete |
+| OBS-07 | Phase 2 | Complete |
 | GRAD-01 | Phase 3 | Pending |
 | GRAD-02 | Phase 3 | Pending |
 | GRAD-03 | Phase 3 | Pending |
