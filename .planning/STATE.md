@@ -3,22 +3,22 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 current_phase: Phase 3 (Core Grading Experience)
-current_plan: 03-02 (Student Copy Management)
-status: in_progress
-last_updated: "2026-02-27T17:51:00.000Z"
+current_plan: 03-03 (Grading Results Review)
+status: executing
+last_updated: "2026-02-27T17:57:45.003Z"
 progress:
-  total_phases: 5
+  total_phases: 3
   completed_phases: 2
-  total_plans: 10
-  completed_plans: 11
-  percent: 38
+  total_plans: 14
+  completed_plans: 12
+  percent: 40
 ---
 
 # State: La Corrigeuse
 
 **Last updated:** 2026-02-27
 **Current phase:** Phase 3 (Core Grading Experience)
-**Current plan:** 03-02 (Student Copy Management)
+**Current plan:** 03-03 (Grading Results Review)
 **Status:** In progress
 
 ## Project Reference
@@ -34,9 +34,9 @@ Core grading experience - PDF upload workflow with multi-scale detection and tea
 ## Current Position
 
 **Phase:** 3 - Core Grading Experience
-**Plan:** 02 - Student Copy Management
+**Plan:** 03 - Grading Results Review
 **Status:** In Progress
-**Progress:** [████░░░░░░] 38% (Phase 3 Plan 01 complete)
+**Progress:** [████░░░░░░] 40% (Phase 3 Plan 02 complete)
 
 **What's being built:**
 Core grading workflow completion, student copy management, and UI polish for the primary user experience.
@@ -53,7 +53,7 @@ Phase 2 (Observability) is complete. Core grading functionality is the primary v
 **Cumulative progress:**
 - Phase 1: 5/5 requirements complete (SEC-01, SEC-02, SEC-03, SEC-04, SEC-05)
 - Phase 2: 2/9 requirements complete (AUTH-07, AUTH-08)
-- Phase 3: 2/13 requirements complete (GRAD-01, GRAD-02)
+- Phase 3: 6/13 requirements complete (GRAD-01, GRAD-02, GRAD-03, GRAD-04, GRAD-05, GRAD-06)
 
 ## Performance Metrics
 
@@ -62,12 +62,29 @@ Phase 2 (Observability) is complete. Core grading functionality is the primary v
 - Tasks completed: 3
 - Files modified: 4
 - Commits: 3
-- Phase 4: 0/7 requirements complete
-- Phase 5: 0/7 requirements complete
+
+**Phase 3 Plan 02 (2026-02-27):**
+- Duration: 1 minute (102 seconds)
+- Tasks completed: 3
+- Files modified: 2
+- Commits: 3
+- Grading mode selection (single/dual) via force_single_llm parameter
+- WebSocket progress event constants for type-safe communication
+- Progress sync on WebSocket connect for reconnection support
 
 ## Accumulated Context
 
 ### Decisions Made
+
+**Grading mode selection via force_single_llm (2026-02-27):**
+- Single mode uses force_single_llm=True for faster grading without comparison
+- Dual mode (default) uses comparison mode from settings for verification
+- Grading mode stored in session_progress for UI reference and reconnection sync
+
+**WebSocket progress event structure (2026-02-27):**
+- Defined 6 event types as constants: COPY_START, QUESTION_DONE, COPY_DONE, COPY_ERROR, SESSION_COMPLETE, SESSION_ERROR
+- Each event has documented data structure for type-safe communication
+- Progress sync event sends current state on WebSocket connect for reconnection support
 
 **Multi-scale grading scale detection (2026-02-27):**
 - Return all candidate scales with confidence scores instead of single best guess
@@ -128,6 +145,9 @@ Phase 2 (Observability) is complete. Core grading functionality is the primary v
 - [Phase 02]: Log-based metrics instead of Prometheus for v1
 - [Phase 02]: Thread-safe in-memory metrics storage
 - [Phase 02]: Database check via SELECT 1 query
+- [Phase 03]: Single mode uses force_single_llm parameter for faster grading
+- [Phase 03]: Dual mode uses comparison mode from settings for verification
+- [Phase 03]: Progress sync on WebSocket connect for reconnection support
 
 ### Active Todos
 
@@ -174,8 +194,12 @@ Phase 2 (Observability) is complete. Core grading functionality is the primary v
 
 ## Session Continuity
 
-**Last action:** Completed Phase 3 Plan 01 - PDF Upload Workflow with Multi-Scale Detection
-**Next action:** Begin Phase 3 Plan 02 - Student Copy Management
+**Last action:** Completed Phase 3 Plan 02 - Grading Execution with Progress Events
+**Next action:** Begin Phase 3 Plan 03 - Grading Results Review
+
+**Session info:**
+- Stopped at: Completed 03-02-PLAN.md
+- Timestamp: 2026-02-27T17:55:55Z
 
 **Quick context for next session:**
 We're building an AI-powered grading SaaS for French teachers. Phase 1 (Security Foundation) complete. Phase 2 (Observability & Monitoring) complete. Phase 3 (Core Grading Experience) Plan 01 complete - implemented multi-scale grading scale detection with teacher confirmation. Plan 02 will implement student copy management with individual student tracking and re-grading capabilities.
