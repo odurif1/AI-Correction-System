@@ -106,11 +106,13 @@
 4. Review screen displays all grades with inline editing capability and save confirmation
 5. Application works responsively on tablets (768px+) and laptops with professional, clean aesthetic
 
-**Plans:** 4 plans
+**Plans:** 6 plans (4 original + 2 gap closure)
 - [x] 04-01-PLAN.md — Dashboard with recent sessions, card grid, status filter, infinite scroll, quick actions (COMPLETE)
-- [ ] 04-02-PLAN.md — Multi-file upload workflow with drag-drop, file picker, per-file progress, inline validation
-- [ ] 04-03-PLAN.md — Grading progress screen with French waiting messages, status grid, real-time updates
-- [ ] 04-04-PLAN.md — Review screen with inline editing, sortable columns, export dropdown, disagreement highlighting
+- [x] 04-02-PLAN.md — Multi-file upload workflow with drag-drop, file picker, per-file progress, inline validation (COMPLETE)
+- [x] 04-03-PLAN.md — Grading progress screen with French waiting messages, status grid, real-time updates (COMPLETE)
+- [x] 04-04-PLAN.md — Review screen with inline editing, sortable columns, export dropdown, disagreement highlighting (COMPLETE)
+- [ ] 04.1-PLAN.md — Fix French waiting message rotation interval (5s → 20s) for better readability
+- [ ] 04.2-PLAN.md — Fix dual-LLM grading completion by enabling auto_mode in API context
 
 ---
 
@@ -134,7 +136,6 @@
 **Plans:** TBD
 
 ---
-
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
@@ -142,7 +143,7 @@
 | 1. Security Foundation | 5/5 | Complete | 2026-02-27 |
 | 2. Observability & Monitoring | 4/4 | Complete | 2026-02-27 |
 | 3. Core Grading Experience | 3/3 | Complete | 2026-02-27 |
-| 4. User Interface & Polish | 1/4 | In Progress | 2026-02-27 |
+| 4. User Interface & Polish | 4/6 | In Progress (Gap Closure) | 2026-02-27 |
 | 5. Production Readiness | 0/2 | Not started | - |
 
 ## Phase Dependencies
