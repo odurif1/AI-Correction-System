@@ -1,9 +1,9 @@
 ---
-status: complete
+status: resolved
 phase: 04-user-interface-polish
 source: [04-01-SUMMARY.md, 04-02-PLAN-SUMMARY.md, 04-03-SUMMARY.md, 04-04-SUMMARY.md]
 started: 2026-02-27T21:40:00Z
-updated: 2026-02-27T22:00:00Z
+updated: 2026-02-27T22:20:00Z
 ---
 
 ## Current Test
@@ -116,21 +116,29 @@ skipped: 5
 ## Gaps
 
 - truth: "French waiting messages should rotate at a comfortable reading pace (20 seconds)"
-  status: failed
+  status: resolved
   reason: "User reported: oui mais ca defile trop vite, il faudrait laisser le message 20 secondes"
   severity: minor
   test: 11
-  root_cause: ""
-  artifacts: []
-  missing: []
-  debug_session: ""
+  root_cause: "useRotatingMessage hook has default interval of 5000ms instead of 20000ms"
+  resolution: "Plan 04.1 - Changed default interval from 5000 to 20000 in useRotatingMessage function"
+  artifacts:
+    - path: "web/lib/waiting-messages.ts"
+      issue: "interval parameter default is 5000 (should be 20000)"
+  resolved_by: "04.1-SUMMARY.md"
 
 - truth: "Grading should complete successfully and show agreement rate"
-  status: failed
+  status: resolved
   reason: "User reported: non car la correction n'aboutit jamais"
   severity: blocker
   test: 13
-  root_cause: ""
-  artifacts: []
-  missing: []
-  debug_session: ""
+  root_cause: "Dual-LLM batch grading blocks on student name disagreement - API creates orchestrator without auto_mode=True, causing _ask_student_name_resolution() to hang waiting for CLI input that never comes"
+  resolution: "Plan 04.2 - Added CorrectionState import, API_WORKFLOW_STATE constant, updated all 6 orchestrator instantiations with workflow_state=API_WORKFLOW_STATE"
+  artifacts:
+    - path: "src/api/app.py"
+      issue: "Creates GradingSessionOrchestrator without workflow_state parameter"
+    - path: "src/core/session.py"
+      issue: "_ask_student_name_resolution() uses blocking rich.prompt.Prompt"
+    - path: "src/core/workflow_state.py"
+      issue: "Default CorrectionState has auto_mode=False"
+  resolved_by: "04.2-SUMMARY.md"
