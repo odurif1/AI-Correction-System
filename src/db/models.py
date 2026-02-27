@@ -1,7 +1,7 @@
 """Database models for La Corrigeuse."""
 
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Integer, Enum as SQLEnum
+from sqlalchemy import Column, String, DateTime, Integer, Boolean, ForeignKey, Enum as SQLEnum
 from sqlalchemy.orm import relationship
 from db.database import Base
 import enum
@@ -111,3 +111,15 @@ class User(Base):
             "remaining_copies": self.remaining_tokens,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class PasswordResetToken(Base):
+    """Password reset token for secure password recovery."""
+    __tablename__ = "password_reset_tokens"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, ForeignKey("users.id"), nullable=False)
+    token_hash = Column(String, nullable=False, unique=True, index=True)  # Hashed token
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    used = Column(Boolean, default=False)
