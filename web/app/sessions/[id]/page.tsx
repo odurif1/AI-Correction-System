@@ -29,6 +29,7 @@ import { ProgressGrid } from "@/components/grading/progress-grid";
 import { ScoreDistribution } from "@/components/grading/score-distribution";
 import { DisagreementCard } from "@/components/grading/disagreement-card";
 import { ExportButton } from "@/components/export-button";
+import { EditableGradeCell } from "@/components/grading/editable-grade-cell";
 import { useProgressSocket } from "@/lib/websocket";
 import { useRotatingMessage } from "@/lib/waiting-messages";
 import { api } from "@/lib/api";
@@ -41,6 +42,9 @@ import {
   BarChart3,
   AlertTriangle,
   X,
+  ExternalLink,
+  ChevronDown,
+  ChevronUp,
 } from "lucide-react";
 import type { Disagreement, SessionDetail, Analytics } from "@/lib/types";
 
@@ -426,40 +430,139 @@ export default function SessionDetailPage() {
               )}
             </TabsList>
 
-            {/* Results Tab */}
-            <TabsContent value="results">
+            {/* Review Tab */}
+            <TabsContent value="review">
               <Card>
                 <CardHeader>
-                  <CardTitle>Graded Copies</CardTitle>
+                  <CardTitle>Review Grades</CardTitle>
                   <CardDescription>
-                    Individual results for each student
+                    Click any grade to edit. Changes auto-save.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Copy ID</TableHead>
-                        <TableHead>Score</TableHead>
-                        <TableHead>Confidence</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {session.graded_copies.map((graded) => (
-                        <TableRow key={graded.copy_id}>
-                          <TableCell className="font-medium">
-                            {graded.copy_id}
-                          </TableCell>
-                          <TableCell>
-                            {graded.total_score.toFixed(1)}/{graded.max_score}
-                          </TableCell>
-                          <TableCell>
-                            {(graded.confidence * 100).toFixed(0)}%
-                          </TableCell>
+                  <div className="rounded-md border overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead
+                            className="cursor-pointer hover:bg-muted sticky left-0 bg-background z-10"
+                            onClick={() => handleSort("copy_id")}
+                          >
+                            <div className="flex items-center gap-1">
+                              Copy / Student
+                              {sortColumn === "copy_id" && (
+                                sortDirection === "asc" ? (
+                                  <ChevronUp className="h-4 w-4 text-purple-600" />
+                                ) : (
+                                  <ChevronDown className="h-4 w-4 text-purple-600" />
+                                )
+                              )}
+                            </div>
+                          </TableHead>
+                          {questionIds.map((questionId) => (
+                            <TableHead
+                              key={questionId}
+                              className="cursor-pointer hover:bg-muted text-center"
+                              onClick={() => handleSort(questionId)}
+                            >
+                              <div className="flex items-center justify-center gap-1">
+                                {questionId}
+                                {sortColumn === questionId && (
+                                  sortDirection === "asc" ? (
+                                    <ChevronUp className="h-4 w-4 text-purple-600" />
+                                  ) : (
+                                    <ChevronDown className="h-4 w-4 text-purple-600" />
+                                  )
+                                )}
+                              </div>
+                            </TableHead>
+                          ))}
+                          <TableHead
+                            className="cursor-pointer hover:bg-muted text-center"
+                            onClick={() => handleSort("total_score")}
+                          >
+                            <div className="flex items-center justify-center gap-1">
+                              Total
+                              {sortColumn === "total_score" && (
+                                sortDirection === "asc" ? (
+                                  <ChevronUp className="h-4 w-4 text-purple-600" />
+                                ) : (
+                                  <ChevronDown className="h-4 w-4 text-purple-600" />
+                                )
+                              )}
+                            </div>
+                          </TableHead>
+                          <TableHead
+                            className="cursor-pointer hover:bg-muted text-center"
+                            onClick={() => handleSort("percentage")}
+                          >
+                            <div className="flex items-center justify-center gap-1">
+                              %
+                              {sortColumn === "percentage" && (
+                                sortDirection === "asc" ? (
+                                  <ChevronUp className="h-4 w-4 text-purple-600" />
+                                ) : (
+                                  <ChevronDown className="h-4 w-4 text-purple-600" />
+                                )
+                              )}
+                            </div>
+                          </TableHead>
+                          <TableHead className="text-center">Actions</TableHead>
                         </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
+                      </TableHeader>
+                      <TableBody>
+                        {sortedCopies.map((graded) => {
+                          // Get grading audit to check for disagreements
+                          const gradingAudit = graded.grading_audit as any;
+
+                          return (
+                            <TableRow key={graded.copy_id} className="hover:bg-muted/50">
+                              <TableCell className="font-medium sticky left-0 bg-background">
+                                {graded.copy_id}
+                              </TableCell>
+                              {questionIds.map((questionId) => {
+                                // Check if this specific question has a disagreement
+                                const questionHasDisagreement = gradingAudit?.questions?.[questionId]?.resolution?.agreement === false;
+                                const maxPoints = session.question_weights?.[questionId] || 0;
+
+                                return (
+                                  <TableCell key={questionId} className="text-center">
+                                    <EditableGradeCell
+                                      sessionId={sessionId}
+                                      copyId={graded.copy_id}
+                                      questionId={questionId}
+                                      grade={graded.grades[questionId] || 0}
+                                      maxPoints={maxPoints}
+                                      hasDisagreement={questionHasDisagreement}
+                                    />
+                                  </TableCell>
+                                );
+                              })}
+                              <TableCell className="text-center font-medium">
+                                {graded.total_score.toFixed(1)}/{graded.max_score}
+                              </TableCell>
+                              <TableCell className="text-center">
+                                {((graded.total_score / graded.max_score) * 100).toFixed(1)}%
+                              </TableCell>
+                              <TableCell className="text-center">
+                                <Button variant="ghost" size="sm" asChild>
+                                  <a
+                                    href={`/api/sessions/${sessionId}/copies/${graded.copy_id}/pdf`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center gap-1"
+                                  >
+                                    <ExternalLink className="h-3 w-3" />
+                                    View PDF
+                                  </a>
+                                </Button>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
                 </CardContent>
               </Card>
             </TabsContent>
