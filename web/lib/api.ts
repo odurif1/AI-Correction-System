@@ -261,6 +261,25 @@ class ApiClient {
       body: JSON.stringify(request),
     });
   }
+
+  // Grade updates
+  async updateGrade(
+    sessionId: string,
+    copyId: string,
+    questionId: string,
+    data: { new_grade: number }
+  ): Promise<{ success: boolean; new_grade: number; new_total: number }> {
+    return this.fetchJson(
+      `/api/sessions/${sessionId}/copies/${copyId}/grades`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          question_id: questionId,
+          new_grade: data.new_grade,
+        }),
+      }
+    );
+  }
 }
 
 export const api = new ApiClient();
