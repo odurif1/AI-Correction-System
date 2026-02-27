@@ -154,16 +154,6 @@ class GradingSessionOrchestrator:
         # grading_scale is now an alias to session.policy.question_weights
         # Use self.session.policy.question_weights directly as the single source of truth
 
-    @property
-    def grading_scale(self) -> Dict[str, float]:
-        """Alias to session.policy.question_weights (single source of truth)."""
-        return self.session.policy.question_weights
-
-    @grading_scale.setter
-    def grading_scale(self, value: Dict[str, float]):
-        """Set question_weights via grading_scale alias."""
-        self.session.policy.question_weights = value
-
         # Store detected questions (text content)
         self.detected_questions: Dict[str, str] = {}
 
@@ -183,6 +173,16 @@ class GradingSessionOrchestrator:
 
         # Callback to ask user for scale (set by main.py)
         self.scale_callback: Optional[callable] = None
+
+    @property
+    def grading_scale(self) -> Dict[str, float]:
+        """Alias to session.policy.question_weights (single source of truth)."""
+        return self.session.policy.question_weights
+
+    @grading_scale.setter
+    def grading_scale(self, value: Dict[str, float]):
+        """Set question_weights via grading_scale alias."""
+        self.session.policy.question_weights = value
 
     @property
     def workflow_state(self) -> CorrectionState:
