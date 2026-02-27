@@ -82,7 +82,11 @@
 4. Grading progress updates in real-time via WebSocket
 5. User can review grades, adjust individual scores, and export to CSV/JSON/Excel
 
-**Plans:** TBD
+**Plans:** 4 plans
+- [ ] 03-01-PLAN.md — PDF upload workflow with multi-scale detection and confirmation
+- [ ] 03-02-PLAN.md — LLM grading execution with WebSocket progress and single/dual-LLM mode
+- [ ] 03-03-PLAN.md — Review endpoints for viewing and editing graded results
+- [ ] 03-04-PLAN.md — Multi-format export (CSV, JSON, Excel) with openpyxl
 
 ---
 
