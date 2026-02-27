@@ -56,10 +56,10 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 
 ### Export
 
-- [ ] **EXPT-01**: User can export grading results to CSV
-- [ ] **EXPT-02**: User can export grading results to JSON
-- [ ] **EXPT-03**: User can export grading results to Excel format
-- [ ] **EXPT-04**: Export includes student identifiers, grades per question, total, and feedback
+- [x] **EXPT-01**: User can export grading results to CSV
+- [x] **EXPT-02**: User can export grading results to JSON
+- [x] **EXPT-03**: User can export grading results to Excel format
+- [x] **EXPT-04**: Export includes student identifiers, grades per question, total, and feedback
 
 ### User Interface
 
@@ -161,10 +161,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | GRAD-07 | Phase 3 | Pending |
 | GRAD-08 | Phase 3 | Complete |
 | GRAD-09 | Phase 3 | Complete |
-| EXPT-01 | Phase 3 | Pending |
-| EXPT-02 | Phase 3 | Pending |
-| EXPT-03 | Phase 3 | Pending |
-| EXPT-04 | Phase 3 | Pending |
+| EXPT-01 | Phase 3 | Complete |
+| EXPT-02 | Phase 3 | Complete |
+| EXPT-03 | Phase 3 | Complete |
+| EXPT-04 | Phase 3 | Complete |
 | UI-01 | Phase 4 | Pending |
 | UI-02 | Phase 4 | Pending |
 | UI-03 | Phase 4 | Pending |

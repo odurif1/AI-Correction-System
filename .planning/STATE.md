@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: Phase 3 (Core Grading Experience)
 current_plan: 03-03 (Grading Results Review)
 status: executing
-last_updated: "2026-02-27T18:01:52.983Z"
+last_updated: "2026-02-27T18:06:22.632Z"
 progress:
   total_phases: 3
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 14
-  completed_plans: 13
-  percent: 93
+  completed_plans: 14
+  percent: 100
 ---
 
 # State: La Corrigeuse
@@ -36,7 +36,7 @@ Core grading experience - PDF upload workflow with multi-scale detection and tea
 **Phase:** 3 - Core Grading Experience
 **Plan:** 03 - Grading Results Review
 **Status:** In Progress
-**Progress:** [█████████░] 93%
+**Progress:** [██████████] 100%
 
 **What's being built:**
 Core grading workflow completion, student copy management, and UI polish for the primary user experience.
@@ -151,6 +151,8 @@ Phase 2 (Observability) is complete. Core grading functionality is the primary v
 - [Phase 03]: Grade update validation split between schema (basic type) and endpoint (business rules requiring session context)
 - [Phase 03]: Immediate persistence on grade update - changes saved before response returned via SessionStore.save_session()
 - [Phase 03]: Enhanced session endpoint returns complete grading_audit with dual-LLM comparison data for review UI
+- [Phase 03]: Excel export with openpyxl: Styled headers (bold white on blue), auto-adjusted columns, French localization
+- [Phase 03]: Multi-format export endpoint: CSV/JSON/Excel via single URL with format-specific media types
 
 ### Active Todos
 
