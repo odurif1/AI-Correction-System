@@ -31,10 +31,12 @@ def setup_structured_logging(
     logger.remove()
 
     # Add stdout handler with JSON serialization for production
+    # Note: serialize=True outputs full JSON with all extra fields in "record.extra"
+    # The format string only affects the "text" field in the JSON output
     logger.add(
         sys.stdout,
-        serialize=True,  # JSON format
-        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {extra[correlation_id]} | {level} | {name} | {message}",
+        serialize=True,  # JSON format - includes correlation_id in record.extra
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | {name} | {message}",
         level=level,
         enqueue=True,    # Async logging (non-blocking)
         backtrace=True,  # Full stack trace on errors
