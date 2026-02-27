@@ -8,6 +8,9 @@ Contains:
 
 from typing import Dict, Any, Optional, List
 
+# Import feedback guidelines from grading module
+from prompts.grading import FEEDBACK_GUIDELINE_FR, FEEDBACK_GUIDELINE_EN
+
 def build_unified_verification_prompt(
     questions: List[Dict[str, Any]],
     disagreements: List[Dict[str, Any]],
