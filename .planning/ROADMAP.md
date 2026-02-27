@@ -106,7 +106,11 @@
 4. Review screen displays all grades with inline editing capability and save confirmation
 5. Application works responsively on tablets (768px+) and laptops with professional, clean aesthetic
 
-**Plans:** TBD
+**Plans:** 4 plans
+- [x] 04-01-PLAN.md — Dashboard with recent sessions, card grid, status filter, infinite scroll, quick actions
+- [x] 04-02-PLAN.md — Multi-file upload workflow with drag-drop, file picker, per-file progress, inline validation
+- [x] 04-03-PLAN.md — Grading progress screen with French waiting messages, status grid, real-time updates
+- [x] 04-04-PLAN.md — Review screen with inline editing, sortable columns, export dropdown, disagreement highlighting
 
 ---
 
@@ -135,10 +139,10 @@
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Security Foundation | 0/2 | Not started | - |
-| 2. Observability & Monitoring | 0/2 | Not started | - |
-| 3. Core Grading Experience | 0/2 | Not started | - |
-| 4. User Interface & Polish | 0/2 | Not started | - |
+| 1. Security Foundation | 5/5 | Complete | 2026-02-27 |
+| 2. Observability & Monitoring | 4/4 | Complete | 2026-02-27 |
+| 3. Core Grading Experience | 3/3 | Complete | 2026-02-27 |
+| 4. User Interface & Polish | 0/4 | Ready to execute | - |
 | 5. Production Readiness | 0/2 | Not started | - |
 
 ## Phase Dependencies
