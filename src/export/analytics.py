@@ -190,6 +190,27 @@ class DataExporter:
             "summary": self._build_summary()
         }
 
+        # Add grading audit summary if available from any graded copy
+        for graded in self.session.graded_copies:
+            if graded.grading_audit:
+                data["grading_audit_summary"] = {
+                    "mode": graded.grading_audit.mode,
+                    "grading_method": graded.grading_audit.grading_method,
+                    "verification_mode": graded.grading_audit.verification_mode,
+                    "providers": [
+                        {"id": p.id, "model": p.model}
+                        for p in graded.grading_audit.providers
+                    ],
+                    "summary": {
+                        "total_questions": graded.grading_audit.summary.total_questions,
+                        "agreed_initial": graded.grading_audit.summary.agreed_initial,
+                        "required_verification": graded.grading_audit.summary.required_verification,
+                        "required_ultimatum": graded.grading_audit.summary.required_ultimatum,
+                        "final_agreement_rate": graded.grading_audit.summary.final_agreement_rate
+                    }
+                }
+                break
+
         # Write JSON with proper formatting
         with open(output_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, default=str, ensure_ascii=False)
@@ -322,6 +343,23 @@ class DataExporter:
                     "confidence": q_confidence,
                     "detected_answer": detected_answer,
                     "feedback": feedback
+                }
+
+            # Add grading audit trail if available
+            if graded.grading_audit:
+                student["grading_audit"] = {
+                    "mode": graded.grading_audit.mode,
+                    "grading_method": graded.grading_audit.grading_method,
+                    "verification_mode": graded.grading_audit.verification_mode,
+                    "providers": [
+                        {"id": p.id, "model": p.model}
+                        for p in graded.grading_audit.providers
+                    ],
+                    "summary": {
+                        "total_questions": graded.grading_audit.summary.total_questions,
+                        "agreed_initial": graded.grading_audit.summary.agreed_initial,
+                        "final_agreement_rate": graded.grading_audit.summary.final_agreement_rate
+                    }
                 }
 
             students.append(student)
