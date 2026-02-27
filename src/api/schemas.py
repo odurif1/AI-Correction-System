@@ -51,6 +51,7 @@ class GradeResponse(BaseModel):
     graded_count: int
     total_count: int
     pending_review: int
+    grading_mode: Literal["single", "dual"] = "dual"
 
 
 class TeacherDecisionRequest(BaseModel):
@@ -287,3 +288,9 @@ class ConfirmPreAnalysisResponse(BaseModel):
     status: str
     grading_scale: Dict[str, float]
     num_students: int
+
+
+class StartGradingRequest(BaseModel):
+    """Request to start grading with mode selection."""
+    grading_mode: Literal["single", "dual"] = "dual"
+    """Single LLM for faster grading, dual LLM for verification"""

@@ -63,7 +63,8 @@ from api.schemas import (
     AnalyticsResponse, ProviderResponse, ProviderModel,
     SettingsResponse, UpdateSettingsRequest, ExportOptions,
     PreAnalysisRequest, PreAnalysisResponse, ConfirmPreAnalysisRequest,
-    ConfirmPreAnalysisResponse, StudentInfoSchema, CandidateScale
+    ConfirmPreAnalysisResponse, StudentInfoSchema, CandidateScale,
+    StartGradingRequest
 )
 
 # Import auth module
@@ -846,11 +847,22 @@ def create_app() -> FastAPI:
         return {"success": success}
 
     @app.post("/api/sessions/{session_id}/grade", response_model=GradeResponse)
-    async def start_grading(session_id: str, background_tasks: BackgroundTasks, current_user = Depends(get_current_user)):
+    async def start_grading(
+        session_id: str,
+        request: StartGradingRequest,
+        background_tasks: BackgroundTasks,
+        current_user = Depends(get_current_user)
+    ):
         """
         Start the grading process for a session.
 
         Progress updates are sent via WebSocket at /api/sessions/{session_id}/ws
+
+        Args:
+            session_id: The session to grade
+            request: Grading configuration including mode (single or dual LLM)
+            background_tasks: FastAPI background tasks
+            current_user: Authenticated user
         """
         user_id = current_user.id
         store = SessionStore(session_id, user_id=user_id)
@@ -859,12 +871,25 @@ def create_app() -> FastAPI:
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
 
-        # Get or create orchestrator
+        # Determine force_single_llm based on request
+        force_single_llm = request.grading_mode == "single"
+
+        # Get or create orchestrator with proper force_single_llm setting
         if session_id not in active_sessions:
-            orchestrator = GradingSessionOrchestrator(session_id=session_id, user_id=user_id)
+            orchestrator = GradingSessionOrchestrator(
+                session_id=session_id,
+                user_id=user_id,
+                force_single_llm=force_single_llm
+            )
             active_sessions[session_id] = orchestrator
         else:
             orchestrator = active_sessions[session_id]
+            # Update force_single_llm on existing orchestrator
+            orchestrator._force_single_llm = force_single_llm
+
+        # Store selected grading mode in session_progress for UI reference
+        if session_id in session_progress:
+            session_progress[session_id]["grading_mode"] = request.grading_mode
 
         # Get uploaded PDF paths
         upload_dir = Path(f"temp/{session_id}")
@@ -945,7 +970,8 @@ def create_app() -> FastAPI:
             session_id=session_id,
             graded_count=len(session.graded_copies),
             total_count=len(session.copies) if session.copies else len(orchestrator.pdf_paths),
-            pending_review=0
+            pending_review=0,
+            grading_mode=request.grading_mode
         )
 
     @app.post("/api/sessions/{session_id}/decisions")
