@@ -559,7 +559,7 @@ async def command_correct(args):
     detected_scale = analysis.get('scale', {})
 
     # If no scale detected yet, try to detect it via pre-analysis
-    if not detected_scale and pdf_paths:
+    if not detected_scale and pdf_paths and args.pre_analysis:
         cli.console.print(f"\n[bold cyan]🔍 Détection de la structure...[/bold cyan]")
 
         try:
@@ -578,6 +578,8 @@ async def command_correct(args):
                 cli.console.print(f"[green]✓ Barème détecté automatiquement[/green]")
         except Exception as e:
             cli.console.print(f"[dim]Détection automatique non disponible: {e}[/dim]")
+    elif not detected_scale and pdf_paths and not args.pre_analysis:
+        cli.console.print(f"[dim]Pré-analyse désactivée. Saisie manuelle du barème requise.[/dim]")
 
     # Display detected scale and ask for confirmation
     if detected_scale:
@@ -1660,6 +1662,19 @@ Note on --second-reading:
         action="store_false",
         dest="chat_continuation",
         help="Désactive le context caching pour la vérification et l'ultimatum."
+    )
+    correct_parser.add_argument(
+        "--pre-analysis",
+        action="store_true",
+        default=True,
+        dest="pre_analysis",
+        help="Active la pré-analyse pour détecter automatiquement le barème. (défaut: activé)"
+    )
+    correct_parser.add_argument(
+        "--no-pre-analysis",
+        action="store_false",
+        dest="pre_analysis",
+        help="Désactive la pré-analyse automatique du barème."
     )
     correct_parser.add_argument(
         "--debug",

@@ -131,6 +131,64 @@ Accédez à **http://localhost:3000**
 
 ---
 
+## 💻 Interface CLI
+
+La Corrigeuse peut également être utilisée en ligne de commande pour une correction rapide.
+
+### Commande de base
+
+```bash
+python -m src.main correct [options] <pdfs...>
+```
+
+### Options disponibles
+
+| Option | Défaut | Description |
+|--------|--------|-------------|
+| `--mode {single,dual}` | `single` | Mode de correction (1 LLM ou double validation) |
+| `--grading-mode {individual,batch,hybrid}` | `batch` | Mode de notation |
+| `--pre-analysis` | activé | Détection automatique du barème |
+| `--no-pre-analysis` | - | Désactive la pré-analyse (saisie manuelle requise) |
+| `--chat-continuation` | activé | Context caching pour économiser les tokens (Gemini) |
+| `--no-chat-continuation` | - | Désactive le context caching |
+| `--auto-confirm` | désactivé | Confirme automatiquement le barème détecté |
+| `--language {fr,en}` | `fr` | Langue des prompts |
+| `--debug` | désactivé | Active le mode debug (logs détaillés) |
+
+### Exemples
+
+```bash
+# Correction standard avec détection automatique du barème
+python -m src.main correct devoir.pdf
+
+# Double validation IA pour plus de précision
+python -m src.main correct --mode dual devoir.pdf
+
+# Sans pré-analyse (saisie manuelle du barème)
+python -m src.main correct --no-pre-analysis devoir.pdf
+
+# Mode automatique (sans confirmation)
+python -m src.main correct --auto-confirm devoir.pdf
+
+# Debug pour voir les appels API
+python -m src.main correct --debug devoir.pdf
+```
+
+### Rapport de tokens
+
+À la fin de chaque session, un rapport détaillé de l'utilisation des tokens est affiché :
+
+```
+📊 Token Usage par Phase:
+  Détection: 1,234 tokens
+  Correction: 45,678 tokens
+  Vérification: 12,345 tokens
+  ─────────────────────────
+  Total: 59,257 tokens
+```
+
+---
+
 ## 💰 Tarifs
 
 | Plan | Prix | Copies/mois | Caractéristiques |
