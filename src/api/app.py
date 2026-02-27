@@ -89,6 +89,18 @@ from config.logging_config import setup_structured_logging
 # Import stdlib logger for compatibility
 stdlib_logger = logging.getLogger(__name__)
 
+# ============================================================================
+# WebSocket Progress Event Types
+# ============================================================================
+
+# Progress event types for real-time grading updates
+PROGRESS_EVENT_COPY_START = "copy_start"
+PROGRESS_EVENT_QUESTION_DONE = "question_done"
+PROGRESS_EVENT_COPY_DONE = "copy_done"
+PROGRESS_EVENT_COPY_ERROR = "copy_error"
+PROGRESS_EVENT_SESSION_COMPLETE = "session_complete"
+PROGRESS_EVENT_SESSION_ERROR = "session_error"
+
 # API Key authentication
 API_KEY_NAME = "X-API-Key"
 api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
@@ -323,14 +335,16 @@ def create_app() -> FastAPI:
     @app.websocket("/api/sessions/{session_id}/ws")
     async def websocket_progress(websocket: WebSocket, session_id: str):
         """
-        WebSocket for real-time grading progress.
+        WebSocket for real-time grading progress with reconnection support.
 
         Sends events:
-        - copy_start: When a copy starts grading
-        - question_done: When a question is graded
-        - copy_done: When a copy is fully graded
-        - copy_error: When grading fails for a copy
-        - session_complete: When the session is complete
+        - copy_start: When a copy starts grading (copy_index, total_copies, student_name, stage)
+        - question_done: When a question is graded (copy_index, question_id, grade, max_points, agreement)
+        - copy_done: When a copy is fully graded (copy_index, student_name, total_score, max_score, confidence)
+        - copy_error: When grading fails for a copy (copy_index, error)
+        - session_complete: When the session is complete (average_score, total_copies)
+        - session_error: When session-level error occurs (error)
+        - progress_sync: Current progress state (status, copies_uploaded, copies_graded, grading_mode)
         """
         await ws_manager.connect(websocket, session_id)
         try:
@@ -912,6 +926,11 @@ def create_app() -> FastAPI:
                 orchestrator.confirm_scale(orchestrator.question_scales)
 
                 # Grade with progress callback
+                # The orchestrator will send events through the callback:
+                # - PROGRESS_EVENT_COPY_START: When starting each copy
+                # - PROGRESS_EVENT_QUESTION_DONE: After each question
+                # - PROGRESS_EVENT_COPY_DONE: When copy is complete
+                # - PROGRESS_EVENT_COPY_ERROR: On error for a copy
                 await orchestrator.grade_all(progress_callback=progress_callback)
 
                 # Record grading operation with token usage
@@ -923,14 +942,14 @@ def create_app() -> FastAPI:
                         tokens_used=token_usage
                     )
 
-                # Notify completion
+                # Notify completion with proper event constant
                 if session.graded_copies:
                     scores = [g.total_score for g in session.graded_copies]
                     avg = sum(scores) / len(scores)
                 else:
                     avg = 0
 
-                await ws_manager.broadcast_event(session_id, "session_complete", {
+                await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_COMPLETE, {
                     "average_score": avg,
                     "total_copies": len(session.graded_copies)
                 })
@@ -952,7 +971,7 @@ def create_app() -> FastAPI:
 
             except Exception as e:
                 logger.error(f"Grading error: {e}")
-                await ws_manager.broadcast_event(session_id, "session_error", {
+                await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_ERROR, {
                     "error": str(e)
                 })
                 if session_id in session_progress:
