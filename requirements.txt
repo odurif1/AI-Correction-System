@@ -19,9 +19,14 @@ numpy==1.26.0
 fastapi==0.115.0
 uvicorn[standard]==0.40.0
 slowapi>=2022.1.0
+asgi-correlation-id==4.3.0
 
 # Utils
 tenacity==9.1.4
 loguru==0.7.3
 rich==14.1.0
 python-dotenv==1.2.1
+python-sendgrid==6.11.0
+
+# Observability
+sentry-sdk[fastapi]==1.40.0

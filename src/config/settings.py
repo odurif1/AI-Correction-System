@@ -70,8 +70,18 @@ class Settings(BaseSettings):
     # Storage
     data_dir: str = "data"
 
+    # Observability
+    sentry_dsn: str = ""
+    sentry_environment: str = "development"
+    sentry_traces_sample_rate: float = 0.1
+
     # CORS
     cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+    # Email (password reset)
+    sendgrid_api_key: str = ""
+    sendgrid_sender: str = "noreply@lacorrigeuse.fr"
+    sendgrid_sandbox_mode: bool = False
 
     # Validators
     @field_validator('jwt_secret')
