@@ -64,7 +64,7 @@ from api.schemas import (
     SettingsResponse, UpdateSettingsRequest, ExportOptions,
     PreAnalysisRequest, PreAnalysisResponse, ConfirmPreAnalysisRequest,
     ConfirmPreAnalysisResponse, StudentInfoSchema, CandidateScale,
-    StartGradingRequest
+    StartGradingRequest, UpdateGradeRequest, UpdateGradeResponse
 )
 
 # Import auth module
@@ -858,6 +858,68 @@ def create_app() -> FastAPI:
             copies=copies,
             graded_copies=graded_copies,
             question_weights=session.policy.question_weights
+        )
+
+    @app.patch("/api/sessions/{session_id}/copies/{copy_id}/grades", response_model=UpdateGradeResponse)
+    async def update_grade(
+        session_id: str,
+        copy_id: str,
+        request: UpdateGradeRequest,
+        current_user = Depends(get_current_user)
+    ):
+        """
+        Update a single question grade for a graded copy.
+
+        Recalculates total_score automatically unless auto_recalc=False.
+        Persists changes immediately to user-scoped session storage.
+        """
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Find the graded copy
+        graded = next((g for g in session.graded_copies if g.copy_id == copy_id), None)
+        if not graded:
+            raise HTTPException(status_code=404, detail="Graded copy not found")
+
+        # Validate question_id exists
+        if request.question_id not in graded.grades:
+            raise HTTPException(status_code=400, detail="Question not found in graded copy")
+
+        # Validate new_grade against max points for this question
+        max_points = session.policy.question_weights.get(request.question_id)
+        if max_points is not None and request.new_grade > max_points:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Grade {request.new_grade} exceeds max points {max_points} for {request.question_id}"
+            )
+
+        # Store old values
+        old_grade = graded.grades[request.question_id]
+        old_total = graded.total_score
+
+        # Update grade
+        graded.grades[request.question_id] = request.new_grade
+
+        # Recalculate total
+        if request.auto_recalc:
+            graded.total_score = sum(graded.grades.values())
+
+        # Persist immediately
+        store.save_session(session)
+
+        return UpdateGradeResponse(
+            success=True,
+            copy_id=copy_id,
+            question_id=request.question_id,
+            old_grade=old_grade,
+            new_grade=request.new_grade,
+            old_total=old_total,
+            new_total=graded.total_score,
+            max_score=graded.max_score
         )
 
     @app.delete("/api/sessions/{session_id}")
