@@ -113,6 +113,10 @@ class PreAnalysisResult(BaseModel):
     confidence_grading_scale: float = 0.0
     questions_detected: List[str] = Field(default_factory=list)
 
+    # Multi-scale detection (candidate scales with confidence scores)
+    candidate_scales: List[Dict[str, Any]] = Field(default_factory=list)
+    # [{"scale": {"Q1": 3.0, "Q2": 5.0}, "confidence": 0.85}, ...]
+
     # Qualité
     quality_issues: List[str] = Field(default_factory=list)
     overall_quality_score: float = 1.0

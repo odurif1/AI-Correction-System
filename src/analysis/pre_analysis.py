@@ -323,6 +323,39 @@ class PreAnalyzer:
         }
         subject_integration = subject_map.get(subject_str, SubjectIntegration.NOT_DETECTED)
 
+        # Parse candidate scales (new feature for multi-scale detection)
+        candidate_scales = []
+        raw_candidate_scales = data.get("candidate_scales", [])
+
+        if raw_candidate_scales:
+            # AI returned multiple candidate scales
+            for candidate in raw_candidate_scales:
+                candidate_scales.append({
+                    "scale": candidate.get("scale", {}),
+                    "confidence": candidate.get("confidence", 0.0)
+                })
+        else:
+            # Backward compatibility: if single scale returned, store as first candidate
+            single_scale = data.get("grading_scale", {})
+            single_confidence = data.get("confidence_grading_scale", 0.5)
+            if single_scale:
+                candidate_scales.append({
+                    "scale": single_scale,
+                    "confidence": single_confidence
+                })
+
+        # Determine primary grading scale and confidence
+        grading_scale = data.get("grading_scale", {})
+        confidence_grading_scale = data.get("confidence_grading_scale", 0.5)
+
+        # If candidate_scales is populated but grading_scale is empty, use best candidate
+        if not grading_scale and candidate_scales:
+            # Sort by confidence and use the best one
+            candidate_scales.sort(key=lambda x: x["confidence"], reverse=True)
+            best_candidate = candidate_scales[0]
+            grading_scale = best_candidate["scale"]
+            confidence_grading_scale = best_candidate["confidence"]
+
         # Determine blocking issues
         blocking_issues = data.get("blocking_issues", [])
         has_blocking_issues = bool(blocking_issues) or document_type in [
@@ -337,7 +370,8 @@ class PreAnalyzer:
         elif document_type == DocumentType.SUBJECT_ONLY:
             blocking_issues.append("Le document contient uniquement le sujet, pas de copies d'élèves")
 
-        return PreAnalysisResult(
+        # Build result with candidate_scales
+        result = PreAnalysisResult(
             is_valid_pdf=True,
             page_count=page_count,
             document_type=document_type,
@@ -346,8 +380,8 @@ class PreAnalyzer:
             subject_integration=subject_integration,
             num_students_detected=data.get("num_students_detected", len(students)),
             students=students,
-            grading_scale=data.get("grading_scale", {}),
-            confidence_grading_scale=data.get("confidence_grading_scale", 0.5),
+            grading_scale=grading_scale,
+            confidence_grading_scale=confidence_grading_scale,
             questions_detected=data.get("questions_detected", []),
             quality_issues=data.get("quality_issues", []),
             overall_quality_score=data.get("overall_quality_score", 1.0),
@@ -356,6 +390,13 @@ class PreAnalyzer:
             warnings=data.get("warnings", []),
             detected_language=data.get("detected_language", self.language),
         )
+
+        # Add candidate_scales to the result (stored in extra dict or as attribute)
+        # Since PreAnalysisResult is a Pydantic model, we can add it to model_dump
+        # For now, we'll monkey-patch it onto the instance
+        result.candidate_scales = candidate_scales
+
+        return result
 
     def _get_cache_key(self, pdf_path: str) -> str:
         """Generate cache key based on PDF hash."""
@@ -377,8 +418,9 @@ class PreAnalyzer:
 
             # Reconstruct PreAnalysisResult
             students = [StudentInfo(**s) for s in data.get("students", [])]
+            candidate_scales = data.get("candidate_scales", [])
 
-            return PreAnalysisResult(
+            result = PreAnalysisResult(
                 is_valid_pdf=data.get("is_valid_pdf", True),
                 page_count=data.get("page_count", 0),
                 document_type=DocumentType(data.get("document_type", "unclear")),
@@ -389,6 +431,7 @@ class PreAnalyzer:
                 students=students,
                 grading_scale=data.get("grading_scale", {}),
                 confidence_grading_scale=data.get("confidence_grading_scale", 0.0),
+                candidate_scales=candidate_scales,
                 questions_detected=data.get("questions_detected", []),
                 quality_issues=data.get("quality_issues", []),
                 overall_quality_score=data.get("overall_quality_score", 1.0),
@@ -400,6 +443,7 @@ class PreAnalyzer:
                 cached=True,
                 analysis_duration_ms=data.get("analysis_duration_ms", 0.0),
             )
+            return result
 
         except Exception as e:
             logger.warning(f"Failed to load cache: {e}")
