@@ -34,8 +34,8 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 
 ### Observability
 
-- [ ] **OBS-01**: Structured JSON logging with correlation IDs for request tracing
-- [ ] **OBS-02**: All API requests logged with method, path, status, latency
+- [x] **OBS-01**: Structured JSON logging with correlation IDs for request tracing
+- [x] **OBS-02**: All API requests logged with method, path, status, latency
 - [x] **OBS-03**: Errors captured with full stack traces and context
 - [x] **OBS-04**: Production error tracking integrated (Sentry or equivalent)
 - [ ] **OBS-05**: Health check endpoint (/health) returns API and database status
@@ -145,8 +145,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AUTH-06 | Phase 1 | Complete |
 | AUTH-07 | Phase 2 | Complete |
 | AUTH-08 | Phase 2 | Complete |
-| OBS-01 | Phase 2 | Pending |
-| OBS-02 | Phase 2 | Pending |
+| OBS-01 | Phase 2 | Complete |
+| OBS-02 | Phase 2 | Complete |
 | OBS-03 | Phase 2 | Complete |
 | OBS-04 | Phase 2 | Complete |
 | OBS-05 | Phase 2 | Pending |
