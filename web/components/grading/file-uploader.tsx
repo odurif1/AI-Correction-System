@@ -37,7 +37,7 @@ export function FileUploader({
   const [isDragging, setIsDragging] = useState(false);
 
   // Use external files if provided (for progress tracking), otherwise use internal state
-  const displayFiles = externalFiles || internalFiles.map(file => ({ file, progress: 0 }));
+  const displayFiles = externalFiles || internalFiles.map(file => ({ file, progress: 0, error: undefined as string | undefined }));
 
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
