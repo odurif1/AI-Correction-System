@@ -810,7 +810,15 @@ def create_app() -> FastAPI:
 
     @app.get("/api/sessions/{session_id}", response_model=SessionDetailResponse)
     async def get_session(session_id: str, current_user = Depends(get_current_user)):
-        """Get detailed session information."""
+        """
+        Get detailed session information with complete dual-LLM data for review.
+
+        Returns graded copies with:
+        - grading_audit: Full dual-LLM comparison data
+        - confidence_by_question: Per-question confidence scores
+        - student_feedback: Per-question feedback for students
+        - has_disagreements: Flag indicating if any LLM disagreements occurred
+        """
         user_id = current_user.id
         store = SessionStore(session_id, user_id=user_id)
         session = store.load_session()
@@ -834,15 +842,27 @@ def create_app() -> FastAPI:
             }
             copies.append(copy_info)
 
-        # Build graded copies list
+        # Build graded copies list with full dual-LLM data
         graded_copies = []
         for graded in session.graded_copies:
+            # Check for disagreements in grading_audit
+            has_disagreements = False
+            if graded.grading_audit:
+                for qaudit in graded.grading_audit.questions.values():
+                    if qaudit.resolution.agreement is False:
+                        has_disagreements = True
+                        break
+
             graded_info = {
                 "copy_id": graded.copy_id,
                 "total_score": graded.total_score,
                 "max_score": graded.max_score,
                 "confidence": graded.confidence,
-                "grades": graded.grades
+                "grades": graded.grades,
+                "confidence_by_question": graded.confidence_by_question,
+                "student_feedback": graded.student_feedback,
+                "grading_audit": graded.grading_audit.model_dump() if graded.grading_audit else None,
+                "has_disagreements": has_disagreements
             }
             graded_copies.append(graded_info)
 
