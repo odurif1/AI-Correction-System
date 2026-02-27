@@ -437,6 +437,91 @@ class DataExporter:
 
         return str(output_path)
 
+    def export_excel(self, filename: str = None) -> str:
+        """
+        Export session results as formatted Excel file.
+
+        Creates a professional Excel file with:
+        - Styled header row (bold, colored background)
+        - Auto-adjusted column widths
+        - All student data: names, per-question grades, totals, feedback
+
+        Args:
+            filename: Output filename (auto-generated if None)
+
+        Returns:
+            Path to exported Excel file
+        """
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment, PatternFill
+
+        if filename is None:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            filename = f"correction_{date_str}_{self.session.session_id[:8]}.xlsx"
+
+        output_path = self.output_dir / filename
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Résultats"
+
+        # Define header style
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center")
+
+        # Get all question IDs (sorted)
+        question_ids = set()
+        for graded in self.session.graded_copies:
+            question_ids.update(graded.grades.keys())
+        question_ids = sorted(question_ids, key=lambda x: (len(x), x))
+
+        # Write header row
+        headers = ["Nom élève", "Total", "Note maximale"]
+        headers.extend([f"Q{qid}" for qid in question_ids])
+        headers.append("Appréciation")
+
+        for col_num, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col_num, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+
+        # Write data rows
+        for row_num, graded in enumerate(self.session.graded_copies, 2):
+            # Find student name from copy
+            copy = next((c for c in self.session.copies if c.id == graded.copy_id), None)
+            student_name = copy.student_name if copy else "Anonyme"
+
+            # Basic info
+            ws.cell(row=row_num, column=1, value=student_name)
+            ws.cell(row=row_num, column=2, value=graded.total_score)
+            ws.cell(row=row_num, column=3, value=graded.max_score)
+
+            # Per-question grades
+            for col_num, qid in enumerate(question_ids, 4):
+                grade = graded.grades.get(qid, "")
+                ws.cell(row=row_num, column=col_num, value=grade)
+
+            # Feedback
+            feedback_col = 4 + len(question_ids)
+            ws.cell(row=row_num, column=feedback_col, value=graded.feedback or "")
+
+        # Auto-adjust column widths
+        for column in ws.columns:
+            max_length = 0
+            column_letter = column[0].column_letter
+            for cell in column:
+                if cell.value:
+                    max_length = max(max_length, len(str(cell.value)))
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+
+        # Save file
+        wb.save(output_path)
+
+        return str(output_path)
+
     def export_analytics(self, filename: str = None) -> str:
         """
         Export analytics report as JSON.
