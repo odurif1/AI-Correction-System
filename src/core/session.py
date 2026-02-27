@@ -118,9 +118,12 @@ class GradingSessionOrchestrator:
         self._workflow_state = workflow_state
 
         # Initialize session
+        # Use default user_id for CLI usage
+        effective_user_id = user_id or "cli_user"
+
         if session_id:
             self.session_id = session_id
-            self.store = SessionStore(session_id, user_id=user_id)
+            self.store = SessionStore(session_id, user_id=effective_user_id)
             self.session = self.store.load_session()
             if not self.session:
                 raise ValueError(f"Session {session_id} not found")
@@ -130,10 +133,10 @@ class GradingSessionOrchestrator:
                 session_id=self.session_id,
                 created_at=datetime.now(),
                 status=SessionStatus.ANALYZING,
-                user_id=user_id,
+                user_id=effective_user_id,
                 pages_per_copy=pages_per_copy
             )
-            self.store = SessionStore(self.session_id, user_id=user_id)
+            self.store = SessionStore(self.session_id, user_id=effective_user_id)
 
         # Initialize AI provider (single or comparison mode)
         settings = get_settings()
@@ -2610,7 +2613,7 @@ class GradingSessionOrchestrator:
                     "summary": result.get("summary", {}),
                     "timing": result.get("timing", {})
                 }
-                provider_names = result.get("options", {}).get("providers", [])
+                # Use provider_names from outer scope (defined at function start)
                 graded.grading_audit = build_audit_from_llm_comparison(
                     llm_comp_data,
                     mode="dual",
