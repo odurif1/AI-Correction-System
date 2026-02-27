@@ -19,6 +19,7 @@ import re
 import json
 import logging
 import os
+import time
 
 # Rate limiting
 from slowapi import Limiter
@@ -68,7 +69,15 @@ from api.auth import router as auth_router, get_current_user, get_admin_user
 # Import Sentry error handler
 from middleware.error_handler import init_sentry, sentry_exception_handler, set_user_context
 
-logger = logging.getLogger(__name__)
+# Import correlation ID middleware
+from asgi_correlation_id import CorrelationIdMiddleware
+
+# Import structured logging
+from loguru import logger
+from config.logging_config import setup_structured_logging
+
+# Import stdlib logger for compatibility
+stdlib_logger = logging.getLogger(__name__)
 
 # API Key authentication
 API_KEY_NAME = "X-API-Key"
@@ -115,6 +124,49 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
 
         return response
+
+
+class RequestLoggingMiddleware(BaseHTTPMiddleware):
+    """Log all requests with correlation ID, method, path, status, latency."""
+
+    async def dispatch(self, request: Request, call_next):
+        # Extract correlation ID and user ID
+        correlation_id = request.headers.get("X-Request-ID", "unknown")
+        user_id = getattr(request.state, "user_id", None)
+
+        # Start timer
+        start_time = time.time()
+
+        # Log request start
+        with logger.contextualize(correlation_id=correlation_id, user_id=user_id):
+            logger.info(
+                f"{request.method} {request.url.path}",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "user_id": user_id
+                }
+            )
+
+            # Process request
+            response = await call_next(request)
+
+            # Calculate latency
+            latency_ms = (time.time() - start_time) * 1000
+
+            # Log response
+            logger.info(
+                f"{request.method} {request.url.path} -> {response.status_code}",
+                extra={
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": response.status_code,
+                    "latency_ms": round(latency_ms, 2),
+                    "user_id": user_id
+                }
+            )
+
+            return response
 
 
 # ============================================================================
@@ -165,6 +217,12 @@ def create_app() -> FastAPI:
     # Add security headers middleware
     app.add_middleware(SecurityHeadersMiddleware)
 
+    # Add request logging middleware (logs all requests with correlation ID)
+    app.add_middleware(RequestLoggingMiddleware)
+
+    # Add correlation ID middleware (generates/reads X-Request-ID header)
+    app.add_middleware(CorrelationIdMiddleware, validator=lambda x: True)
+
     # Initialize database on startup
     @app.on_event("startup")
     async def startup_event():
@@ -172,10 +230,14 @@ def create_app() -> FastAPI:
         try:
             settings = get_settings()
             # This will raise ValidationError if JWT_SECRET or API keys are invalid
-            logger.info(f"Security configuration validated. Provider: {settings.ai_provider}")
+            stdlib_logger.info(f"Security configuration validated. Provider: {settings.ai_provider}")
         except ValidationError as e:
-            logger.error(f"Configuration error: {e}")
+            stdlib_logger.error(f"Configuration error: {e}")
             raise SystemExit(1)
+
+        # Initialize structured logging (Loguru JSON)
+        setup_structured_logging(level="INFO")
+        logger.info("Structured logging initialized with correlation ID support")
 
         # Initialize Sentry error tracking
         init_sentry(
@@ -187,7 +249,7 @@ def create_app() -> FastAPI:
 
         from db import init_db
         init_db()
-        logger.info("Database initialized")
+        stdlib_logger.info("Database initialized")
 
         # One-time cleanup: Delete shared sessions (pre-multi-tenant)
         await _cleanup_legacy_sessions()
