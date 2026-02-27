@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: Phase 3 (Core Grading Experience)
 current_plan: 03-03 (Grading Results Review)
 status: executing
-last_updated: "2026-02-27T17:57:45.003Z"
+last_updated: "2026-02-27T18:01:52.983Z"
 progress:
   total_phases: 3
   completed_phases: 2
   total_plans: 14
-  completed_plans: 12
-  percent: 40
+  completed_plans: 13
+  percent: 93
 ---
 
 # State: La Corrigeuse
@@ -36,7 +36,7 @@ Core grading experience - PDF upload workflow with multi-scale detection and tea
 **Phase:** 3 - Core Grading Experience
 **Plan:** 03 - Grading Results Review
 **Status:** In Progress
-**Progress:** [████░░░░░░] 40% (Phase 3 Plan 02 complete)
+**Progress:** [█████████░] 93%
 
 **What's being built:**
 Core grading workflow completion, student copy management, and UI polish for the primary user experience.
@@ -148,6 +148,9 @@ Phase 2 (Observability) is complete. Core grading functionality is the primary v
 - [Phase 03]: Single mode uses force_single_llm parameter for faster grading
 - [Phase 03]: Dual mode uses comparison mode from settings for verification
 - [Phase 03]: Progress sync on WebSocket connect for reconnection support
+- [Phase 03]: Grade update validation split between schema (basic type) and endpoint (business rules requiring session context)
+- [Phase 03]: Immediate persistence on grade update - changes saved before response returned via SessionStore.save_session()
+- [Phase 03]: Enhanced session endpoint returns complete grading_audit with dual-LLM comparison data for review UI
 
 ### Active Todos
 

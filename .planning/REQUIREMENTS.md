@@ -51,8 +51,8 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 - [x] **GRAD-05**: Dual-LLM grading mode runs two models independently and compares results
 - [x] **GRAD-06**: Grading progress displayed via WebSocket updates
 - [ ] **GRAD-07**: Calibration across copies detects grading inconsistencies
-- [ ] **GRAD-08**: User can review and adjust grades before finalizing
-- [ ] **GRAD-09**: Grading results persist and can be resumed later
+- [x] **GRAD-08**: User can review and adjust grades before finalizing
+- [x] **GRAD-09**: Grading results persist and can be resumed later
 
 ### Export
 
@@ -159,8 +159,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | GRAD-05 | Phase 3 | Complete |
 | GRAD-06 | Phase 3 | Complete |
 | GRAD-07 | Phase 3 | Pending |
-| GRAD-08 | Phase 3 | Pending |
-| GRAD-09 | Phase 3 | Pending |
+| GRAD-08 | Phase 3 | Complete |
+| GRAD-09 | Phase 3 | Complete |
 | EXPT-01 | Phase 3 | Pending |
 | EXPT-02 | Phase 3 | Pending |
 | EXPT-03 | Phase 3 | Pending |
