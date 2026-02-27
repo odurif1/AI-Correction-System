@@ -160,6 +160,15 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
             # Calculate latency
             latency_ms = (time.time() - start_time) * 1000
 
+            # Record metrics
+            if hasattr(request.app.state, 'metrics_collector'):
+                request.app.state.metrics_collector.record_request(
+                    method=request.method,
+                    path=request.url.path,
+                    status_code=response.status_code,
+                    latency_ms=latency_ms
+                )
+
             # Log response
             logger.info(
                 f"{request.method} {request.url.path} -> {response.status_code}",
@@ -382,6 +391,10 @@ def create_app() -> FastAPI:
             "disagreements": [],
             "user_id": user_id
         }
+
+        # Record active session
+        if hasattr(app.state, 'metrics_collector'):
+            app.state.metrics_collector.record_active_session(session_id)
 
         return SessionResponse(
             session_id=session_id,
@@ -781,6 +794,15 @@ def create_app() -> FastAPI:
 
                 # Grade with progress callback
                 await orchestrator.grade_all(progress_callback=progress_callback)
+
+                # Record grading operation with token usage
+                if hasattr(app.state, 'metrics_collector'):
+                    # Get token usage from session (simplified - tracks copy count)
+                    token_usage = len(session.graded_copies) * 10000  # Estimate
+                    app.state.metrics_collector.record_grading_operation(
+                        session_id=session_id,
+                        tokens_used=token_usage
+                    )
 
                 # Notify completion
                 if session.graded_copies:
