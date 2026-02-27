@@ -5,7 +5,7 @@ All configuration comes from environment variables or .env file.
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, field_validator, ValidationError
+from pydantic import Field, field_validator, model_validator, ValidationError
 from typing import Optional
 from functools import lru_cache
 
@@ -85,13 +85,22 @@ class Settings(BaseSettings):
 
     @field_validator('ai_provider')
     @classmethod
-    def validate_api_keys(cls, v: str, info) -> str:
+    def validate_ai_provider(cls, v: str) -> str:
+        """Validate AI provider is a supported value."""
+        valid_providers = ['gemini', 'openai', 'glm', 'openrouter']
+        if v.lower() not in valid_providers:
+            raise ValueError(f"ai_provider must be one of: {', '.join(valid_providers)}")
+        return v.lower()
+
+    @model_validator(mode='after')
+    def validate_api_keys(self):
         """Ensure required API key is set for the configured provider."""
-        # Ensure corresponding API key is set
-        api_key_field = f"{v}_api_key"
-        if not info.data.get(api_key_field):
-            raise ValueError(f"AI_CORRECTION_{v.upper()}_API_KEY required when provider={v}")
-        return v
+        provider = self.ai_provider.lower()
+        api_key_field = f"{provider}_api_key"
+        api_key = getattr(self, api_key_field, "")
+        if not api_key:
+            raise ValueError(f"AI_CORRECTION_{provider.upper()}_API_KEY required when provider={provider}")
+        return self
 
 
 @lru_cache()

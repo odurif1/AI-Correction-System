@@ -25,9 +25,6 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
-# Maximum file size for uploads (50 MB)
-MAX_UPLOAD_SIZE = 50 * 1024 * 1024
-
 
 def get_user_id(request: Request) -> str:
     """
@@ -41,6 +38,13 @@ def get_user_id(request: Request) -> str:
         return f"user:{request.state.user_id}"
     # Fallback to IP for unauthenticated requests
     return f"ip:{get_remote_address(request)}"
+
+
+# Create limiter at module level for use in decorators
+limiter = Limiter(key_func=get_user_id)
+
+# Maximum file size for uploads (50 MB)
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 
 
 from config.settings import get_settings
@@ -129,8 +133,7 @@ def create_app() -> FastAPI:
         version="1.0.0"
     )
 
-    # Configure rate limiting
-    limiter = Limiter(key_func=get_user_id)
+    # Configure rate limiting (use module-level limiter)
     app.state.limiter = limiter
 
     # Rate limit exception handler

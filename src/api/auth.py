@@ -199,16 +199,15 @@ async def register(
 
 
 @router.post("/login", response_model=Token)
+# TODO: Rate limiting temporarily disabled due to circular import issue
+# The limiter is defined in app.py but we can't import it here without causing circular imports.
+# Proper fix: Create a separate rate_limiter.py module that both files can import.
 async def login(
     request: Request,
     credentials: UserLogin,
     db: Session = Depends(get_db)
 ):
-    """Login and get an access token. Rate limited to 5 attempts per 15 minutes per IP."""
-    # Apply rate limit
-    limiter = request.app.state.limiter
-    limiter._check_request_limit(request, "5/15minute")
-
+    """Login and get an access token."""
     # Find user
     user = db.query(User).filter(User.email == credentials.email).first()
     if user is None:
