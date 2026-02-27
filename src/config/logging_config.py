@@ -1,17 +1,93 @@
 """
 Centralized logging configuration for the AI correction system.
 
-Provides consistent logging setup across all modules.
+Provides structured JSON logging with correlation ID support for production observability.
 """
 
-import logging
 import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+from loguru import logger
 
 
-# Log format templates
+def setup_structured_logging(
+    level: str = "INFO",
+    log_file: Optional[str] = None,
+    include_modules: Optional[list[str]] = None
+) -> None:
+    """
+    Configure structured JSON logging with Loguru.
+
+    Args:
+        level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
+        log_file: Optional path to log file (for local development)
+        include_modules: List of module names to enable debug logging for
+
+    Returns:
+        None (Loguru configures its own handlers)
+    """
+    # Remove default handler
+    logger.remove()
+
+    # Add stdout handler with JSON serialization for production
+    logger.add(
+        sys.stdout,
+        serialize=True,  # JSON format
+        format="{time:YYYY-MM-DD HH:mm:ss.SSS} | {extra[correlation_id]} | {level} | {name} | {message}",
+        level=level,
+        enqueue=True,    # Async logging (non-blocking)
+        backtrace=True,  # Full stack trace on errors
+        diagnose=True    # Variable values on errors
+    )
+
+    # File handler (optional - for local development)
+    if log_file:
+        log_path = Path(log_file)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        logger.add(
+            log_path,
+            serialize=True,  # JSON format in file too
+            level="DEBUG",    # Always debug to file
+            rotation="10 MB",
+            retention="30 days",
+            compression="zip"
+        )
+
+    # Enable debug for specific modules
+    if include_modules:
+        for module in include_modules:
+            logger.level(module, level="DEBUG")
+
+    # Suppress noisy third-party loggers
+    logger.disable("httpx")
+    logger.disable("httpcore")
+    logger.disable("urllib3")
+    logger.disable("PIL")
+    logger.disable("fitz")
+
+
+def get_logger(name: str):
+    """
+    Get a logger for a specific module with correlation ID binding.
+
+    Args:
+        name: Module name (usually __name__)
+
+    Returns:
+        Logger instance with module binding
+    """
+    return logger.bind(module=name)
+
+
+# ============================================================================
+# Legacy stdlib logging interface (backward compatibility)
+# ============================================================================
+
+import logging
+
+# Log format templates (for backward compatibility only)
 DETAILED_FORMAT = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 SIMPLE_FORMAT = "%(levelname)s: %(message)s"
 JSON_FORMAT = '{"time": "%(asctime)s", "name": "%(name)s", "level": "%(levelname)s", "message": "%(message)s"}'
@@ -24,7 +100,10 @@ def setup_logging(
     include_modules: Optional[list[str]] = None
 ) -> logging.Logger:
     """
-    Configure logging for the application.
+    Configure stdlib logging (LEGACY - use setup_structured_logging instead).
+
+    This function is kept for backward compatibility with existing code.
+    New code should use setup_structured_logging() which uses Loguru.
 
     Args:
         level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
@@ -35,6 +114,13 @@ def setup_logging(
     Returns:
         Root logger
     """
+    import warnings
+    warnings.warn(
+        "setup_logging() is deprecated. Use setup_structured_logging() for JSON logging.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+
     # Select format
     formats = {
         "detailed": DETAILED_FORMAT,
@@ -84,9 +170,12 @@ def setup_logging(
     return root_logger
 
 
-def get_logger(name: str) -> logging.Logger:
+def get_stdlib_logger(name: str) -> logging.Logger:
     """
-    Get a logger for a specific module.
+    Get a stdlib logger for a specific module (LEGACY).
+
+    This function is kept for backward compatibility.
+    New code should use get_logger() which returns Loguru logger.
 
     Args:
         name: Module name (usually __name__)
@@ -142,14 +231,14 @@ def log_function_call(func):
 
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        logger = get_logger(func.__module__)
-        logger.debug(f"Calling {func.__name__}(args={len(args)}, kwargs={list(kwargs.keys())})")
+        logger_obj = get_logger(func.__module__)
+        logger_obj.debug(f"Calling {func.__name__}(args={len(args)}, kwargs={list(kwargs.keys())})")
         try:
             result = func(*args, **kwargs)
-            logger.debug(f"{func.__name__} returned successfully")
+            logger_obj.debug(f"{func.__name__} returned successfully")
             return result
         except Exception as e:
-            logger.error(f"{func.__name__} raised {type(e).__name__}: {e}")
+            logger_obj.error(f"{func.__name__} raised {type(e).__name__}: {e}")
             raise
 
     return wrapper
@@ -168,18 +257,18 @@ def log_async_function_call(func):
 
     @functools.wraps(func)
     async def wrapper(*args, **kwargs):
-        logger = get_logger(func.__module__)
-        logger.debug(f"Calling async {func.__name__}(args={len(args)}, kwargs={list(kwargs.keys())})")
+        logger_obj = get_logger(func.__module__)
+        logger_obj.debug(f"Calling async {func.__name__}(args={len(args)}, kwargs={list(kwargs.keys())})")
         try:
             result = await func(*args, **kwargs)
-            logger.debug(f"async {func.__name__} returned successfully")
+            logger_obj.debug(f"async {func.__name__} returned successfully")
             return result
         except Exception as e:
-            logger.error(f"async {func.__name__} raised {type(e).__name__}: {e}")
+            logger_obj.error(f"async {func.__name__} raised {type(e).__name__}: {e}")
             raise
 
     return wrapper
 
 
 # Default logger for convenience
-logger = get_logger("ai_correction")
+default_logger = get_logger("ai_correction")
