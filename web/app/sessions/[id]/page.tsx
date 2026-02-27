@@ -162,8 +162,8 @@ export default function SessionDetailPage() {
     }
   };
 
-  // Get rotating waiting message
-  const waitingMessage = useRotatingMessage(5000);
+  // Get rotating waiting message (20 second interval)
+  const waitingMessage = useRotatingMessage();
 
   // Sorting helper
   const handleSort = (column: string) => {
