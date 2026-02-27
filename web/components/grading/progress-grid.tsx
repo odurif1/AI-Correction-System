@@ -19,10 +19,25 @@ interface ProgressGridProps {
 
 export function ProgressGrid({ copies, totalCopies }: ProgressGridProps) {
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+    <div
+      className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3"
+      role="list"
+      aria-label="Copies being graded"
+    >
       {Array.from({ length: totalCopies }).map((_, index) => {
         const copy = copies.find((c) => c.copyIndex === index + 1);
         const status = copy?.status || "pending";
+
+        // Generate accessible status label
+        const getStatusLabel = (s: string) => {
+          switch (s) {
+            case "done": return "Terminé";
+            case "grading": return "En cours de correction";
+            case "error": return "Erreur";
+            case "pending": return "En attente";
+            default: return s;
+          }
+        };
 
         return (
           <Card
@@ -34,6 +49,8 @@ export function ProgressGrid({ copies, totalCopies }: ProgressGridProps) {
               status === "error" && "border-destructive/50 bg-destructive/5",
               status === "grading" && "border-primary/50 bg-primary/5"
             )}
+            role="listitem"
+            aria-label={`Copy ${index + 1}: ${getStatusLabel(status)}`}
           >
             <CardContent className="p-3">
               <div className="flex items-center justify-between mb-2">
@@ -52,6 +69,7 @@ export function ProgressGrid({ copies, totalCopies }: ProgressGridProps) {
                       100
                     }
                     className="h-1.5"
+                    aria-label={`${copy.questions.filter((q) => q.status === "done").length} sur ${copy.questions.length} questions complétées`}
                   />
                   <p className="text-xs text-muted-foreground">
                     {copy.questions.filter((q) => q.status === "done").length}/

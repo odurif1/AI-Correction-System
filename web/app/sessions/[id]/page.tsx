@@ -328,6 +328,7 @@ export default function SessionDetailPage() {
                   onClick={handleCancel}
                   disabled={cancelMutation.isPending}
                   className="gap-1"
+                  aria-label="Annuler la correction"
                 >
                   {cancelMutation.isPending ? (
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -338,7 +339,7 @@ export default function SessionDetailPage() {
                 </Button>
               </div>
               {/* Progress summary */}
-              <div className="flex items-center gap-4 text-sm text-muted-foreground mt-2">
+              <div className="flex items-center gap-4 text-sm text-muted-foreground mt-2" role="status" aria-live="polite">
                 <span>
                   {progress.completedCopies} of {progress.totalCopies || session.copies_count} copies
                   completed
