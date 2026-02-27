@@ -348,12 +348,32 @@ def create_app() -> FastAPI:
         """
         await ws_manager.connect(websocket, session_id)
         try:
-            # Keep connection alive and handle any client messages
+            # Send current progress state on connect (for reconnection)
+            if session_id in session_progress:
+                progress = session_progress[session_id]
+                await websocket.send_json({
+                    "type": "progress_sync",
+                    "data": {
+                        "status": progress.get("status"),
+                        "copies_uploaded": progress.get("copies_uploaded", 0),
+                        "copies_graded": progress.get("copies_graded", 0),
+                        "grading_mode": progress.get("grading_mode", "dual")
+                    }
+                })
+
+            # Keep connection alive and handle client messages
             while True:
                 data = await websocket.receive_text()
-                # Handle ping/pong or other client messages
+                # Handle ping/pong for connection health
                 if data == "ping":
                     await websocket.send_text("pong")
+                # Handle client requests for current state
+                elif data == "sync":
+                    if session_id in session_progress:
+                        await websocket.send_json({
+                            "type": "progress_sync",
+                            "data": session_progress[session_id]
+                        })
         except WebSocketDisconnect:
             ws_manager.disconnect(websocket, session_id)
         except Exception as e:
