@@ -713,17 +713,18 @@ def create_app() -> FastAPI:
     async def confirm_pre_analysis(
         session_id: str,
         request: ConfirmPreAnalysisRequest,
+        background_tasks: BackgroundTasks,
         current_user = Depends(get_current_user)
     ):
         """
-        Confirm pre-analysis and prepare for grading.
+        Confirm pre-analysis and automatically start grading.
 
         Allows:
         - Selecting from multiple candidate grading scales
         - Adjusting the detected grading scale
         - Overriding detected student names
 
-        before starting the actual grading process.
+        After confirmation, grading starts automatically in background.
         """
         user_id = current_user.id
 
@@ -800,10 +801,88 @@ def create_app() -> FastAPI:
         if session_id in session_progress:
             session_progress[session_id]["status"] = "ready_for_grading"
 
+        # Auto-start grading after confirmation
+        user_id = current_user.id
+
+        # Get or create orchestrator
+        if session_id not in active_sessions:
+            orchestrator = GradingSessionOrchestrator(
+                session_id=session_id,
+                user_id=user_id
+            )
+            active_sessions[session_id] = orchestrator
+        else:
+            orchestrator = active_sessions[session_id]
+
+        # Get uploaded PDF paths
+        upload_dir = Path(f"temp/{session_id}")
+        if upload_dir.exists():
+            pdf_paths = [str(p) for p in upload_dir.glob("*.pdf")]
+            orchestrator.pdf_paths = pdf_paths
+
+        # Create progress callback for WebSocket
+        progress_callback = ws_manager.create_progress_callback(session_id)
+
+        # Start grading in background
+        async def auto_grade_task():
+            from db import SessionLocal, User
+            try:
+                # Update progress
+                if session_id in session_progress:
+                    session_progress[session_id]["status"] = "grading"
+
+                # Run analysis phase
+                await orchestrator.analyze_only()
+
+                # Confirm scale with the validated grading scale
+                orchestrator.confirm_scale(grading_scale)
+
+                # Grade with progress callback
+                await orchestrator.grade_all(progress_callback=progress_callback)
+
+                # Reload session to get graded copies
+                session = store.load_session()
+
+                # Record grading operation
+                if hasattr(app.state, 'metrics_collector') and session and session.graded_copies:
+                    token_usage = len(session.graded_copies) * 10000
+                    app.state.metrics_collector.record_grading_operation(
+                        session_id=session_id,
+                        tokens_used=token_usage
+                    )
+
+                # Notify completion
+                if session and session.graded_copies:
+                    scores = [g.total_score for g in session.graded_copies]
+                    avg = sum(scores) / len(scores)
+                else:
+                    avg = 0
+
+                await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_COMPLETE, {
+                    "average_score": avg,
+                    "total_copies": len(session.graded_copies) if session else 0
+                })
+
+                # Update progress
+                if session_id in session_progress:
+                    session_progress[session_id]["status"] = "complete"
+                    session_progress[session_id]["copies_graded"] = len(session.graded_copies) if session else 0
+
+            except Exception as e:
+                logger.error(f"Auto-grading failed for session {session_id}: {e}")
+                await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_ERROR, {
+                    "error": str(e)
+                })
+                if session_id in session_progress:
+                    session_progress[session_id]["status"] = "error"
+
+        # Add background task
+        background_tasks.add_task(auto_grade_task)
+
         return ConfirmPreAnalysisResponse(
             success=True,
             session_id=session_id,
-            status="ready_for_grading",
+            status="grading",  # Status changed - grading started automatically
             grading_scale=grading_scale,
             num_students=pre_analysis.num_students_detected
         )
