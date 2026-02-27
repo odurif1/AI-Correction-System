@@ -44,8 +44,8 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 
 ### Core Grading
 
-- [ ] **GRAD-01**: User can upload multiple PDF copies (batch upload)
-- [ ] **GRAD-02**: System automatically detects grading scale (barème) from PDF
+- [x] **GRAD-01**: User can upload multiple PDF copies (batch upload)
+- [x] **GRAD-02**: System automatically detects grading scale (barème) from PDF
 - [ ] **GRAD-03**: LLM reads handwritten content directly via vision (no OCR step)
 - [ ] **GRAD-04**: Single-LLM grading mode produces grade and feedback
 - [ ] **GRAD-05**: Dual-LLM grading mode runs two models independently and compares results
@@ -152,8 +152,8 @@ Which phases cover which requirements. Updated during roadmap creation.
 | OBS-05 | Phase 2 | Complete |
 | OBS-06 | Phase 2 | Complete |
 | OBS-07 | Phase 2 | Complete |
-| GRAD-01 | Phase 3 | Pending |
-| GRAD-02 | Phase 3 | Pending |
+| GRAD-01 | Phase 3 | Complete |
+| GRAD-02 | Phase 3 | Complete |
 | GRAD-03 | Phase 3 | Pending |
 | GRAD-04 | Phase 3 | Pending |
 | GRAD-05 | Phase 3 | Pending |

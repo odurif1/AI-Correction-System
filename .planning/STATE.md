@@ -3,23 +3,23 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 current_phase: Phase 3 (Core Grading Experience)
-current_plan: 03-01 (Grading Workflow Completion)
-status: completed
-last_updated: "2026-02-27T00:46:28.473Z"
+current_plan: 03-02 (Student Copy Management)
+status: in_progress
+last_updated: "2026-02-27T17:51:00.000Z"
 progress:
-  total_phases: 2
+  total_phases: 5
   completed_phases: 2
   total_plans: 10
-  completed_plans: 10
-  percent: 100
+  completed_plans: 11
+  percent: 38
 ---
 
 # State: La Corrigeuse
 
 **Last updated:** 2026-02-27
 **Current phase:** Phase 3 (Core Grading Experience)
-**Current plan:** 03-01 (Grading Workflow Completion)
-**Status:** Milestone complete
+**Current plan:** 03-02 (Student Copy Management)
+**Status:** In progress
 
 ## Project Reference
 
@@ -29,14 +29,14 @@ progress:
 La Corrigeuse est un assistant de correction automatique pour enseignants. Elle lit les copies manuscrites (PDF) et les corrige via LLM avec double-vérification IA. Le prof upload, l'IA corrige, le prof valide et exporte vers Pronote ou Excel.
 
 **Current focus:**
-Establishing security foundation before commercial release. Critical vulnerabilities (hardcoded JWT secrets, missing multi-tenant isolation) are blocking production deployment.
+Core grading experience - PDF upload workflow with multi-scale detection and teacher confirmation.
 
 ## Current Position
 
 **Phase:** 3 - Core Grading Experience
-**Plan:** 01 - Grading Workflow Completion
-**Status:** Ready to Start
-**Progress:** [██████████] 100% (Phase 2 complete)
+**Plan:** 02 - Student Copy Management
+**Status:** In Progress
+**Progress:** [████░░░░░░] 38% (Phase 3 Plan 01 complete)
 
 **What's being built:**
 Core grading workflow completion, student copy management, and UI polish for the primary user experience.
@@ -53,13 +53,27 @@ Phase 2 (Observability) is complete. Core grading functionality is the primary v
 **Cumulative progress:**
 - Phase 1: 5/5 requirements complete (SEC-01, SEC-02, SEC-03, SEC-04, SEC-05)
 - Phase 2: 2/9 requirements complete (AUTH-07, AUTH-08)
-- Phase 3: 0/13 requirements complete
+- Phase 3: 2/13 requirements complete (GRAD-01, GRAD-02)
+
+## Performance Metrics
+
+**Phase 3 Plan 01 (2026-02-27):**
+- Duration: 2 minutes (130 seconds)
+- Tasks completed: 3
+- Files modified: 4
+- Commits: 3
 - Phase 4: 0/7 requirements complete
 - Phase 5: 0/7 requirements complete
 
 ## Accumulated Context
 
 ### Decisions Made
+
+**Multi-scale grading scale detection (2026-02-27):**
+- Return all candidate scales with confidence scores instead of single best guess
+- Teacher selects final scale before grading begins (prevents costly re-grades)
+- Backward compatible: single scale becomes first candidate automatically
+- Stored in PreAnalysisResult.candidate_scores: [{"scale": {...}, "confidence": 0.85}, ...]
 
 **Password reset via SendGrid (2026-02-27):**
 - Used SendGrid for email delivery (100 emails/day free tier)
@@ -160,11 +174,11 @@ Phase 2 (Observability) is complete. Core grading functionality is the primary v
 
 ## Session Continuity
 
-**Last action:** Completed Phase 2 (Observability & Monitoring) - All 4 plans complete
-**Next action:** Begin Phase 3 (Core Grading Experience) with plan 01
+**Last action:** Completed Phase 3 Plan 01 - PDF Upload Workflow with Multi-Scale Detection
+**Next action:** Begin Phase 3 Plan 02 - Student Copy Management
 
 **Quick context for next session:**
-We're building an AI-powered grading SaaS for French teachers. Phase 1 (Security Foundation) complete. Phase 2 (Observability & Monitoring) complete with structured logging, Sentry integration, health checks, and metrics. Phase 3 (Core Grading Experience) ready to start - will complete the core user workflow and UI polish.
+We're building an AI-powered grading SaaS for French teachers. Phase 1 (Security Foundation) complete. Phase 2 (Observability & Monitoring) complete. Phase 3 (Core Grading Experience) Plan 01 complete - implemented multi-scale grading scale detection with teacher confirmation. Plan 02 will implement student copy management with individual student tracking and re-grading capabilities.
 
 **State preservation:**
 - PROJECT.md: Core value, requirements, constraints, key decisions
