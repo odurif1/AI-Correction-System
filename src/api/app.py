@@ -792,7 +792,7 @@ def create_app() -> FastAPI:
 
             # Store student name adjustments in session metadata for later use
             if not session.storage_path:
-                session.storage_path = store.get_storage_dir()
+                session.storage_path = str(store.session_dir)
 
             store.save_session(session)
 
