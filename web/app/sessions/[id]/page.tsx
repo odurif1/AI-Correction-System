@@ -446,7 +446,7 @@ export default function SessionDetailPage() {
                       <TableHeader>
                         <TableRow>
                           <TableHead
-                            className="cursor-pointer hover:bg-muted sticky left-0 bg-background z-10"
+                            className="cursor-pointer hover:bg-muted sticky left-0 bg-background z-10 min-w-[120px]"
                             onClick={() => handleSort("copy_id")}
                           >
                             <div className="flex items-center gap-1">
@@ -463,7 +463,7 @@ export default function SessionDetailPage() {
                           {questionIds.map((questionId) => (
                             <TableHead
                               key={questionId}
-                              className="cursor-pointer hover:bg-muted text-center"
+                              className="cursor-pointer hover:bg-muted text-center min-w-[100px]"
                               onClick={() => handleSort(questionId)}
                             >
                               <div className="flex items-center justify-center gap-1">
@@ -479,7 +479,7 @@ export default function SessionDetailPage() {
                             </TableHead>
                           ))}
                           <TableHead
-                            className="cursor-pointer hover:bg-muted text-center"
+                            className="cursor-pointer hover:bg-muted text-center min-w-[80px]"
                             onClick={() => handleSort("total_score")}
                           >
                             <div className="flex items-center justify-center gap-1">
@@ -494,7 +494,7 @@ export default function SessionDetailPage() {
                             </div>
                           </TableHead>
                           <TableHead
-                            className="cursor-pointer hover:bg-muted text-center"
+                            className="cursor-pointer hover:bg-muted text-center min-w-[60px]"
                             onClick={() => handleSort("percentage")}
                           >
                             <div className="flex items-center justify-center gap-1">
@@ -508,7 +508,7 @@ export default function SessionDetailPage() {
                               )}
                             </div>
                           </TableHead>
-                          <TableHead className="text-center">Actions</TableHead>
+                          <TableHead className="text-center min-w-[100px]">Actions</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
