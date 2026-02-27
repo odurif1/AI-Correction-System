@@ -43,7 +43,7 @@ env/
 *~
 
 # Web
-web/
+# web/ - Removed during Phase 4 to track frontend changes
 
 # Testing
 .pytest_cache/
