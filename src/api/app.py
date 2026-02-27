@@ -65,6 +65,9 @@ from api.schemas import (
 # Import auth module
 from api.auth import router as auth_router, get_current_user, get_admin_user
 
+# Import Sentry error handler
+from middleware.error_handler import init_sentry, sentry_exception_handler, set_user_context
+
 logger = logging.getLogger(__name__)
 
 # API Key authentication
@@ -145,6 +148,11 @@ def create_app() -> FastAPI:
             headers={"Retry-After": str(exc.retry_after)}
         )
 
+    # Global exception handler for Sentry
+    @app.exception_handler(Exception)
+    async def global_exception_handler(request: Request, exc: Exception):
+        return await sentry_exception_handler(request, exc)
+
     # Configure CORS
     app.add_middleware(
         CORSMiddleware,
@@ -168,6 +176,14 @@ def create_app() -> FastAPI:
         except ValidationError as e:
             logger.error(f"Configuration error: {e}")
             raise SystemExit(1)
+
+        # Initialize Sentry error tracking
+        init_sentry(
+            dsn=settings.sentry_dsn,
+            environment=settings.sentry_environment,
+            sample_rate=settings.sentry_traces_sample_rate,
+            debug=(settings.sentry_environment == "development")
+        )
 
         from db import init_db
         init_db()
