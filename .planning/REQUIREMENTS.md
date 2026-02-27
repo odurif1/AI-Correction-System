@@ -29,15 +29,15 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 - [x] **AUTH-04**: JWT token issued on successful login with configurable expiration
 - [x] **AUTH-05**: User session persists across browser refresh (token stored securely)
 - [x] **AUTH-06**: User can log out (token invalidation)
-- [ ] **AUTH-07**: User can request password reset via email link
-- [ ] **AUTH-08**: Password reset tokens expire after reasonable time (15-60 minutes)
+- [x] **AUTH-07**: User can request password reset via email link
+- [x] **AUTH-08**: Password reset tokens expire after reasonable time (15-60 minutes)
 
 ### Observability
 
 - [ ] **OBS-01**: Structured JSON logging with correlation IDs for request tracing
 - [ ] **OBS-02**: All API requests logged with method, path, status, latency
-- [ ] **OBS-03**: Errors captured with full stack traces and context
-- [ ] **OBS-04**: Production error tracking integrated (Sentry or equivalent)
+- [x] **OBS-03**: Errors captured with full stack traces and context
+- [x] **OBS-04**: Production error tracking integrated (Sentry or equivalent)
 - [ ] **OBS-05**: Health check endpoint (/health) returns API and database status
 - [ ] **OBS-06**: Request metrics collected (latency, error rates, throughput)
 - [ ] **OBS-07**: Business metrics tracked (grading operations, token usage per phase, active sessions)
@@ -143,12 +143,12 @@ Which phases cover which requirements. Updated during roadmap creation.
 | AUTH-04 | Phase 1 | Complete |
 | AUTH-05 | Phase 1 | Complete |
 | AUTH-06 | Phase 1 | Complete |
-| AUTH-07 | Phase 2 | Pending |
-| AUTH-08 | Phase 2 | Pending |
+| AUTH-07 | Phase 2 | Complete |
+| AUTH-08 | Phase 2 | Complete |
 | OBS-01 | Phase 2 | Pending |
 | OBS-02 | Phase 2 | Pending |
-| OBS-03 | Phase 2 | Pending |
-| OBS-04 | Phase 2 | Pending |
+| OBS-03 | Phase 2 | Complete |
+| OBS-04 | Phase 2 | Complete |
 | OBS-05 | Phase 2 | Pending |
 | OBS-06 | Phase 2 | Pending |
 | OBS-07 | Phase 2 | Pending |

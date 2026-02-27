@@ -2,23 +2,23 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: Phase 1 (Security Foundation)
-current_plan: 01-03 (User-Scoped Session Storage)
+current_phase: Phase 2 (Observability & Monitoring)
+current_plan: 02-04 (Password Reset)
 status: executing
-last_updated: "2026-02-26T23:29:47.587Z"
+last_updated: "2026-02-27T00:32:32.288Z"
 progress:
-  total_phases: 1
+  total_phases: 2
   completed_phases: 1
-  total_plans: 6
-  completed_plans: 6
-  percent: 100
+  total_plans: 10
+  completed_plans: 9
+  percent: 90
 ---
 
 # State: La Corrigeuse
 
-**Last updated:** 2026-02-26
-**Current phase:** Phase 1 (Security Foundation)
-**Current plan:** 01-03 (User-Scoped Session Storage)
+**Last updated:** 2026-02-27
+**Current phase:** Phase 2 (Observability & Monitoring)
+**Current plan:** 02-04 (Password Reset)
 **Status:** In Progress
 
 ## Project Reference
@@ -33,16 +33,16 @@ Establishing security foundation before commercial release. Critical vulnerabili
 
 ## Current Position
 
-**Phase:** 1 - Security Foundation
-**Plan:** 03 - User-Scoped Session Storage
+**Phase:** 2 - Observability & Monitoring
+**Plan:** 04 - Password Reset
 **Status:** Complete
-**Progress:** [██████████] 100%
+**Progress:** [█████████░] 90%
 
 **What's being built:**
-Secure authentication with environment-based secrets, multi-tenant data isolation (user-scoped sessions), input validation, and file upload security.
+Structured JSON logging with correlation IDs, Sentry error tracking, health check endpoints, and password reset functionality via email.
 
 **Why this phase:**
-Security vulnerabilities are BLOCKING for production. Hardcoded JWT secrets allow token forgery. Missing data isolation means teachers can access each other's grading data. These must be addressed before any production deployment.
+Production debugging requires observability. Password reset is essential for user support. These provide the foundation for running a production service.
 
 ## Performance Metrics
 
@@ -51,8 +51,8 @@ Security vulnerabilities are BLOCKING for production. Hardcoded JWT secrets allo
 **Estimated timeline:** 3-4 weeks to commercial release (from PROJECT.md)
 
 **Cumulative progress:**
-- Phase 1: 5/17 requirements complete (SEC-01, SEC-02, SEC-03, SEC-04, SEC-05)
-- Phase 2: 0/9 requirements complete
+- Phase 1: 5/5 requirements complete (SEC-01, SEC-02, SEC-03, SEC-04, SEC-05)
+- Phase 2: 2/9 requirements complete (AUTH-07, AUTH-08)
 - Phase 3: 0/13 requirements complete
 - Phase 4: 0/7 requirements complete
 - Phase 5: 0/7 requirements complete
@@ -60,6 +60,24 @@ Security vulnerabilities are BLOCKING for production. Hardcoded JWT secrets allo
 ## Accumulated Context
 
 ### Decisions Made
+
+**Password reset via SendGrid (2026-02-27):**
+- Used SendGrid for email delivery (100 emails/day free tier)
+- Token storage with SHA-256 hashing before database storage
+- Generic forgot-password response prevents email enumeration
+- 30-minute token expiration with automatic cleanup
+- Auto-login after successful reset (returns JWT token)
+- Fixed package name: 'sendgrid' not 'python-sendgrid'
+
+**Structured logging with Loguru (2026-02-27):**
+- Migrated to JSON logs with serialize=True for log aggregation
+- Added asgi-correlation-id middleware for request tracing
+- Correlation ID automatically propagated via contextvars
+
+**Sentry integration (2026-02-27):**
+- Added sentry-sdk with FastAPI integration
+- Configured for development/production environments
+- Health check endpoint with database connectivity
 
 **Multi-tenant session storage (2026-02-26):**
 - Changed base path from `data/{user_id}/` to `data/sessions/{user_id}/` for clearer organization
@@ -87,12 +105,11 @@ Security vulnerabilities are BLOCKING for production. Hardcoded JWT secrets allo
 
 ### Active Todos
 
-**Immediate (Phase 1):**
-1. Plan Phase 1 details: `/gsd:plan-phase 1`
-2. Execute Phase 1, Plan 1: Security foundation implementation
+**Immediate (Phase 2):**
+1. Complete remaining Phase 2 plans (01, 02, 03)
+2. Plan Phase 3 details: Core Grading Experience
 
 **Upcoming:**
-- Phase 2: Observability & Monitoring
 - Phase 3: Core Grading Experience
 - Phase 4: User Interface & Polish
 - Phase 5: Production Readiness
@@ -130,11 +147,11 @@ Security vulnerabilities are BLOCKING for production. Hardcoded JWT secrets allo
 
 ## Session Continuity
 
-**Last action:** Completed plan 01-03 - User-scoped session storage with mandatory user_id enforcement
-**Next action:** Continue with plan 01-04 - Input validation and sanitization
+**Last action:** Completed plan 02-04 - Password reset with SendGrid email integration
+**Next action:** Continue with remaining Phase 2 plans (01, 02, 03)
 
 **Quick context for next session:**
-We're building an AI-powered grading SaaS for French teachers. The codebase exists but has critical security vulnerabilities. We created a 5-phase roadmap starting with security. We need to plan Phase 1 in detail and begin implementation.
+We're building an AI-powered grading SaaS for French teachers. Phase 1 (Security Foundation) is complete. Phase 2 (Observability & Monitoring) is in progress with password reset (plan 04) complete. Remaining plans: structured logging (01), Sentry integration (02), health/metrics (03).
 
 **State preservation:**
 - PROJECT.md: Core value, requirements, constraints, key decisions
