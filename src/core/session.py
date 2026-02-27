@@ -3201,7 +3201,8 @@ IMPORTANT:
         """
         Minimal loading without structure detection.
 
-        Just creates placeholder copies - structure will be detected during grading.
+        Creates copies with page images extracted from PDF.
+        Structure (students, names, questions) will be detected during grading.
         Used when neither --auto-detect-structure nor --pages-per-copy is set.
         """
         from rich.console import Console
@@ -3212,6 +3213,19 @@ IMPORTANT:
             reader = PDFReader(pdf_path)
             page_count = reader.get_page_count()
 
+            # Create temp directory for this session's images
+            temp_dir = self.store.session_dir / "temp_images"
+            temp_dir.mkdir(parents=True, exist_ok=True)
+
+            # Convert ALL pages to images (structure detected during grading)
+            page_images = []
+            for page_num in range(page_count):
+                image_bytes = reader.get_page_image_bytes(page_num)
+                image_path = str(temp_dir / f"page_{page_num}.png")
+                with open(image_path, 'wb') as f:
+                    f.write(image_bytes)
+                page_images.append(image_path)
+
             # Create a single copy for the entire PDF
             # Structure (students, names) will be detected during grading
             copy = CopyDocument(
@@ -3219,6 +3233,7 @@ IMPORTANT:
                 page_count=page_count,
                 student_name=None,  # Will be detected during grading
                 content_summary={},
+                page_images=page_images,  # Images for vision API
                 language='fr'  # Will be detected during grading
             )
 
@@ -3230,6 +3245,9 @@ IMPORTANT:
             self.store.save_copy(copy, pdf_bytes)
 
             reader.close()
+
+        # Clean up temp_images if empty
+        self.store.cleanup_temp_images()
 
     async def _resplit_by_pages(self):
         """
