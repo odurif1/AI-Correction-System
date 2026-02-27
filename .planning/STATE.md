@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 current_phase: Phase 4 (User Interface & Polish)
-current_plan: 04-04 (Review Screen with Inline Editing)
+current_plan: 04.2 (Fix Dual-LLM Grading Completion)
 status: completed
-last_updated: "2026-02-27T21:17:08.811Z"
+last_updated: "2026-02-27T21:18:09Z"
 progress:
   total_phases: 4
   completed_phases: 3
   total_plans: 20
-  completed_plans: 19
-  percent: 95
+  completed_plans: 20
+  percent: 100
 ---
 
 # State: La Corrigeuse
@@ -95,9 +95,25 @@ Phase 3 (Core Grading Experience) is complete. UI polish and professional presen
 - Export dropdown with CSV, JSON, Excel options
 - Responsive design (horizontal scroll, sticky first column, purple accent on sort indicators)
 
+**Phase 4 Plan 02 (2026-02-27):**
+- Duration: 2 minutes (101 seconds)
+- Tasks completed: 1
+- Files modified: 1
+- Commits: 1
+- API_WORKFLOW_STATE constant with CorrectionState(auto_mode=True)
+- All 6 GradingSessionOrchestrator API instantiations now pass workflow_state parameter
+- Student name disagreements auto-resolve using confidence-based logic instead of blocking CLI prompts
+- Dual-LLM batch grading now completes successfully in API context
+
 ## Accumulated Context
 
 ### Decisions Made
+
+**API auto_mode for orchestrator creation (2026-02-27):**
+- API_WORKFLOW_STATE = CorrectionState(auto_mode=True) constant for all API-created orchestrators
+- Prevents blocking rich.prompt.Prompt calls in web API context
+- Student name disagreements auto-resolve using higher confidence LLM or LLM1 fallback
+- Fixes UAT issue where grading never completed due to CLI prompt blocking
 
 **Grading mode selection via force_single_llm (2026-02-27):**
 - Single mode uses force_single_llm=True for faster grading without comparison
@@ -230,15 +246,15 @@ Phase 3 (Core Grading Experience) is complete. UI polish and professional presen
 
 ## Session Continuity
 
-**Last action:** Completed Phase 4 Plan 04 - Review Screen with Inline Editing
-**Next action:** All Phase 4 plans complete. Ready for Phase 5 or production deployment.
+**Last action:** Completed Phase 4 Plan 04.2 - Fix Dual-LLM Grading Completion
+**Next action:** UAT gap closure plan complete. Ready for re-testing of previously blocked tests (13, 15, 19, 20, 21) or Phase 5.
 
 **Session info:**
-- Stopped at: Completed 04-04-Review Screen with Inline Editing (sortable table, inline editing, auto-save, disagreement highlighting, export)
-- Timestamp: 2026-02-27T20:38:00Z
+- Stopped at: Completed 04.2-Fix Dual-LLM Grading Completion (auto_mode for API orchestrators, name disagreement auto-resolution)
+- Timestamp: 2026-02-27T21:18:09Z
 
 **Quick context for next session:**
-We're building an AI-powered grading SaaS for French teachers. Phase 1 (Security Foundation) complete. Phase 2 (Observability & Monitoring) complete. Phase 3 (Core Grading Experience) complete. Phase 4 (User Interface & Polish) complete. All 18 plans across 4 phases are done. System ready for production beta testing or Phase 5 (Production Readiness & Cost Optimization).
+We're building an AI-powered grading SaaS for French teachers. Phase 1 (Security Foundation) complete. Phase 2 (Observability & Monitoring) complete. Phase 3 (Core Grading Experience) complete. Phase 4 (User Interface & Polish) complete including UAT gap closure (04.2). All 20 plans across 4 phases are done. Dual-LLM grading now completes successfully with auto_mode enabled. System ready for production beta testing or Phase 5 (Production Readiness & Cost Optimization).
 
 **State preservation:**
 - PROJECT.md: Core value, requirements, constraints, key decisions
