@@ -47,6 +47,9 @@ limiter = Limiter(key_func=get_user_id)
 # Maximum file size for uploads (50 MB)
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 
+# Maximum batch size for PDF uploads
+MAX_BATCH_SIZE = 50
+
 
 from config.settings import get_settings
 from pydantic import ValidationError
@@ -60,7 +63,7 @@ from api.schemas import (
     AnalyticsResponse, ProviderResponse, ProviderModel,
     SettingsResponse, UpdateSettingsRequest, ExportOptions,
     PreAnalysisRequest, PreAnalysisResponse, ConfirmPreAnalysisRequest,
-    ConfirmPreAnalysisResponse, StudentInfoSchema
+    ConfirmPreAnalysisResponse, StudentInfoSchema, CandidateScale
 )
 
 # Import auth module
@@ -414,10 +417,19 @@ def create_app() -> FastAPI:
     ):
         """
         Upload PDF copies to a session.
+
+        Accepts up to 50 PDF files per batch.
         """
         from db import SessionLocal, User
 
         user_id = current_user.id
+
+        # Validate batch size
+        if len(files) > MAX_BATCH_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Trop de fichiers. Maximum {MAX_BATCH_SIZE} PDFs par lot."
+            )
 
         # Check quota
         db = SessionLocal()
@@ -453,8 +465,15 @@ def create_app() -> FastAPI:
         upload_dir_resolved = upload_dir.resolve()
 
         pdf_paths = []
+        validation_results = []
+
         for file in files:
             if not file.filename or not file.filename.lower().endswith(".pdf"):
+                validation_results.append({
+                    "filename": file.filename or "unknown",
+                    "success": False,
+                    "error": "Not a PDF file"
+                })
                 continue
 
             # Sanitize filename: remove path separators and dangerous characters
@@ -468,9 +487,19 @@ def create_app() -> FastAPI:
             try:
                 resolved_path = file_path.resolve()
                 if not str(resolved_path).startswith(str(upload_dir_resolved)):
-                    raise HTTPException(status_code=400, detail="Invalid file path")
+                    validation_results.append({
+                        "filename": file.filename,
+                        "success": False,
+                        "error": "Invalid file path"
+                    })
+                    continue
             except (OSError, ValueError):
-                raise HTTPException(status_code=400, detail="Invalid file path")
+                validation_results.append({
+                    "filename": file.filename,
+                    "success": False,
+                    "error": "Invalid file path"
+                })
+                continue
 
             # Check file size
             file.file.seek(0, 2)  # Seek to end
@@ -478,14 +507,28 @@ def create_app() -> FastAPI:
             file.file.seek(0)  # Reset to beginning
 
             if file_size > MAX_UPLOAD_SIZE:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024*1024)} MB"
-                )
+                validation_results.append({
+                    "filename": file.filename,
+                    "success": False,
+                    "error": f"File too large. Maximum size is {MAX_UPLOAD_SIZE // (1024*1024)} MB"
+                })
+                continue
 
-            with open(file_path, "wb") as f:
-                shutil.copyfileobj(file.file, f)
-            pdf_paths.append(str(file_path))
+            try:
+                with open(file_path, "wb") as f:
+                    shutil.copyfileobj(file.file, f)
+                pdf_paths.append(str(file_path))
+                validation_results.append({
+                    "filename": file.filename,
+                    "success": True,
+                    "path": str(file_path)
+                })
+            except Exception as e:
+                validation_results.append({
+                    "filename": file.filename,
+                    "success": False,
+                    "error": str(e)
+                })
 
         # Update session progress
         if session_id in session_progress:
@@ -495,7 +538,8 @@ def create_app() -> FastAPI:
         return {
             "session_id": session_id,
             "uploaded_count": len(pdf_paths),
-            "paths": pdf_paths
+            "paths": pdf_paths,
+            "validation_results": validation_results
         }
 
     @app.post("/api/sessions/{session_id}/pre-analyze", response_model=PreAnalysisResponse)
@@ -511,7 +555,7 @@ def create_app() -> FastAPI:
         This analysis is performed before grading to:
         - Validate the PDF contains student copies
         - Detect document structure (one student or multiple per PDF)
-        - Detect grading scale / barème
+        - Detect grading scale / barème (with multiple candidate scales if uncertain)
         - Identify blocking issues
 
         Results are cached for the session.
@@ -587,6 +631,14 @@ def create_app() -> FastAPI:
                 for s in result.students
             ]
 
+            # Convert candidate_scales to schema
+            candidate_scales = []
+            for candidate in result.candidate_scales:
+                candidate_scales.append(CandidateScale(
+                    scale=candidate.get("scale", {}),
+                    confidence=candidate.get("confidence", 0.0)
+                ))
+
             # Update progress
             if session_id in session_progress:
                 session_progress[session_id]["status"] = "pre_analyzed"
@@ -603,6 +655,7 @@ def create_app() -> FastAPI:
                 students=students,
                 grading_scale=result.grading_scale,
                 confidence_grading_scale=result.confidence_grading_scale,
+                candidate_scales=candidate_scales,
                 questions_detected=result.questions_detected,
                 blocking_issues=result.blocking_issues,
                 has_blocking_issues=result.has_blocking_issues,
@@ -630,7 +683,11 @@ def create_app() -> FastAPI:
         """
         Confirm pre-analysis and prepare for grading.
 
-        Allows adjusting the detected grading scale and structure
+        Allows:
+        - Selecting from multiple candidate grading scales
+        - Adjusting the detected grading scale
+        - Overriding detected student names
+
         before starting the actual grading process.
         """
         user_id = current_user.id
@@ -652,19 +709,56 @@ def create_app() -> FastAPI:
                 detail=f"Cannot confirm: blocking issues detected: {pre_analysis.blocking_issues}"
             )
 
+        # Start with detected grading scale
+        grading_scale = dict(pre_analysis.grading_scale)
+
+        # Apply selected_scale_index if provided
+        if request.selected_scale_index is not None:
+            candidate_scales = pre_analysis.candidate_scales
+            if not candidate_scales:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No candidate scales available. Cannot select by index."
+                )
+            if request.selected_scale_index < 0 or request.selected_scale_index >= len(candidate_scales):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid scale index {request.selected_scale_index}. Available: 0-{len(candidate_scales)-1}"
+                )
+            # Use the selected candidate scale
+            selected = candidate_scales[request.selected_scale_index]
+            grading_scale = dict(selected.get("scale", {}))
+
         # Apply adjustments if provided
-        grading_scale = pre_analysis.grading_scale
         if request.adjustments:
+            # Apply grading scale overrides
             if "grading_scale" in request.adjustments:
-                # Merge adjustments with detected scale
                 grading_scale.update(request.adjustments["grading_scale"])
+
+            # Apply student name overrides
+            if "student_names" in request.adjustments:
+                # Update student names in pre_analysis result
+                student_names = request.adjustments["student_names"]
+                for student_idx, name in student_names.items():
+                    # Find the student by index and update name
+                    for student in pre_analysis.students:
+                        if student.index == student_idx:
+                            student.name = name
+                            break
+                # Save updated pre-analysis with new names
+                store.save_pre_analysis(pre_analysis)
 
         # Update session with confirmed settings
         session = store.load_session()
         if session:
-            # Set question weights from grading scale
+            # Set question weights from final grading scale
             session.policy.question_weights = grading_scale
             session.status = "ready_for_grading"
+
+            # Store student name adjustments in session metadata for later use
+            if not session.storage_path:
+                session.storage_path = store.get_storage_dir()
+
             store.save_session(session)
 
         # Update progress
