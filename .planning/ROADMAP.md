@@ -32,11 +32,11 @@
 5. File uploads are validated for PDF structure and size limits
 
 **Plans:** 5 plans
-- [ ] 01-01-PLAN.md — Environment-based secrets (JWT, API keys) with startup validation
-- [ ] 01-02-PLAN.md — Authentication endpoints (signup, login, logout) with password validation
-- [ ] 01-03-PLAN.md — User-scoped session storage for data isolation
-- [ ] 01-04-PLAN.md — Access control middleware for session ownership verification
-- [ ] 01-05-PLAN.md — File upload security, rate limiting, CORS, security headers
+- [x] 01-01-PLAN.md — Environment-based secrets (JWT, API keys) with startup validation
+- [x] 01-02-PLAN.md — Authentication endpoints (signup, login, logout) with password validation
+- [x] 01-03-PLAN.md — User-scoped session storage for data isolation
+- [x] 01-04-PLAN.md — Access control middleware for session ownership verification
+- [x] 01-05-PLAN.md — File upload security, rate limiting, CORS, security headers
 
 ---
 
@@ -57,7 +57,11 @@
 4. Health check endpoint (/health) returns API and database status
 5. Business metrics (grading operations, token usage, active sessions) are tracked and queryable
 
-**Plans:** TBD
+**Plans:** 4 plans
+- [ ] 02-01-PLAN.md — Structured JSON logging with correlation IDs and request tracing
+- [ ] 02-02-PLAN.md — Sentry error tracking integration with global exception handler
+- [ ] 02-03-PLAN.md — Health check endpoint and metrics collection (request + business)
+- [ ] 02-04-PLAN.md — Password reset via SendGrid email with token-based flow
 
 ---
 
