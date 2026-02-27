@@ -222,6 +222,12 @@ class StudentInfoSchema(BaseModel):
     confidence: float = 0.5
 
 
+class CandidateScale(BaseModel):
+    """A candidate grading scale with confidence score."""
+    scale: Dict[str, float] = Field(default_factory=dict)
+    confidence: float = 0.0
+
+
 class PreAnalysisRequest(BaseModel):
     """Request to start pre-analysis."""
     force_refresh: bool = False
@@ -246,6 +252,7 @@ class PreAnalysisResponse(BaseModel):
     # Grading scale
     grading_scale: Dict[str, float] = Field(default_factory=dict)
     confidence_grading_scale: float
+    candidate_scales: List[CandidateScale] = Field(default_factory=list)
     questions_detected: List[str] = Field(default_factory=list)
 
     # Issues
@@ -265,10 +272,12 @@ class ConfirmPreAnalysisRequest(BaseModel):
     """Request to confirm pre-analysis and prepare for grading."""
     confirm: bool = True
     adjustments: Optional[Dict[str, Any]] = None
+    selected_scale_index: Optional[int] = None
     # adjustments can include:
     # - grading_scale: {"Q1": 3.0} to override detected scale
     # - students: [...] to override detected students
     # - structure: "one_pdf_one_student" to override detected structure
+    # - student_names: {0: "Dupont"} to override detected student names
 
 
 class ConfirmPreAnalysisResponse(BaseModel):
