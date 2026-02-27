@@ -93,8 +93,8 @@ export function FileUploader({
     <div className={cn("space-y-4", className)}>
       <Card
         className={cn(
-          "border-dashed cursor-pointer transition-colors",
-          isDragging && "border-primary bg-primary/5"
+          "border-dashed cursor-pointer transition-all hover:shadow-md hover:border-purple-300",
+          isDragging && "border-primary bg-primary/5 shadow-md"
         )}
         onDrop={handleDrop}
         onDragOver={handleDragOver}
@@ -117,7 +117,7 @@ export function FileUploader({
             className="hidden"
             id="file-upload"
           />
-          <Button variant="outline" className="mt-4" asChild>
+          <Button variant="outline" className="mt-4 min-h-[44px] min-w-[120px] transition-colors hover:bg-purple-50 hover:border-purple-300" asChild>
             <label htmlFor="file-upload" className="cursor-pointer">
               Select Files
             </label>
@@ -157,7 +157,7 @@ export function FileUploader({
                     <Button
                       variant="ghost"
                       size="icon"
-                      className="h-6 w-6 flex-shrink-0"
+                      className="h-8 w-8 flex-shrink-0 min-h-[44px] min-w-[44px] transition-colors hover:bg-destructive/10 hover:text-destructive"
                       onClick={() => removeFile(index)}
                       disabled={uploading}
                     >

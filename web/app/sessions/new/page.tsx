@@ -216,7 +216,7 @@ export default function NewSessionPage() {
                   size="lg"
                   onClick={handleStartUpload}
                   disabled={files.length === 0 || step === "uploading"}
-                  className="min-w-[200px] disabled:opacity-100 disabled:bg-primary"
+                  className="min-w-[200px] bg-purple-600 hover:bg-purple-700 text-white disabled:opacity-100 disabled:bg-purple-600/50 transition-colors"
                 >
                   {step === "uploading" ? (
                     <>
