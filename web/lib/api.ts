@@ -207,7 +207,7 @@ class ApiClient {
   // Exports
   async exportSession(
     sessionId: string,
-    format: "csv" | "json" | "pdf"
+    format: "csv" | "json" | "excel"
   ): Promise<Blob> {
     const response = await fetch(
       `${this.baseUrl}/api/sessions/${sessionId}/export/${format}`
