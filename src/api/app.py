@@ -1275,7 +1275,7 @@ def create_app() -> FastAPI:
 
     @app.get("/api/sessions/{session_id}/export/{format}")
     async def export_session(session_id: str, format: str, current_user = Depends(get_current_user)):
-        """Export session results in the specified format."""
+        """Export session results in CSV, JSON, or Excel format."""
         from export.analytics import DataExporter
 
         user_id = current_user.id
@@ -1296,17 +1296,26 @@ def create_app() -> FastAPI:
         elif format == "json":
             path = exporter.export_json()
             media_type = "application/json"
+        elif format == "excel":
+            path = exporter.export_excel()
+            media_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         else:
-            raise HTTPException(status_code=400, detail=f"Unsupported format: {format}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported format: {format}. Supported: csv, json, excel"
+            )
 
         def iterfile():
             with open(path, "rb") as f:
                 yield from f
 
+        filename = Path(path).name
         return StreamingResponse(
             iterfile(),
             media_type=media_type,
-            headers={"Content-Disposition": f"attachment; filename={Path(path).name}"}
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
         )
 
     # ============================================================================
