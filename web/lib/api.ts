@@ -12,6 +12,7 @@ import type {
   PreAnalysisRequest,
   ConfirmPreAnalysisRequest,
   ConfirmPreAnalysisResponse,
+  ListSessionsParams,
 } from "@/lib/types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -58,7 +59,9 @@ class ApiClient {
   }
 
   // Sessions
-  async listSessions(): Promise<{ sessions: Session[] }> {
+  async listSessions(params?: ListSessionsParams): Promise<{ sessions: Session[] }> {
+    // Backend doesn't support pagination yet, but we include params for future implementation
+    // Client-side pagination is handled in the dashboard component
     return this.fetchJson("/api/sessions");
   }
 
