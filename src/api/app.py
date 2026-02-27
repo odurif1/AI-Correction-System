@@ -50,10 +50,14 @@ MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 # Maximum batch size for PDF uploads
 MAX_BATCH_SIZE = 50
 
+# API runs in auto-mode (no CLI interaction)
+API_WORKFLOW_STATE = CorrectionState(auto_mode=True)
+
 
 from config.settings import get_settings
 from pydantic import ValidationError
 from core.session import GradingSessionOrchestrator
+from core.workflow_state import CorrectionState
 from storage.session_store import SessionStore
 from api.websocket import manager as ws_manager
 from api.schemas import (
@@ -407,7 +411,10 @@ def create_app() -> FastAPI:
         user_id = current_user.id
 
         # Create orchestrator WITHOUT session_id - it will generate a new one
-        orchestrator = GradingSessionOrchestrator(user_id=user_id)
+        orchestrator = GradingSessionOrchestrator(
+            user_id=user_id,
+            workflow_state=API_WORKFLOW_STATE
+        )
 
         # Set policy from request
         if request.subject:
@@ -487,7 +494,10 @@ def create_app() -> FastAPI:
             if not store.exists():
                 raise HTTPException(status_code=404, detail="Session not found")
             # Create orchestrator for existing session
-            orchestrator = GradingSessionOrchestrator(session_id=session_id)
+            orchestrator = GradingSessionOrchestrator(
+                session_id=session_id,
+                workflow_state=API_WORKFLOW_STATE
+            )
             active_sessions[session_id] = orchestrator
 
         orchestrator = active_sessions[session_id]
@@ -808,7 +818,8 @@ def create_app() -> FastAPI:
         if session_id not in active_sessions:
             orchestrator = GradingSessionOrchestrator(
                 session_id=session_id,
-                user_id=user_id
+                user_id=user_id,
+                workflow_state=API_WORKFLOW_STATE
             )
             active_sessions[session_id] = orchestrator
         else:
@@ -874,6 +885,12 @@ def create_app() -> FastAPI:
                     "average_score": avg,
                     "total_copies": len(session.graded_copies) if session else 0
                 })
+
+                # Update session status in database
+                if session:
+                    from models.session import SessionStatus
+                    session.status = SessionStatus.COMPLETE
+                    task_store.save_session(session)
 
                 # Update progress
                 if session_id in session_progress:
@@ -1086,7 +1103,8 @@ def create_app() -> FastAPI:
             orchestrator = GradingSessionOrchestrator(
                 session_id=session_id,
                 user_id=user_id,
-                force_single_llm=force_single_llm
+                force_single_llm=force_single_llm,
+                workflow_state=API_WORKFLOW_STATE
             )
             active_sessions[session_id] = orchestrator
         else:
@@ -1202,7 +1220,11 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Session not found")
 
         if session_id not in active_sessions:
-            orchestrator = GradingSessionOrchestrator(session_id=session_id, user_id=user_id)
+            orchestrator = GradingSessionOrchestrator(
+                session_id=session_id,
+                user_id=user_id,
+                workflow_state=API_WORKFLOW_STATE
+            )
             active_sessions[session_id] = orchestrator
         else:
             orchestrator = active_sessions[session_id]
@@ -1225,7 +1247,11 @@ def create_app() -> FastAPI:
     async def get_analytics(session_id: str, current_user = Depends(get_current_user)):
         """Get analytics for a session."""
         user_id = current_user.id
-        orchestrator = GradingSessionOrchestrator(session_id=session_id, user_id=user_id)
+        orchestrator = GradingSessionOrchestrator(
+            session_id=session_id,
+            user_id=user_id,
+            workflow_state=API_WORKFLOW_STATE
+        )
         analytics = orchestrator.get_analytics()
 
         return AnalyticsResponse(**analytics)
