@@ -29,7 +29,7 @@ export function getRandomMessage(): string {
 }
 
 // Hook to rotate messages periodically
-export function useRotatingMessage(interval: number = 5000) {
+export function useRotatingMessage(interval: number = 20000) {
   const [message, setMessage] = useState(getRandomMessage());
 
   useEffect(() => {
