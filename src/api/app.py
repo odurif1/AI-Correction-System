@@ -50,6 +50,9 @@ MAX_UPLOAD_SIZE = 50 * 1024 * 1024
 # Maximum batch size for PDF uploads
 MAX_BATCH_SIZE = 50
 
+# Import workflow state before defining constant
+from core.workflow_state import CorrectionState
+
 # API runs in auto-mode (no CLI interaction)
 API_WORKFLOW_STATE = CorrectionState(auto_mode=True)
 
@@ -57,7 +60,6 @@ API_WORKFLOW_STATE = CorrectionState(auto_mode=True)
 from config.settings import get_settings
 from pydantic import ValidationError
 from core.session import GradingSessionOrchestrator
-from core.workflow_state import CorrectionState
 from storage.session_store import SessionStore
 from api.websocket import manager as ws_manager
 from api.schemas import (
