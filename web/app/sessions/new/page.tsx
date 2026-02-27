@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -11,9 +11,10 @@ import { FileUploader, FileWithProgress } from "@/components/grading/file-upload
 import { PreAnalysisResults } from "@/components/grading/pre-analysis-results";
 import { api, ApiError } from "@/lib/api";
 import { Loader2, Search, FileText } from "lucide-react";
+import { useRotatingMessage } from "@/lib/waiting-messages";
 import type { PreAnalysisResult } from "@/lib/types";
 
-type Step = "upload" | "uploading" | "analyzing" | "review" | "confirming";
+type Step = "upload" | "uploading" | "analyzing" | "review" | "confirming" | "grading";
 
 export default function NewSessionPage() {
   const router = useRouter();
@@ -25,6 +26,21 @@ export default function NewSessionPage() {
   const [preAnalysisResult, setPreAnalysisResult] =
     useState<PreAnalysisResult | null>(null);
   const [isConfirming, setIsConfirming] = useState(false);
+
+  // Rotating waiting message for grading step
+  const waitingMessage = useRotatingMessage();
+
+  // Polling ref for cleanup
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Cleanup polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+      }
+    };
+  }, []);
 
   // Handle files selected from FileUploader
   const handleFilesSelected = (newFiles: File[]) => {
@@ -144,6 +160,7 @@ export default function NewSessionPage() {
 
     console.log("Confirming pre-analysis for session:", sessionId);
     setIsConfirming(true);
+    setStep("confirming");
 
     try {
       const result = await api.confirmPreAnalysis(sessionId, {
@@ -152,13 +169,51 @@ export default function NewSessionPage() {
       });
       console.log("Confirm result:", result);
 
-      toast.success("Diagnostic confirmé");
+      toast.success("Diagnostic confirmé - correction en cours");
 
-      // Redirect to session page to start grading
-      router.push(`/sessions/${sessionId}`);
+      // Move to grading step - will poll until complete
+      setStep("grading");
+
+      // Start polling for session status
+      const pollSessionStatus = async () => {
+        try {
+          const session = await api.getSession(sessionId);
+          console.log("Session status:", session.status);
+
+          if (session.status === "complete") {
+            // Stop polling
+            if (pollingRef.current) {
+              clearInterval(pollingRef.current);
+              pollingRef.current = null;
+            }
+            // Redirect to review tab
+            router.push(`/sessions/${sessionId}?tab=review`);
+          } else if (session.status === "error") {
+            // Stop polling on error
+            if (pollingRef.current) {
+              clearInterval(pollingRef.current);
+              pollingRef.current = null;
+            }
+            toast.error("Une erreur est survenue pendant la correction");
+            setStep("review");
+            setIsConfirming(false);
+          }
+        } catch (pollError) {
+          console.error("Poll error:", pollError);
+          // Don't stop polling on temporary errors, keep trying
+        }
+      };
+
+      // Poll every 2 seconds
+      pollingRef.current = setInterval(pollSessionStatus, 2000);
+
+      // Also poll immediately
+      pollSessionStatus();
+
     } catch (error) {
       console.error("Confirm error:", error);
       setIsConfirming(false);
+      setStep("review");
       if (error instanceof ApiError) {
         console.error("API Error details:", error.status, error.message);
         toast.error(`Erreur (${error.status}): ${error.message}`);
@@ -183,6 +238,8 @@ export default function NewSessionPage() {
                   ? "Glissez vos copies PDF pour commencer"
                   : step === "analyzing"
                   ? "Diagnostic du document en cours..."
+                  : step === "grading"
+                  ? waitingMessage
                   : ""}
               </p>
             </div>
@@ -309,6 +366,19 @@ export default function NewSessionPage() {
                 <h2 className="text-lg font-medium">Préparation de la correction</h2>
                 <p className="text-muted-foreground text-sm">
                   Configuration en cours...
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Grading Step - stays until complete */}
+          {step === "grading" && (
+            <div className="flex flex-col items-center justify-center py-12 space-y-4">
+              <Loader2 className="h-12 w-12 animate-spin text-purple-600" />
+              <div className="text-center">
+                <h2 className="text-lg font-medium">Correction en cours</h2>
+                <p className="text-muted-foreground text-sm mt-2">
+                  {waitingMessage}
                 </p>
               </div>
             </div>
