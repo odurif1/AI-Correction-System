@@ -66,6 +66,12 @@ from api.schemas import (
 # Import auth module
 from api.auth import router as auth_router, get_current_user, get_admin_user
 
+# Import health check router
+from api.health import router as health_router
+
+# Import metrics collector
+from utils.metrics import get_metrics_collector
+
 # Import Sentry error handler
 from middleware.error_handler import init_sentry, sentry_exception_handler, set_user_context
 
@@ -247,6 +253,11 @@ def create_app() -> FastAPI:
             debug=(settings.sentry_environment == "development")
         )
 
+        # Initialize metrics collector
+        metrics_collector = get_metrics_collector()
+        app.state.metrics_collector = metrics_collector
+        logger.info("Metrics collector initialized")
+
         from db import init_db
         init_db()
         stdlib_logger.info("Database initialized")
@@ -284,6 +295,9 @@ def create_app() -> FastAPI:
 
     # Include auth router
     app.include_router(auth_router, prefix="/api")
+
+    # Include health check router
+    app.include_router(health_router, tags=["health"])
 
     # Session storage (in-memory for active grading)
     active_sessions: Dict[str, GradingSessionOrchestrator] = {}
@@ -331,11 +345,6 @@ def create_app() -> FastAPI:
             "version": "1.0.0",
             "docs": "/docs"
         }
-
-    @app.get("/health")
-    async def health():
-        """Health check endpoint."""
-        return {"status": "healthy"}
 
     @app.post("/api/sessions", response_model=SessionResponse)
     async def create_session(

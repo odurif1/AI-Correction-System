@@ -149,6 +149,10 @@ async def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
 
+    # Set Sentry user context
+    from middleware.error_handler import set_user_context
+    set_user_context(user_id=user.id, email=user.email, username=user.name)
+
     return user
 
 
