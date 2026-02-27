@@ -3,23 +3,23 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 current_phase: Phase 4 (User Interface & Polish)
-current_plan: 04-03 (Grading Progress Screen with Real-Time Updates)
-status: executing
-last_updated: "2026-02-27T20:39:00.000Z"
+current_plan: 04-04 (Review Screen with Inline Editing)
+status: complete
+last_updated: "2026-02-27T20:38:42.000Z"
 progress:
-  total_phases: 5
-  completed_phases: 3
+  total_phases: 4
+  completed_phases: 4
   total_plans: 18
-  completed_plans: 17
-  percent: 94
+  completed_plans: 18
+  percent: 100
 ---
 
 # State: La Corrigeuse
 
 **Last updated:** 2026-02-27
 **Current phase:** Phase 4 (User Interface & Polish)
-**Current plan:** 04-03 (Grading Progress Screen with Real-Time Updates)
-**Status:** In Progress
+**Current plan:** 04-04 (Review Screen with Inline Editing)
+**Status:** Complete
 
 ## Project Reference
 
@@ -34,12 +34,12 @@ Core grading experience - PDF upload workflow with multi-scale detection and tea
 ## Current Position
 
 **Phase:** 4 - User Interface & Polish
-**Plan:** 04-02 - Multi-File Upload Workflow
-**Status:** In Progress
-**Progress:** [█████████░] 94%
+**Plan:** 04-04 - Review Screen with Inline Editing
+**Status:** Complete
+**Progress:** [██████████] 100%
 
-**What's being built:**
-Multi-file upload workflow with progress tracking, responsive design, and professional polish for the primary user experience.
+**What was built:**
+Review screen with sortable grades table, inline editing with auto-save, dual-LLM disagreement highlighting, PDF links, and CSV/JSON/Excel export dropdown.
 
 **Why this phase:**
 Phase 3 (Core Grading Experience) is complete. UI polish and professional presentation are required for production launch.
@@ -54,6 +54,7 @@ Phase 3 (Core Grading Experience) is complete. UI polish and professional presen
 - Phase 1: 5/5 requirements complete (SEC-01, SEC-02, SEC-03, SEC-04, SEC-05)
 - Phase 2: 2/9 requirements complete (AUTH-07, AUTH-08)
 - Phase 3: 6/13 requirements complete (GRAD-01, GRAD-02, GRAD-03, GRAD-04, GRAD-05, GRAD-06)
+- Phase 4: 3/3 requirements complete (UI-04, UI-05, UI-06)
 
 ## Performance Metrics
 
@@ -81,6 +82,18 @@ Phase 3 (Core Grading Experience) is complete. UI polish and professional presen
 - FileWithProgress interface for external progress state management
 - Purple accent color theme (purple-600) for primary CTAs
 - Removed web/ from .gitignore to track frontend changes
+
+**Phase 4 Plan 04 (2026-02-27):**
+- Duration: 4 minutes (250 seconds)
+- Tasks completed: 5
+- Files modified: 4
+- Commits: 5
+- Review screen with sortable grades table (copy/student, questions, total, percentage)
+- Inline editing via EditableGradeCell component (click to edit, Enter/Esc to save/cancel)
+- Auto-save each edit with TanStack Query mutation
+- Dual-LLM disagreement highlighting (AlertTriangle icon)
+- Export dropdown with CSV, JSON, Excel options
+- Responsive design (horizontal scroll, sticky first column, purple accent on sort indicators)
 
 ## Accumulated Context
 
@@ -167,6 +180,9 @@ Phase 3 (Core Grading Experience) is complete. UI polish and professional presen
 - [Phase 04]: Single FormData request for multi-file upload - simpler than individual XHRs per file
 - [Phase 04]: Progress callback with fileIndex parameter enables per-file progress tracking
 - [Phase 04]: Purple accent color theme (purple-600) for primary CTAs across Phase 4
+- [Phase 04]: Review screen with inline editing - click grade cell to edit, auto-save on Enter/blur, TanStack Query for cache invalidation
+- [Phase 04]: Sortable table with sticky first column for horizontal scrolling on smaller screens
+- [Phase 04]: Dual-LLM disagreement icons at per-question level using grading_audit.questions[].resolution.agreement field
 
 ### Active Todos
 
@@ -213,15 +229,15 @@ Phase 3 (Core Grading Experience) is complete. UI polish and professional presen
 
 ## Session Continuity
 
-**Last action:** Completed Phase 4 Plan 03 - Grading Progress Screen with Real-Time Updates
-**Next action:** Continue Phase 4 execution with Plan 04-04
+**Last action:** Completed Phase 4 Plan 04 - Review Screen with Inline Editing
+**Next action:** All Phase 4 plans complete. Ready for Phase 5 or production deployment.
 
 **Session info:**
-- Stopped at: Completed 04-03-Grading Progress Screen (French rotating messages, agreement rate, cancel button, auto-navigation, accessibility)
-- Timestamp: 2026-02-27T20:39:00Z
+- Stopped at: Completed 04-04-Review Screen with Inline Editing (sortable table, inline editing, auto-save, disagreement highlighting, export)
+- Timestamp: 2026-02-27T20:38:00Z
 
 **Quick context for next session:**
-We're building an AI-powered grading SaaS for French teachers. Phase 1 (Security Foundation) complete. Phase 2 (Observability & Monitoring) complete. Phase 3 (Core Grading Experience) complete. Phase 4 (User Interface & Polish) in progress. Plan 04-03 completed with French waiting messages (19 phrases), live agreement rate for dual-LLM grading, cancel button with confirmation, auto-navigation on completion, animated status grid, and ARIA accessibility. Next is Plan 04-04.
+We're building an AI-powered grading SaaS for French teachers. Phase 1 (Security Foundation) complete. Phase 2 (Observability & Monitoring) complete. Phase 3 (Core Grading Experience) complete. Phase 4 (User Interface & Polish) complete. All 18 plans across 4 phases are done. System ready for production beta testing or Phase 5 (Production Readiness & Cost Optimization).
 
 **State preservation:**
 - PROJECT.md: Core value, requirements, constraints, key decisions

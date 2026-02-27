@@ -66,9 +66,9 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 - [ ] **UI-01**: Dashboard displays recent sessions and quick actions
 - [ ] **UI-02**: Upload workflow guides user through PDF selection and grading options
 - [ ] **UI-03**: Grading progress shown with real-time updates
-- [ ] **UI-04**: Review screen displays all grades with ability to edit
-- [ ] **UI-05**: Responsive design works on tablets and laptops
-- [ ] **UI-06**: Clean, professional aesthetic (not playful or consumer-oriented)
+- [x] **UI-04**: Review screen displays all grades with ability to edit
+- [x] **UI-05**: Responsive design works on tablets and laptops
+- [x] **UI-06**: Clean, professional aesthetic (not playful or consumer-oriented)
 - [ ] **UI-07**: Error states display user-friendly messages (not stack traces)
 
 ### Operations
@@ -168,9 +168,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | UI-01 | Phase 4 | Pending |
 | UI-02 | Phase 4 | Pending |
 | UI-03 | Phase 4 | Pending |
-| UI-04 | Phase 4 | Pending |
-| UI-05 | Phase 4 | Pending |
-| UI-06 | Phase 4 | Pending |
+| UI-04 | Phase 4 | Complete |
+| UI-05 | Phase 4 | Complete |
+| UI-06 | Phase 4 | Complete |
 | UI-07 | Phase 4 | Pending |
 | OPS-01 | Phase 5 | Pending |
 | OPS-02 | Phase 5 | Pending |
