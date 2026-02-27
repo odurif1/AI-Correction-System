@@ -129,6 +129,7 @@ export interface CopyProgress {
   maxScore?: number;
   confidence?: number;
   error?: string;
+  agreement?: boolean; // For dual-LLM grading agreement
 }
 
 export interface QuestionProgress {
