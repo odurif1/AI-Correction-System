@@ -827,21 +827,33 @@ def create_app() -> FastAPI:
         async def auto_grade_task():
             from db import SessionLocal, User
             try:
+                logger.info(f"Auto-grading task started for session {session_id}")
+
                 # Update progress
                 if session_id in session_progress:
                     session_progress[session_id]["status"] = "grading"
 
+                # Re-create store for this task context
+                task_store = SessionStore(session_id, user_id=user_id)
+
+                logger.info(f"PDF paths for grading: {orchestrator.pdf_paths}")
+
                 # Run analysis phase
+                logger.info(f"Starting analyze_only for session {session_id}")
                 await orchestrator.analyze_only()
+                logger.info(f"analyze_only completed for session {session_id}")
 
                 # Confirm scale with the validated grading scale
                 orchestrator.confirm_scale(grading_scale)
+                logger.info(f"Scale confirmed for session {session_id}")
 
                 # Grade with progress callback
+                logger.info(f"Starting grade_all for session {session_id}")
                 await orchestrator.grade_all(progress_callback=progress_callback)
+                logger.info(f"grade_all completed for session {session_id}")
 
                 # Reload session to get graded copies
-                session = store.load_session()
+                session = task_store.load_session()
 
                 # Record grading operation
                 if hasattr(app.state, 'metrics_collector') and session and session.graded_copies:
