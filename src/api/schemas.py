@@ -4,7 +4,7 @@ Pydantic schemas for API request/response validation.
 These schemas define the structure and validation rules for all API endpoints.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Optional, Dict, Any, Literal
 from datetime import datetime
 
@@ -294,3 +294,36 @@ class StartGradingRequest(BaseModel):
     """Request to start grading with mode selection."""
     grading_mode: Literal["single", "dual"] = "dual"
     """Single LLM for faster grading, dual LLM for verification"""
+
+
+# ============================================================================
+# Grade Update Schemas
+# ============================================================================
+
+class UpdateGradeRequest(BaseModel):
+    """Request to update a single question grade for a graded copy."""
+    question_id: str = Field(..., description="Question identifier (e.g., 'Q1', '2')")
+    new_grade: float = Field(..., ge=0, description="New grade value (non-negative)")
+    auto_recalc: bool = True
+    """If True, automatically recalculate total_score. If False, caller provides total_score."""
+
+    @field_validator('new_grade')
+    @classmethod
+    def validate_grade(cls, v: float, info) -> float:
+        # Basic validation: non-negative
+        # Max point validation happens in endpoint (needs session context)
+        if v < 0:
+            raise ValueError('Grade must be non-negative')
+        return v
+
+
+class UpdateGradeResponse(BaseModel):
+    """Response after updating a grade."""
+    success: bool
+    copy_id: str
+    question_id: str
+    old_grade: float
+    new_grade: float
+    old_total: float
+    new_total: float
+    max_score: float
