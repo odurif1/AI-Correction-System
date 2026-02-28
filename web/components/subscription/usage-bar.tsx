@@ -1,32 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 
 interface UsageBarProps {
   className?: string;
 }
 
-interface SubscriptionStatus {
-  tier: string;
-  tokens_used: number;
-  monthly_limit: number;
-  remaining_tokens: number;
-  has_monthly_reset: boolean;
-}
-
 export function UsageBar({ className = "" }: UsageBarProps) {
-  const [status, setStatus] = useState<SubscriptionStatus | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { data: status, isLoading, refetch } = useQuery({
+    queryKey: ["subscription-status"],
+    queryFn: () => api.getSubscriptionStatus(),
+    refetchOnWindowFocus: true,
+    refetchInterval: 30000, // Refresh every 30 seconds
+  });
 
-  useEffect(() => {
-    api.getSubscriptionStatus()
-      .then(setStatus)
-      .catch(console.error)
-      .finally(() => setLoading(false));
-  }, []);
-
-  if (loading || !status) {
+  if (isLoading || !status) {
     return <div className={`h-20 bg-gray-100 rounded animate-pulse ${className}`} />;
   }
 
