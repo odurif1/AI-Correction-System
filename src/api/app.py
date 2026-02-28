@@ -1270,6 +1270,15 @@ def create_app() -> FastAPI:
                 # Broadcast completion AFTER token deduction (moved below deduction block)
 
                 # Deduct actual tokens used (not copy count)
+                # Initialize with safe defaults for completion broadcast
+                result = {
+                    'tokens_deducted': 0,
+                    'remaining_tokens': 0,
+                    'usage_record_id': None,
+                    'is_duplicate': False
+                }
+                db_user = None
+
                 db = SessionLocal()
                 try:
                     deduction_svc = TokenDeductionService()
@@ -1311,6 +1320,19 @@ def create_app() -> FastAPI:
                     })
                     logger.error(f"Token deduction failed for session {session_id}: {e}")
                     return
+
+                except Exception as e:
+                    # Catch-all for unexpected errors in token deduction
+                    # Log full traceback for debugging
+                    logger.exception(
+                        f"Unexpected error during token deduction for session {session_id}, user {user_id}: {e}"
+                    )
+                    # Broadcast error but allow grading to complete
+                    await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_ERROR, {
+                        "error": "Token deduction encountered an error",
+                        "details": str(e)
+                    })
+                    # DO NOT return - let grading complete with zero tokens deducted
 
                 finally:
                     db.close()
