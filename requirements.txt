@@ -30,3 +30,7 @@ sendgrid==6.12.5
 
 # Observability
 sentry-sdk[fastapi]==1.40.0
+
+# Security scanning
+pip-audit>=2.7.0
+bandit>=1.7.8
