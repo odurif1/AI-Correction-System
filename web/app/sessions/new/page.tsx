@@ -2,21 +2,20 @@
 
 import { useState, useEffect, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Header } from "@/components/layout/header";
 import { Footer } from "@/components/layout/footer";
 import { FileUploader, FileWithProgress } from "@/components/grading/file-uploader";
-import { PreAnalysisResults } from "@/components/grading/pre-analysis-results";
+import { DetectionResults } from "@/components/grading/detection-results";
 import { api, ApiError } from "@/lib/api";
 import { Loader2, Search, FileText } from "lucide-react";
 import { useAuth } from "@/lib/auth-context";
 import { useProgressSocket } from "@/lib/websocket";
 import { useRotatingMessage } from "@/lib/waiting-messages";
-import type { PreAnalysisResult } from "@/lib/types";
+import type { DetectionResult } from "@/lib/types";
 
-type Step = "upload" | "uploading" | "analyzing" | "review" | "confirming" | "grading";
+type Step = "upload" | "uploading" | "detecting" | "review" | "confirming" | "grading";
 
 function NewSessionContent() {
   const router = useRouter();
@@ -27,8 +26,8 @@ function NewSessionContent() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [step, setStep] = useState<Step>("upload");
   const [sessionId, setSessionId] = useState<string | null>(null);
-  const [preAnalysisResult, setPreAnalysisResult] =
-    useState<PreAnalysisResult | null>(null);
+  const [detectionResult, setDetectionResult] =
+    useState<DetectionResult | null>(null);
   const [isConfirming, setIsConfirming] = useState(false);
 
   // WebSocket connection for grading progress (only when grading)
@@ -40,7 +39,7 @@ function NewSessionContent() {
       }
     },
     onError: (error) => {
-      toast.error(error.message);
+      console.error("WebSocket error:", error.message);
       setStep("review");
       setIsConfirming(false);
     },
@@ -61,7 +60,7 @@ function NewSessionContent() {
   }, [searchParams]);
 
   const resumeSession = async (resumeSessionId: string) => {
-    setStep("analyzing");
+    setStep("detecting");
     setSessionId(resumeSessionId);
 
     try {
@@ -69,11 +68,10 @@ function NewSessionContent() {
       const session = await api.getSession(resumeSessionId);
 
       if (session.status === "diagnostic") {
-        // Try to load existing pre-analysis (cached)
-        const analysisResult = await api.preAnalyze(resumeSessionId, { force_refresh: false });
-        setPreAnalysisResult(analysisResult);
+        // Try to load existing detection (cached)
+        const result = await api.detect(resumeSessionId, { force_refresh: false });
+        setDetectionResult(result);
         setStep("review");
-        toast.info("Reprise du diagnostic");
       } else if (session.status === "correction") {
         // Already grading, show grading screen
         setStep("grading");
@@ -83,12 +81,10 @@ function NewSessionContent() {
       } else if (session.status === "error") {
         // Error state, allow re-upload
         setStep("upload");
-        toast.error("La session précédente a rencontré une erreur");
       }
     } catch (error) {
       console.error("Resume error:", error);
       setStep("upload");
-      toast.error("Impossible de reprendre la session");
     }
   };
 
@@ -154,57 +150,34 @@ function NewSessionContent() {
         result.errors.forEach(({ index, error }) => {
           setFileError(index, error);
         });
-        toast.warning(
-          `${result.uploaded_count}/${files.length} fichier(s) uploadé(s)`
-        );
-      } else {
-        toast.success(
-          `${files.length} fichier${files.length > 1 ? "s" : ""} uploadé${
-            files.length > 1 ? "s" : ""
-          }`
-        );
       }
 
-      // Move to diagnostic step
-      setStep("analyzing");
+      // Move to detection step
+      setStep("detecting");
 
-      // 3. Automatically start diagnostic
-      const analysisResult = await api.preAnalyze(newSessionId);
-      setPreAnalysisResult(analysisResult);
+      // 3. Automatically start detection
+      const detectResult = await api.detect(newSessionId);
+      setDetectionResult(detectResult);
       setStep("review");
     } catch (error) {
       setStep("upload");
       setUploadProgress(0);
       console.error("Upload error:", error);
-      if (error instanceof ApiError) {
-        toast.error(`Erreur (${error.status}): ${error.message}`);
-      } else if (error instanceof Error) {
-        toast.error(`Erreur: ${error.message}`);
-      } else {
-        toast.error("Une erreur est survenue");
-      }
     }
   };
 
-  const handleAnalyze = async () => {
+  const handleDetect = async () => {
     if (!sessionId) return;
 
-    setStep("analyzing");
+    setStep("detecting");
 
     try {
-      const result = await api.preAnalyze(sessionId, { force_refresh: true });
-      setPreAnalysisResult(result);
+      const result = await api.detect(sessionId, { force_refresh: true });
+      setDetectionResult(result);
       setStep("review");
     } catch (error) {
-      console.error("Diagnostic error:", error);
+      console.error("Detection error:", error);
       setStep("review"); // Go back to review even on error
-      if (error instanceof ApiError) {
-        toast.error(`Erreur de diagnostic (${error.status}): ${error.message}`);
-      } else if (error instanceof Error) {
-        toast.error(`Erreur de diagnostic: ${error.message}`);
-      } else {
-        toast.error("Erreur lors du diagnostic");
-      }
     }
   };
 
@@ -213,22 +186,19 @@ function NewSessionContent() {
   }) => {
     if (!sessionId) {
       console.error("No session ID");
-      toast.error("Erreur: aucune session active");
       return;
     }
 
-    console.log("Confirming pre-analysis for session:", sessionId);
+    console.log("Confirming detection for session:", sessionId);
     setIsConfirming(true);
     setStep("confirming");
 
     try {
-      const result = await api.confirmPreAnalysis(sessionId, {
+      const result = await api.confirmDetection(sessionId, {
         confirm: true,
         adjustments,
       });
       console.log("Confirm result:", result);
-
-      toast.success("Diagnostic confirmé - correction en cours");
 
       // Move to grading step - WebSocket will track sub-phases
       setStep("grading");
@@ -238,14 +208,6 @@ function NewSessionContent() {
       console.error("Confirm error:", error);
       setIsConfirming(false);
       setStep("review");
-      if (error instanceof ApiError) {
-        console.error("API Error details:", error.status, error.message);
-        toast.error(`Erreur (${error.status}): ${error.message}`);
-      } else if (error instanceof Error) {
-        toast.error(`Erreur: ${error.message}`);
-      } else {
-        toast.error("Erreur lors de la confirmation");
-      }
     }
   };
 
@@ -256,7 +218,7 @@ function NewSessionContent() {
           <p className="text-muted-foreground text-sm">
             {step === "upload" || step === "uploading"
               ? "Glissez vos copies PDF pour commencer"
-              : step === "analyzing"
+              : step === "detecting"
               ? "Diagnostic du document en cours..."
               : ""}
           </p>
@@ -306,12 +268,12 @@ function NewSessionContent() {
         </>
       )}
 
-      {/* Analyzing Step */}
-      {step === "analyzing" && (
+      {/* Detecting Step */}
+      {step === "detecting" && (
         <div className="flex flex-col items-center justify-center py-12 space-y-4">
           <Loader2 className="h-12 w-12 animate-spin text-primary" />
           <div className="text-center">
-            <h2 className="text-lg font-medium">Diagnostic du document</h2>
+            <h2 className="text-lg font-medium">Détection du document</h2>
             <p className="text-muted-foreground text-sm">
               Détection de la structure et du barème...
             </p>
@@ -320,8 +282,15 @@ function NewSessionContent() {
       )}
 
       {/* Review Step */}
-      {step === "review" && preAnalysisResult && (
+      {step === "review" && detectionResult && (
         <>
+          {/* Exam name header */}
+          {detectionResult.exam_name && (
+            <div className="text-center mb-4">
+              <h2 className="text-2xl font-bold">{detectionResult.exam_name}</h2>
+            </div>
+          )}
+
           {/* File info - now shows multiple files or single file */}
           {files.length === 1 ? (
             <div className="flex items-center gap-2 p-3 bg-muted rounded-lg">
@@ -331,18 +300,18 @@ function NewSessionContent() {
                   {files[0]?.name || "Document PDF"}
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  {preAnalysisResult.page_count} pages
+                  {detectionResult.page_count} pages
                 </p>
               </div>
               {user?.subscription_tier !== "free" && (
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={handleAnalyze}
+                  onClick={handleDetect}
                   disabled={step !== "review"}
                 >
                   <Search className="h-4 w-4 mr-1" />
-                  Rediagnostiquer
+                  Redétecter
                 </Button>
               )}
             </div>
@@ -354,26 +323,26 @@ function NewSessionContent() {
                   {files.length} documents PDF
                 </p>
                 <p className="text-xs text-muted-foreground">
-                  {preAnalysisResult.page_count} pages totales
+                  {detectionResult.page_count} pages totales
                 </p>
               </div>
               {user?.subscription_tier !== "free" && (
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={handleAnalyze}
+                  onClick={handleDetect}
                   disabled={step !== "review"}
                 >
                   <Search className="h-4 w-4 mr-1" />
-                  Rediagnostiquer
+                  Redétecter
                 </Button>
               )}
             </div>
           )}
 
-          {/* Analysis Results */}
-          <PreAnalysisResults
-            result={preAnalysisResult}
+          {/* Detection Results */}
+          <DetectionResults
+            result={detectionResult}
             onConfirm={handleConfirm}
             isConfirming={isConfirming}
           />

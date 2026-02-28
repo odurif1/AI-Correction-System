@@ -1,7 +1,6 @@
 "use client";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import type { LLMGrade } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -19,8 +18,6 @@ interface LLMGradeCardProps {
 }
 
 export function LLMGradeCard({
-  provider,
-  model,
   grade,
   maxGrade,
   reasoning,
@@ -29,12 +26,6 @@ export function LLMGradeCard({
   onClick,
   index = 0,
 }: LLMGradeCardProps) {
-  const providerColors: Record<string, string> = {
-    gemini: "bg-blue-500/10 text-blue-500 border-blue-500/20",
-    openai: "bg-green-500/10 text-green-500 border-green-500/20",
-    openrouter: "bg-purple-500/10 text-purple-500 border-purple-500/20",
-  };
-
   return (
     <Card
       className={cn(
@@ -44,17 +35,7 @@ export function LLMGradeCard({
       onClick={onClick}
     >
       <CardHeader className="pb-2">
-        <div className="flex items-center justify-between">
-          <div>
-            <CardTitle className="text-lg">Intelligence artificielle - {index === 0 ? 'A' : 'B'}</CardTitle>
-          </div>
-          <Badge
-            variant="outline"
-            className={providerColors[provider.toLowerCase()] || ""}
-          >
-            {provider}
-          </Badge>
-        </div>
+        <CardTitle className="text-lg">Intelligence artificielle - {index === 0 ? 'A' : 'B'}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4">
         {/* Grade display */}
@@ -81,7 +62,7 @@ export function LLMGradeCard({
             <p className="text-xs font-medium text-muted-foreground mb-1">
               Explication
             </p>
-            <p className="text-sm text-muted-foreground line-clamp-3">
+            <p className="text-sm text-muted-foreground">
               {reasoning}
             </p>
           </div>

@@ -9,7 +9,7 @@ export function Footer() {
           <span>&copy; {new Date().getFullYear()} La Corrigeuse</span>
           <span className="hidden sm:inline">•</span>
           <span className="hidden sm:flex items-center gap-1">
-            Fait avec <Heart className="h-3 w-3 text-red-500 fill-red-500" /> pour les profs
+            Fait avec <Heart className="h-3 w-3 text-red-500 fill-red-500" /> pour les professeurs
           </span>
         </div>
         <div className="flex items-center gap-6">

@@ -17,23 +17,23 @@ import {
   Edit2,
 } from "lucide-react";
 import type {
-  PreAnalysisResult,
+  DetectionResult,
   StudentInfo,
 } from "@/lib/types";
 
-interface PreAnalysisResultsProps {
-  result: PreAnalysisResult;
+interface DetectionResultsProps {
+  result: DetectionResult;
   onConfirm: (adjustments?: {
     grading_scale?: Record<string, number>;
   }) => void;
   isConfirming?: boolean;
 }
 
-export function PreAnalysisResults({
+export function DetectionResults({
   result,
   onConfirm,
   isConfirming = false,
-}: PreAnalysisResultsProps) {
+}: DetectionResultsProps) {
   const [isEditingScale, setIsEditingScale] = useState(false);
   const [editedScale, setEditedScale] = useState<Record<string, number>>(
     result.grading_scale
@@ -337,13 +337,6 @@ export function PreAnalysisResults({
             )}
           </Button>
         </div>
-      )}
-
-      {/* Cache indicator */}
-      {result.cached && (
-        <p className="text-xs text-muted-foreground text-center">
-          Analyse en cache (durée: {Math.round(result.analysis_duration_ms)}ms)
-        </p>
       )}
     </div>
   );

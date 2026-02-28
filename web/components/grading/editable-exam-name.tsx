@@ -3,7 +3,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { toast } from "sonner";
 import { Pencil } from "lucide-react";
 
 interface EditableExamNameProps {
@@ -27,13 +26,11 @@ export function EditableExamName({
       api.updateSessionSubject(sessionId, newSubject),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
-      toast.success("Nom de l'examen mis à jour");
       setIsEditing(false);
     },
     onError: (error: Error) => {
       setValue(subject || "");
       console.error("Session subject update error:", error);
-      toast.error(`Erreur: ${error.message || "Erreur lors de la mise à jour"}`);
     },
   });
 
@@ -74,8 +71,9 @@ export function EditableExamName({
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
         onBlur={handleSave}
-        className="px-3 py-1 text-3xl font-bold tracking-tight border rounded-lg bg-background w-full max-w-md"
+        className="px-2 py-0.5 text-base font-semibold border border-purple-300 rounded-md bg-background focus:outline-none focus:ring-2 focus:ring-purple-200"
         placeholder="Nom de l'examen"
+        style={{ width: `${Math.max(value.length + 2, 10)}ch` }}
       />
     );
   }
@@ -83,11 +81,11 @@ export function EditableExamName({
   return (
     <button
       onClick={() => setIsEditing(true)}
-      className="group flex items-center gap-2 text-3xl font-bold tracking-tight hover:bg-muted/50 px-3 py-1 rounded-lg transition-colors text-left"
+      className="group inline-flex items-center gap-1.5 text-base font-semibold hover:text-purple-600 transition-colors"
       title="Cliquez pour modifier le nom de l'examen"
     >
       {subject || fallback || "Examen sans nom"}
-      <Pencil className="h-4 w-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
+      <Pencil className="h-3 w-3 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity" />
     </button>
   );
 }

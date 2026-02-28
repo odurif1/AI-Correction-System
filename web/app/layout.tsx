@@ -16,7 +16,7 @@ const logoFont = Patrick_Hand({
 
 export const metadata: Metadata = {
   title: "La Corrigeuse - Correction automatique par IA",
-  description: "Gagnez 90% de temps sur la correction de vos copies. IA double validation pour les profs de collège et lycée.",
+  description: "Gagnez 90% de temps sur la correction de vos copies. IA double validation pour les professeurs de collège et lycée.",
   icons: {
     icon: "/favicon.svg?v=3",
   },

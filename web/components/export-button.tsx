@@ -1,17 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import { api } from "@/lib/api";
-import { Download, Loader2, FileJson, FileSpreadsheet, FileText } from "lucide-react";
+import { Download, Loader2 } from "lucide-react";
 
 interface ExportButtonProps {
   sessionId: string;
@@ -24,11 +17,11 @@ export function ExportButton({
   variant = "outline",
   size = "default",
 }: ExportButtonProps) {
-  const [exporting, setExporting] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [progress, setProgress] = useState(0);
 
-  const handleExport = async (format: "csv" | "json" | "excel") => {
-    setExporting(format);
+  const handleExport = async () => {
+    setExporting(true);
     setProgress(0);
 
     try {
@@ -37,7 +30,7 @@ export function ExportButton({
         setProgress((p) => Math.min(p + 10, 90));
       }, 100);
 
-      const blob = await api.exportSession(sessionId, format);
+      const blob = await api.exportSession(sessionId, "csv");
 
       clearInterval(progressInterval);
       setProgress(100);
@@ -46,20 +39,16 @@ export function ExportButton({
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      // Use appropriate file extension
-      const extension = format === "excel" ? "xlsx" : format;
-      a.download = `session_${sessionId}.${extension}`;
+      a.download = `session_${sessionId}.csv`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-
-      toast.success(`Export ${format.toUpperCase()} téléchargé`);
     } catch (error) {
-      toast.error(`Erreur export: ${(error as Error).message}`);
+      console.error("Export error:", error);
     } finally {
       setTimeout(() => {
-        setExporting(null);
+        setExporting(false);
         setProgress(0);
       }, 500);
     }
@@ -74,37 +63,19 @@ export function ExportButton({
         </div>
       )}
 
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button variant={variant} size={size} disabled={!!exporting}>
-            {exporting ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Export...
-              </>
-            ) : (
-              <>
-                <Download className="h-4 w-4 mr-2" />
-                Exporter
-              </>
-            )}
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem onClick={() => handleExport("csv")}>
-            <FileSpreadsheet className="h-4 w-4 mr-2" />
+      <Button variant={variant} size={size} onClick={handleExport} disabled={exporting}>
+        {exporting ? (
+          <>
+            <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+            Export...
+          </>
+        ) : (
+          <>
+            <Download className="h-4 w-4 mr-2" />
             Export CSV
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => handleExport("json")}>
-            <FileJson className="h-4 w-4 mr-2" />
-            Export JSON
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={() => handleExport("excel")}>
-            <FileSpreadsheet className="h-4 w-4 mr-2" />
-            Export Excel
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+          </>
+        )}
+      </Button>
     </div>
   );
 }

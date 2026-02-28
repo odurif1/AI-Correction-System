@@ -29,8 +29,8 @@ export function Header() {
   ];
 
   const authNavItems: Array<{ href: string; label: string; highlight?: boolean }> = [
+    { href: "/sessions/new", label: "Nouvelle correction" },
     { href: "/dashboard", label: "Mes corrections" },
-    { href: "/sessions/new", label: "Nouvelle correction", highlight: true },
     { href: "/subscription", label: "Abonnement" },
   ];
 

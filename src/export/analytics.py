@@ -448,9 +448,9 @@ class DataExporter:
             writer = csv.writer(f)
 
             # Header
-            header = ["copy_id", "student_name", "total_score", "max_score"]
+            header = ["élève", "total", "max"]
             header.extend([f"q_{qid}" for qid in question_ids])
-            header.append("feedback")
+            header.append("commentaire")
             writer.writerow(header)
 
             # Rows
@@ -461,7 +461,6 @@ class DataExporter:
                 )
 
                 row = [
-                    graded.copy_id,
                     copy.student_name if copy else "",
                     graded.total_score,
                     graded.max_score

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { toast } from "sonner";
 import {
   Card,
   CardContent,
@@ -43,7 +42,7 @@ export function DisagreementCard({
           selected === "custom" ? parseFloat(customGrade) : undefined,
       });
     } catch (error) {
-      toast.error(`Erreur lors de la résolution: ${(error as Error).message}`);
+      console.error("Erreur lors de la résolution:", error);
     } finally {
       setLoading(false);
     }

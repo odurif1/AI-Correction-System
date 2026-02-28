@@ -3,7 +3,6 @@
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useState, useMemo } from "react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/layout/header";
 import { Footer } from "@/components/layout/footer";
@@ -74,13 +73,12 @@ export default function DashboardPage() {
   const deleteMutation = useMutation({
     mutationFn: (sessionId: string) => api.deleteSession(sessionId),
     onSuccess: () => {
-      toast.success("Session supprimée");
       queryClient.invalidateQueries({ queryKey: ["sessions"] });
       setDeleteDialogOpen(false);
       setSessionToDelete(null);
     },
     onError: (error: Error) => {
-      toast.error(`Erreur: ${error.message}`);
+      console.error("Delete error:", error.message);
     },
   });
 

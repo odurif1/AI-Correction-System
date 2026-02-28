@@ -8,10 +8,10 @@ import type {
   ResolveDecision,
   CreateSessionRequest,
   SessionResponse,
-  PreAnalysisResult,
-  PreAnalysisRequest,
-  ConfirmPreAnalysisRequest,
-  ConfirmPreAnalysisResponse,
+  DetectionResult,
+  DetectionRequest,
+  ConfirmDetectionRequest,
+  ConfirmDetectionResponse,
   ListSessionsParams,
 } from "@/lib/types";
 
@@ -210,8 +210,15 @@ class ApiClient {
     sessionId: string,
     format: "csv" | "json" | "excel"
   ): Promise<Blob> {
+    const token = typeof window !== 'undefined' ? localStorage.getItem("token") : null;
+
     const response = await fetch(
-      `${this.baseUrl}/api/sessions/${sessionId}/export/${format}`
+      `${this.baseUrl}/api/sessions/${sessionId}/export/${format}`,
+      {
+        headers: {
+          ...(token ? { "Authorization": `Bearer ${token}` } : {}),
+        },
+      }
     );
     if (!response.ok) {
       throw new ApiError(`Export failed: ${response.status}`, response.status);
@@ -245,19 +252,19 @@ class ApiClient {
     return new WebSocket(`${wsProtocol}://${wsHost}/api/sessions/${sessionId}/ws`);
   }
 
-  // Pre-analysis
-  async preAnalyze(sessionId: string, request: PreAnalysisRequest = {}): Promise<PreAnalysisResult> {
-    return this.fetchJson(`/api/sessions/${sessionId}/pre-analyze`, {
+  // Detection
+  async detect(sessionId: string, request: DetectionRequest = {}): Promise<DetectionResult> {
+    return this.fetchJson(`/api/sessions/${sessionId}/detect`, {
       method: "POST",
       body: JSON.stringify(request),
     });
   }
 
-  async confirmPreAnalysis(
+  async confirmDetection(
     sessionId: string,
-    request: ConfirmPreAnalysisRequest
-  ): Promise<ConfirmPreAnalysisResponse> {
-    return this.fetchJson(`/api/sessions/${sessionId}/confirm-pre-analysis`, {
+    request: ConfirmDetectionRequest
+  ): Promise<ConfirmDetectionResponse> {
+    return this.fetchJson(`/api/sessions/${sessionId}/confirm-detection`, {
       method: "POST",
       body: JSON.stringify(request),
     });
@@ -307,6 +314,49 @@ class ApiClient {
       {
         method: "PATCH",
         body: JSON.stringify({ subject }),
+      }
+    );
+  }
+
+  // Question weight updates
+  async updateQuestionWeight(
+    sessionId: string,
+    questionId: string,
+    newWeight: number
+  ): Promise<{
+    success: boolean;
+    question_id: string;
+    old_weight: number;
+    new_weight: number;
+    old_max_score: number;
+    new_max_score: number;
+    updated_copies: number;
+  }> {
+    return this.fetchJson(
+      `/api/sessions/${sessionId}/question-weights`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ question_id: questionId, new_weight: newWeight }),
+      }
+    );
+  }
+
+  // Question name updates
+  async updateQuestionName(
+    sessionId: string,
+    questionId: string,
+    newName: string
+  ): Promise<{
+    success: boolean;
+    question_id: string;
+    old_name: string | null;
+    new_name: string;
+  }> {
+    return this.fetchJson(
+      `/api/sessions/${sessionId}/question-names`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ question_id: questionId, new_name: newName }),
       }
     );
   }

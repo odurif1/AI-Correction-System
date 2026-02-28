@@ -32,6 +32,8 @@ import { ExportButton } from "@/components/export-button";
 import { EditableGradeCell } from "@/components/grading/editable-grade-cell";
 import { EditableStudentName } from "@/components/grading/editable-student-name";
 import { EditableExamName } from "@/components/grading/editable-exam-name";
+import { EditableQuestionWeight } from "@/components/grading/editable-question-weight";
+import { EditableQuestionName } from "@/components/grading/editable-question-name";
 import { useProgressSocket } from "@/lib/websocket";
 import { useRotatingMessage } from "@/lib/waiting-messages";
 import { api } from "@/lib/api";
@@ -47,7 +49,10 @@ import {
   ExternalLink,
   ChevronDown,
   ChevronUp,
+  Search,
 } from "lucide-react";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import type { Disagreement, SessionDetail, Analytics } from "@/lib/types";
 
 export default function SessionDetailPage() {
@@ -60,6 +65,8 @@ export default function SessionDetailPage() {
   const [isGrading, setIsGrading] = useState(false);
   const [sortColumn, setSortColumn] = useState<string>("copy_id");
   const [sortDirection, setSortDirection] = useState<"asc" | "desc">("asc");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeTab, setActiveTab] = useState<string>("review");
 
   // Fetch session data
   const { data: session, isLoading } = useQuery({
@@ -150,17 +157,31 @@ export default function SessionDetailPage() {
     }
   }, [disagreementData]);
 
-  // Auto-navigation on completion
+  // Auto-navigation on completion - switch to disagreements tab if there are any
   useEffect(() => {
     if (session?.status === "complete" && isGrading) {
       // Delay slightly to show final status
       const timeout = setTimeout(() => {
-        router.push(`/sessions/${sessionId}?tab=review`);
+        // Check if there are unresolved disagreements
+        const hasUnresolvedDisagreements = disagreementData && disagreementData.some((d: Disagreement) => !d.resolved);
+        if (hasUnresolvedDisagreements) {
+          setActiveTab("disagreements");
+        } else {
+          setActiveTab("review");
+        }
         setIsGrading(false);
       }, 1500);
       return () => clearTimeout(timeout);
     }
-  }, [session?.status, isGrading, sessionId, router]);
+  }, [session?.status, isGrading, sessionId, disagreementData]);
+
+  // Auto-switch to review tab when all disagreements are resolved
+  useEffect(() => {
+    const unresolvedCount = disagreements.filter((d) => !d.resolved).length;
+    if (activeTab === "disagreements" && unresolvedCount === 0 && disagreements.length > 0) {
+      setActiveTab("review");
+    }
+  }, [disagreements, activeTab]);
 
   // Handle cancel button
   const handleCancel = async () => {
@@ -185,7 +206,14 @@ export default function SessionDetailPage() {
   const getSortedCopies = () => {
     if (!session?.graded_copies) return [];
 
-    return [...session.graded_copies].sort((a, b) => {
+    // First filter by search query
+    const filtered = session.graded_copies.filter((copy) => {
+      if (!searchQuery) return true;
+      const name = copy.student_name || copy.copy_id;
+      return name.toLowerCase().includes(searchQuery.toLowerCase());
+    });
+
+    return filtered.sort((a, b) => {
       let aValue: any;
       let bValue: any;
 
@@ -228,8 +256,26 @@ export default function SessionDetailPage() {
     return (
       <div className="min-h-screen flex flex-col">
         <Header />
-        <main className="flex-1 flex items-center justify-center">
-          <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <main className="flex-1 container py-6">
+          {/* Back button skeleton */}
+          <Skeleton className="h-9 w-44 mb-4" />
+
+          {/* Header skeleton */}
+          <div className="mb-6">
+            <div className="flex items-center gap-3 mb-3">
+              <Skeleton className="h-8 w-48" />
+              <Skeleton className="h-6 w-20" />
+            </div>
+            <Skeleton className="h-5 w-64" />
+          </div>
+
+          {/* Table skeleton */}
+          <div className="space-y-3">
+            <Skeleton className="h-12 w-full" />
+            {[...Array(8)].map((_, i) => (
+              <Skeleton key={i} className="h-14 w-full" />
+            ))}
+          </div>
         </main>
         <Footer />
       </div>
@@ -267,44 +313,41 @@ export default function SessionDetailPage() {
     <div className="min-h-screen flex flex-col">
       <Header />
 
-      <main className="flex-1 container py-8">
-        <Button variant="ghost" className="mb-6" asChild>
-          <Link href="/dashboard">
-            <ArrowLeft className="h-4 w-4 mr-2" />
-            Retour au tableau de bord
-          </Link>
-        </Button>
-
-        {/* Session Header */}
-        <div className="flex items-start justify-between mb-8">
-          <div>
-            <div className="flex items-center gap-3 mb-2">
-              <EditableExamName
-                sessionId={sessionId}
-                subject={session.subject}
-                fallback={`Session ${sessionId.slice(0, 8)}`}
-              />
-              <SessionStatus status={wasInterrupted ? "complete" : session.status} />
-              {wasInterrupted && (
-                <Badge variant="outline" className="text-amber-600 border-amber-600">
-                  Finalisée
-                </Badge>
-              )}
-              {progress.connected && (
-                <Badge variant="outline" className="text-success border-success">
-                  Live
-                </Badge>
-              )}
-            </div>
-            <div className="text-muted-foreground">
-              {session.subject && <span>{session.subject}</span>}
-              {session.topic && <span> - {session.topic}</span>}
-              <span className="mx-2">|</span>
-              Créée le {formatDate(session.created_at)}
-            </div>
+      <main className="flex-1 container py-6">
+        {/* Top row: Back button + Exam name + Status */}
+        <div className="flex items-center justify-between mb-4 gap-2 flex-wrap">
+          <div className="flex items-center gap-2 flex-wrap">
+            <Button variant="ghost" asChild>
+              <Link href="/dashboard">
+                <ArrowLeft className="h-4 w-4 mr-2" />
+                Retour
+              </Link>
+            </Button>
+            <span className="text-slate-300 hidden sm:inline">|</span>
+            <EditableExamName
+              sessionId={sessionId}
+              subject={session.subject}
+              fallback={`Session ${sessionId.slice(0, 8)}`}
+            />
           </div>
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            {progress.connected && isGradingActive && (
+              <Badge variant="outline" className="text-green-600 border-green-600">
+                Live
+              </Badge>
+            )}
+            <SessionStatus status={wasInterrupted ? "complete" : session.status} />
+            <span className="hidden sm:inline">·</span>
+            <span className="hidden sm:inline">Créée le {formatDate(session.created_at)}</span>
+          </div>
+        </div>
 
-          <div className="flex gap-2">
+        {/* Topic and Action button row */}
+        {(session.topic || !isGradingActive) && (
+          <div className="flex items-center justify-between mb-4 gap-4">
+            {session.topic && (
+              <span className="text-sm text-muted-foreground">{session.topic}</span>
+            )}
             {!isGradingActive && !isComplete && (
               <Button
                 onClick={() => startGradingMutation.mutate()}
@@ -319,15 +362,12 @@ export default function SessionDetailPage() {
                 Démarrer la correction
               </Button>
             )}
-            {isComplete && (
-              <ExportButton sessionId={sessionId} />
-            )}
           </div>
-        </div>
+        )}
 
         {/* Progress Grid (during grading) */}
         {isGradingActive && (
-          <Card className="mb-8 border-purple-200 dark:border-purple-900">
+          <Card className="mb-6 border-purple-200 dark:border-purple-900">
             <CardHeader>
               <div className="flex items-center justify-between">
                 <div>
@@ -380,91 +420,140 @@ export default function SessionDetailPage() {
           </Card>
         )}
 
-        {/* Stats Cards */}
-        <div className="grid gap-4 md:grid-cols-4 mb-8">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">
-                Total copies
-              </CardTitle>
-              <Users className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{session.copies_count}</div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Corrigées</CardTitle>
-              <BarChart3 className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{session.graded_count}</div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">
-                Moyenne
-              </CardTitle>
-              <BarChart3 className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">
-                {session.average_score?.toFixed(1) || "-"}/{session.max_score?.toFixed(0) || "-"}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">
-                Désaccords
-              </CardTitle>
-              <AlertTriangle className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">
-                {disagreements.filter((d) => !d.resolved).length}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
         {/* Tabs for Review/Analytics/Disagreements */}
         {isComplete && (
-          <Tabs defaultValue="review" className="space-y-6">
-            <TabsList>
-              <TabsTrigger value="review">Révision</TabsTrigger>
-              <TabsTrigger value="analytics">Statistiques</TabsTrigger>
-              {hasDisagreements && (
-                <TabsTrigger value="disagreements">
-                  Désaccords
-                  <Badge variant="warning" className="ml-2">
-                    {disagreements.filter((d) => !d.resolved).length}
-                  </Badge>
-                </TabsTrigger>
-              )}
-            </TabsList>
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
+            <div className="flex items-center justify-between">
+              <TabsList>
+                <TabsTrigger value="review">Révision</TabsTrigger>
+                <TabsTrigger value="analytics">Statistiques</TabsTrigger>
+                {hasDisagreements && (
+                  <TabsTrigger value="disagreements">
+                    Désaccords
+                    <Badge variant="warning" className="ml-2">
+                      {disagreements.filter((d) => !d.resolved).length}
+                    </Badge>
+                  </TabsTrigger>
+                )}
+              </TabsList>
+              <ExportButton sessionId={sessionId} />
+            </div>
 
             {/* Review Tab */}
             <TabsContent value="review">
-              <Card>
-                <CardHeader>
-                  <CardTitle>Réviser les notes</CardTitle>
-                  <CardDescription>
-                    Cliquez sur une note pour la modifier. Modifications auto-sauvegardées.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="rounded-md border overflow-x-auto">
+              {/* Search Bar - only show if more than 15 students */}
+              {session.graded_copies && session.graded_copies.length > 15 && (
+                <div className="mb-4 flex flex-col sm:flex-row sm:items-center gap-3">
+                  <div className="relative flex-1 max-w-sm">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400" />
+                    <Input
+                      placeholder="Rechercher un élève..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="pl-9 pr-9 h-10 bg-white border-slate-200 focus:border-purple-300 focus:ring-purple-200"
+                    />
+                    {searchQuery && (
+                      <button
+                        onClick={() => setSearchQuery("")}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 hover:text-slate-600 transition-colors"
+                        aria-label="Effacer la recherche"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    )}
+                  </div>
+                  <span className="text-sm text-slate-500">
+                    {sortedCopies.length} élève{sortedCopies.length !== 1 ? 's' : ''}
+                    {searchQuery && (
+                      <span className="text-slate-400"> sur {session.graded_copies.length}</span>
+                    )}
+                  </span>
+                </div>
+              )}
+
+              {/* Mobile Card View */}
+              <div className="md:hidden space-y-3">
+                {sortedCopies.length === 0 ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    Aucun élève ne correspond à la recherche
+                  </div>
+                ) : (
+                  sortedCopies.map((graded) => {
+                    const gradingAudit = graded.grading_audit as any;
+                    return (
+                      <Card key={graded.copy_id} className="shadow-sm border-slate-200 overflow-hidden">
+                        <CardContent className="p-4">
+                          {/* Student name and total */}
+                          <div className="flex justify-between items-center mb-3 pb-3 border-b border-slate-100">
+                            <EditableStudentName
+                              sessionId={sessionId}
+                              copyId={graded.copy_id}
+                              studentName={graded.student_name}
+                            />
+                            <span className="font-bold text-lg">
+                              <span className="text-slate-700">{graded.total_score.toFixed(1)}</span>
+                              <span className="text-slate-400 mx-0.5">/</span>
+                              <span className="text-slate-500">{graded.max_score}</span>
+                            </span>
+                          </div>
+
+                          {/* Questions grid */}
+                          <div className="grid grid-cols-2 gap-x-4 gap-y-2">
+                            {questionIds.map((questionId) => {
+                              const questionHasDisagreement = gradingAudit?.questions?.[questionId]?.resolution?.agreement === false;
+                              const maxPoints = graded.max_points_by_question?.[questionId] ?? session.question_weights?.[questionId] ?? 0;
+                              const originalLLMGrade = gradingAudit?.questions?.[questionId]?.resolution?.final_grade;
+                              const displayName = session.question_names?.[questionId] || questionId;
+
+                              return (
+                                <div key={questionId} className="flex justify-between items-center py-1.5">
+                                  <span className="text-sm text-slate-600 truncate max-w-[45%]" title={displayName}>
+                                    {displayName}
+                                  </span>
+                                  <EditableGradeCell
+                                    sessionId={sessionId}
+                                    copyId={graded.copy_id}
+                                    questionId={questionId}
+                                    grade={graded.grades[questionId] || 0}
+                                    maxPoints={maxPoints}
+                                    hasDisagreement={questionHasDisagreement}
+                                    originalLLMGrade={originalLLMGrade}
+                                  />
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* PDF Link */}
+                          <div className="mt-3 pt-3 border-t border-slate-100">
+                            <Button variant="ghost" size="sm" asChild className="w-full justify-center hover:bg-purple-50 hover:text-purple-700">
+                              <a
+                                href={`/api/sessions/${sessionId}/copies/${graded.copy_id}/pdf`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="flex items-center gap-2"
+                              >
+                                <ExternalLink className="h-4 w-4" />
+                                Voir le PDF
+                              </a>
+                            </Button>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Desktop Table View */}
+              <Card className="hidden md:block shadow-sm border border-slate-200 rounded-xl overflow-hidden">
+                <CardContent className="p-0">
+                  <div className="overflow-x-auto">
                     <Table>
                       <TableHeader>
-                        <TableRow>
+                        <TableRow className="hover:bg-transparent bg-slate-50/80">
                           <TableHead
-                            className="cursor-pointer hover:bg-muted sticky left-0 bg-background z-10 min-w-[120px]"
+                            className="cursor-pointer hover:bg-slate-100 sticky left-0 bg-slate-50 z-10 min-w-[160px] text-xs font-semibold text-slate-600 uppercase tracking-wider px-5 py-4 border-b-2 border-slate-200"
                             onClick={() => handleSort("copy_id")}
                           >
                             <div className="flex items-center gap-1">
@@ -478,26 +567,8 @@ export default function SessionDetailPage() {
                               )}
                             </div>
                           </TableHead>
-                          {questionIds.map((questionId) => (
-                            <TableHead
-                              key={questionId}
-                              className="cursor-pointer hover:bg-muted text-center min-w-[100px]"
-                              onClick={() => handleSort(questionId)}
-                            >
-                              <div className="flex items-center justify-center gap-1">
-                                {questionId}
-                                {sortColumn === questionId && (
-                                  sortDirection === "asc" ? (
-                                    <ChevronUp className="h-4 w-4 text-purple-600" />
-                                  ) : (
-                                    <ChevronDown className="h-4 w-4 text-purple-600" />
-                                  )
-                                )}
-                              </div>
-                            </TableHead>
-                          ))}
                           <TableHead
-                            className="cursor-pointer hover:bg-muted text-center min-w-[80px]"
+                            className="cursor-pointer hover:bg-slate-100 text-center min-w-[100px] text-xs font-semibold text-slate-600 uppercase tracking-wider px-5 py-4 border-b-2 border-slate-200"
                             onClick={() => handleSort("total_score")}
                           >
                             <div className="flex items-center justify-center gap-1">
@@ -511,63 +582,113 @@ export default function SessionDetailPage() {
                               )}
                             </div>
                           </TableHead>
-                          <TableHead className="text-center min-w-[100px]">Actions</TableHead>
+                          {questionIds.map((questionId) => {
+                            const maxPoints = session.question_weights?.[questionId] ?? 0;
+                            const displayName = session.question_names?.[questionId] || questionId;
+                            return (
+                            <TableHead
+                              key={questionId}
+                              className="text-center min-w-[120px] text-xs font-semibold text-slate-600 uppercase tracking-wider px-4 py-4 border-b-2 border-slate-200"
+                            >
+                              <div className="flex flex-col items-center gap-1">
+                                <span onClick={() => handleSort(questionId)} className="cursor-pointer hover:text-purple-600 flex items-center gap-1">
+                                  <EditableQuestionName
+                                    sessionId={sessionId}
+                                    questionId={questionId}
+                                    displayName={displayName}
+                                    onNameChange={() => queryClient.invalidateQueries({ queryKey: ["session", sessionId] })}
+                                  />
+                                  {sortColumn === questionId && (
+                                    sortDirection === "asc" ? (
+                                      <ChevronUp className="h-3 w-3 text-purple-600" />
+                                    ) : (
+                                      <ChevronDown className="h-3 w-3 text-purple-600" />
+                                    )
+                                  )}
+                                </span>
+                                <span className="text-slate-400 font-normal normal-case text-[10px]">
+                                  <EditableQuestionWeight
+                                    sessionId={sessionId}
+                                    questionId={questionId}
+                                    weight={maxPoints}
+                                    onWeightChange={() => queryClient.invalidateQueries({ queryKey: ["session", sessionId] })}
+                                  />
+                                </span>
+                              </div>
+                            </TableHead>
+                            );
+                          })}
+                          <TableHead className="text-center min-w-[100px] text-xs font-semibold text-slate-600 uppercase tracking-wider px-5 py-4 border-b-2 border-slate-200">Actions</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {sortedCopies.map((graded) => {
-                          // Get grading audit to check for disagreements
-                          const gradingAudit = graded.grading_audit as any;
+                        {sortedCopies.length === 0 ? (
+                          <TableRow>
+                            <TableCell colSpan={questionIds.length + 3} className="text-center py-8 text-muted-foreground">
+                              Aucun élève ne correspond à la recherche
+                            </TableCell>
+                          </TableRow>
+                        ) : (
+                          sortedCopies.map((graded, index) => {
+                            // Get grading audit to check for disagreements
+                            const gradingAudit = graded.grading_audit as any;
+                            const isEvenRow = index % 2 === 0;
 
-                          return (
-                            <TableRow key={graded.copy_id} className="hover:bg-muted/50">
-                              <TableCell className="font-medium sticky left-0 bg-background">
-                                <EditableStudentName
-                                  sessionId={sessionId}
-                                  copyId={graded.copy_id}
-                                  studentName={graded.student_name}
-                                />
-                              </TableCell>
-                              {questionIds.map((questionId) => {
-                                // Check if this specific question has a disagreement
-                                const questionHasDisagreement = gradingAudit?.questions?.[questionId]?.resolution?.agreement === false;
-                                const maxPoints = graded.max_points_by_question?.[questionId] ?? session.question_weights?.[questionId] ?? 0;
-                                // Get the original LLM grade for reset functionality
-                                const originalLLMGrade = gradingAudit?.questions?.[questionId]?.resolution?.final_grade;
+                            return (
+                              <TableRow
+                                key={graded.copy_id}
+                                className={`group transition-colors ${isEvenRow ? 'bg-white' : 'bg-slate-50/30'} hover:bg-purple-50/50`}
+                              >
+                                <TableCell className={`font-medium sticky left-0 z-10 px-5 py-4 ${isEvenRow ? 'bg-white' : 'bg-slate-50/30'} group-hover:bg-purple-50/50 transition-colors`}>
+                                  <EditableStudentName
+                                    sessionId={sessionId}
+                                    copyId={graded.copy_id}
+                                    studentName={graded.student_name}
+                                  />
+                                </TableCell>
+                                <TableCell className="text-center font-semibold px-5 py-4">
+                                  <span className="inline-flex items-center px-3 py-1.5 rounded-lg bg-slate-100 text-slate-700">
+                                    {graded.total_score.toFixed(1)}<span className="text-slate-400 mx-0.5">/</span>{graded.max_score}
+                                  </span>
+                                </TableCell>
+                                {questionIds.map((questionId) => {
+                                  // Check if this specific question has a disagreement
+                                  const questionHasDisagreement = gradingAudit?.questions?.[questionId]?.resolution?.agreement === false;
+                                  const maxPoints = graded.max_points_by_question?.[questionId] ?? session.question_weights?.[questionId] ?? 0;
+                                  // Get the original LLM grade for reset functionality
+                                  const originalLLMGrade = gradingAudit?.questions?.[questionId]?.resolution?.final_grade;
 
-                                return (
-                                  <TableCell key={questionId} className="text-center">
-                                    <EditableGradeCell
-                                      sessionId={sessionId}
-                                      copyId={graded.copy_id}
-                                      questionId={questionId}
-                                      grade={graded.grades[questionId] || 0}
-                                      maxPoints={maxPoints}
-                                      hasDisagreement={questionHasDisagreement}
-                                      originalLLMGrade={originalLLMGrade}
-                                    />
-                                  </TableCell>
-                                );
-                              })}
-                              <TableCell className="text-center font-medium">
-                                {graded.total_score.toFixed(1)}/{graded.max_score}
-                              </TableCell>
-                              <TableCell className="text-center">
-                                <Button variant="ghost" size="sm" asChild>
-                                  <a
-                                    href={`/api/sessions/${sessionId}/copies/${graded.copy_id}/pdf`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="flex items-center gap-1"
-                                  >
-                                    <ExternalLink className="h-3 w-3" />
-                                    View PDF
-                                  </a>
-                                </Button>
-                              </TableCell>
-                            </TableRow>
-                          );
-                        })}
+                                  return (
+                                    <TableCell key={questionId} className="text-center px-4 py-4">
+                                      <EditableGradeCell
+                                        sessionId={sessionId}
+                                        copyId={graded.copy_id}
+                                        questionId={questionId}
+                                        grade={graded.grades[questionId] || 0}
+                                        maxPoints={maxPoints}
+                                        hasDisagreement={questionHasDisagreement}
+                                        originalLLMGrade={originalLLMGrade}
+                                      />
+                                    </TableCell>
+                                  );
+                                })}
+                                <TableCell className="text-center px-5 py-4">
+                                  <Button variant="ghost" size="sm" asChild className="hover:bg-purple-100 hover:text-purple-700">
+                                    <a
+                                      href={`/api/sessions/${sessionId}/copies/${graded.copy_id}/pdf`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="flex items-center gap-1"
+                                    >
+                                      <ExternalLink className="h-3 w-3" />
+                                      View PDF
+                                    </a>
+                                  </Button>
+                                </TableCell>
+                              </TableRow>
+                            );
+                          })
+                        )}
                       </TableBody>
                     </Table>
                   </div>

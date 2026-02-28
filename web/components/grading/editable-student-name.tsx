@@ -3,7 +3,6 @@
 import { useState, useRef, useEffect } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { toast } from "sonner";
 
 interface EditableStudentNameProps {
   sessionId: string;
@@ -26,13 +25,11 @@ export function EditableStudentName({
       api.updateStudentName(sessionId, copyId, newName),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
-      toast.success("Nom mis à jour");
       setIsEditing(false);
     },
     onError: (error: Error) => {
       setValue(studentName || "");
       console.error("Student name update error:", error);
-      toast.error(`Erreur: ${error.message || "Erreur lors de la mise à jour"}`);
     },
   });
 
