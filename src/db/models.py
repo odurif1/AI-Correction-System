@@ -10,10 +10,10 @@ import uuid
 
 class SubscriptionTier(str, enum.Enum):
     """Subscription tiers for users."""
-    FREE = "free"              # Découverte - 10K tokens (~1 page)
-    ESSENTIEL = "essentiel"    # 1.2M tokens (~120 pages)
-    PRO = "pro"                # 6M tokens (~600 pages)
-    MAX = "max"                # 24M tokens (~2400 pages)
+    FREE = "free"              # Découverte - 100K tokens one-shot (~30 pages)
+    ESSENTIEL = "essentiel"    # 1.2M tokens/month (~500 copies)
+    PRO = "pro"                # 6M tokens/month (~2500 copies)
+    MAX = "max"                # 24M tokens/month (~10000 copies)
     ADMIN = "admin"            # Admin - unlimited, access to settings
 
 
@@ -37,6 +37,10 @@ class User(Base):
     subscription_start = Column(DateTime, nullable=True)
     subscription_end = Column(DateTime, nullable=True)
 
+    # Stripe integration
+    stripe_customer_id = Column(String, nullable=True, index=True)
+    stripe_subscription_id = Column(String, nullable=True, index=True)
+
     # Usage tracking (in tokens)
     tokens_used_this_month = Column(Integer, default=0)
     usage_month = Column(Integer, default=lambda: datetime.utcnow().month)
@@ -45,11 +49,11 @@ class User(Base):
     def get_monthly_token_limit(self) -> int:
         """Get the monthly token limit for the user's tier."""
         limits = {
-            SubscriptionTier.FREE: 10_000,           # ~1 page
-            SubscriptionTier.ESSENTIEL: 1_200_000,   # ~120 pages
-            SubscriptionTier.PRO: 6_000_000,         # ~600 pages
-            SubscriptionTier.MAX: 24_000_000,        # ~2400 pages
-            SubscriptionTier.ADMIN: 999_999_999,     # Unlimited
+            SubscriptionTier.FREE: 100_000,           # One-shot (~30 pages)
+            SubscriptionTier.ESSENTIEL: 1_200_000,    # ~500 copies/month
+            SubscriptionTier.PRO: 6_000_000,          # ~2500 copies/month
+            SubscriptionTier.MAX: 24_000_000,         # ~10000 copies/month
+            SubscriptionTier.ADMIN: 999_999_999,      # Unlimited
         }
         return limits[self.subscription_tier]
 
@@ -76,8 +80,16 @@ class User(Base):
         """Legacy alias - increments token usage."""
         self.add_token_usage(token_count)
 
+    def has_monthly_reset(self) -> bool:
+        """Check if user's tier resets monthly (FREE is one-shot only)."""
+        return self.subscription_tier != SubscriptionTier.FREE
+
     def _reset_usage_if_new_month(self) -> None:
-        """Reset usage counter if we're in a new month."""
+        """Reset usage counter if we're in a new month (except FREE tier)."""
+        # FREE tier is one-shot, never reset
+        if self.subscription_tier == SubscriptionTier.FREE:
+            return
+
         now = datetime.utcnow()
         if now.month != self.usage_month or now.year != self.usage_year:
             self.usage_month = now.month
