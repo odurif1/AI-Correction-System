@@ -73,8 +73,8 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 
 ### Operations
 
-- [ ] **OPS-01**: Application containerized with Docker multi-stage builds
-- [ ] **OPS-02**: Docker Compose configuration for local development and production
+- [x] **OPS-01**: Application containerized with Docker multi-stage builds
+- [x] **OPS-02**: Docker Compose configuration for local development and production
 - [ ] **OPS-03**: CI/CD pipeline runs tests and security scans on every push
 - [x] **OPS-04**: Automated dependency vulnerability scanning (pip-audit)
 - [x] **OPS-05**: Static security analysis integrated (bandit)

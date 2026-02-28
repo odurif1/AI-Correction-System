@@ -3,23 +3,23 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 current_phase: Phase 5 (Production Readiness)
-current_plan: 05-03 (Token Cost Estimation and Prompt Caching)
-status: executing
-last_updated: "2026-02-28T15:46:40.495Z"
+current_plan: 05-01 (Docker Containerization)
+status: completed
+last_updated: "2026-02-28T15:48:00.000Z"
 progress:
   total_phases: 5
   completed_phases: 4
   total_plans: 24
-  completed_plans: 22
-  percent: 92
+  completed_plans: 21
+  percent: 88
 ---
 
 # State: La Corrigeuse
 
 **Last updated:** 2026-02-28
 **Current phase:** Phase 5 (Production Readiness)
-**Current plan:** 05-03 (Token Cost Estimation and Prompt Caching)
-**Status:** In Progress
+**Current plan:** 05-01 (Docker Containerization)
+**Status:** Complete
 
 ## Project Reference
 
@@ -29,20 +29,20 @@ progress:
 La Corrigeuse est un assistant de correction automatique pour enseignants. Elle lit les copies manuscrites (PDF) et les corrige via LLM avec double-vérification IA. Le prof upload, l'IA corrige, le prof valide et exporte vers Pronote ou Excel.
 
 **Current focus:**
-Production readiness - cost optimization, containerization, subscription management.
+Production readiness - containerization, security scanning, cost optimization, subscription management.
 
 ## Current Position
 
 **Phase:** 5 - Production Readiness
-**Plan:** 05-03 - Token Cost Estimation and Prompt Caching
+**Plan:** 05-01 - Docker Containerization
 **Status:** Complete
-**Progress:** [█████████░] 92%
+**Progress:** [████████░] 88%
 
 **What was built:**
-Provider-specific pricing tables with cached token discounts, automatic extraction of cached tokens from API responses, cost calculation infrastructure ready for dashboard integration.
+Multi-stage Docker build (Python 3.11 + Node 20) for FastAPI + Next.js, Docker Compose orchestration with nginx reverse proxy, rate limiting (10r/s), WebSocket support, volume-based SQLite persistence.
 
 **Why this phase:**
-Phases 1-4 are complete. Production deployment requires cost tracking and optimization to manage LLM expenses at scale.
+Phases 1-4 complete. Phase 5 enables production deployment with containerization, security scanning, cost tracking, and subscription management.
 
 ## Performance Metrics
 
@@ -104,6 +104,21 @@ Phases 1-4 are complete. Production deployment requires cost tracking and optimi
 - All 6 GradingSessionOrchestrator API instantiations now pass workflow_state parameter
 - Student name disagreements auto-resolve using confidence-based logic instead of blocking CLI prompts
 - Dual-LLM batch grading now completes successfully in API context
+
+**Phase 5 Plan 01 (2026-02-28):**
+- Duration: 25 minutes
+- Tasks completed: 3
+- Files created: 5 (Dockerfile, .dockerignore, docker-compose.yml, nginx/Dockerfile, nginx/nginx.conf)
+- Files modified: 1 (requirements.txt)
+- Commits: 3
+- Multi-stage Docker build (Python 3.11-slim + Node 20-alpine)
+- Final image: 833MB (acceptable for scientific stack)
+- Non-root user execution for security
+- Health check endpoint integration
+- Docker Compose orchestration (app + nginx services)
+- nginx reverse proxy with rate limiting (10r/s, burst 20)
+- WebSocket support with 3600s timeout
+- Volume-based persistence (SQLite + sessions)
 
 **Phase 5 Plan 03 (2026-02-28):**
 - Duration: 2 minutes (131 seconds)
