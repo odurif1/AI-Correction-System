@@ -280,6 +280,19 @@ class ApiClient {
       }
     );
   }
+
+  // Subscription
+  async getSubscriptionStatus(): Promise<{
+    tier: string;
+    tokens_used: number;
+    monthly_limit: number;
+    remaining_tokens: number;
+    has_monthly_reset: boolean;
+    subscription_start: string | null;
+    subscription_end: string | null;
+  }> {
+    return this.fetchJson("/subscription/status");
+  }
 }
 
 export const api = new ApiClient();

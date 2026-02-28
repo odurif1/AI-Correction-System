@@ -11,6 +11,7 @@ import { DashboardSkeleton } from "@/components/loading-skeletons";
 import { ConfirmDialog } from "@/components/confirmation-dialog";
 import { SessionCardsGrid } from "@/components/session-cards";
 import { NoSessionsState, ErrorState } from "@/components/empty-states";
+import { UsageBar } from "@/components/subscription/usage-bar";
 import { api } from "@/lib/api";
 import { Plus } from "lucide-react";
 import type { Session } from "@/lib/types";
@@ -113,7 +114,7 @@ export default function DashboardPage() {
       <div className="min-h-screen flex flex-col">
         <Header />
         <main className="flex-1 container py-8">
-          <ErrorState message="Failed to load sessions" onRetry={() => refetch()} />
+          <ErrorState message="Impossible de charger les corrections" onRetry={() => refetch()} />
         </main>
         <Footer />
       </div>
@@ -129,6 +130,9 @@ export default function DashboardPage() {
       <Header />
 
       <main className="flex-1 container py-8 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+        {/* Usage bar at top of dashboard */}
+        <UsageBar className="mb-6" />
+
         {isLoading && !data ? (
           <DashboardSkeleton />
         ) : !hasSessions ? (
@@ -138,9 +142,9 @@ export default function DashboardPage() {
             {/* Header with CTA and filter */}
             <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-8">
               <div>
-                <h1 className="text-3xl font-bold tracking-tight">Sessions</h1>
+                <h1 className="text-3xl font-bold tracking-tight">Corrections</h1>
                 <p className="text-muted-foreground mt-1">
-                  {filteredSessions.length} session{filteredSessions.length !== 1 ? "s" : ""}
+                  {filteredSessions.length} correction{filteredSessions.length !== 1 ? "s" : ""}
                 </p>
               </div>
 
@@ -151,11 +155,11 @@ export default function DashboardPage() {
                   onChange={(e) => setStatusFilter(e.target.value)}
                   className="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                 >
-                  <option value="all">All Status</option>
-                  <option value="created">Created</option>
-                  <option value="grading">Grading</option>
-                  <option value="complete">Complete</option>
-                  <option value="error">Error</option>
+                  <option value="all">Tous les statuts</option>
+                  <option value="diagnostic">Diagnostic</option>
+                  <option value="correction">Correction en cours</option>
+                  <option value="complete">Terminée</option>
+                  <option value="error">Erreur</option>
                 </select>
 
                 {/* New session CTA */}
@@ -165,7 +169,7 @@ export default function DashboardPage() {
                 >
                   <Link href="/sessions/new">
                     <Plus className="h-4 w-4 mr-2" />
-                    New Session
+                    Nouvelle correction
                   </Link>
                 </Button>
               </div>
@@ -174,7 +178,7 @@ export default function DashboardPage() {
             {/* Sessions grid */}
             {filteredSessions.length === 0 ? (
               <div className="text-center py-12">
-                <p className="text-muted-foreground">No sessions match the current filter.</p>
+                <p className="text-muted-foreground">Aucune correction ne correspond au filtre.</p>
               </div>
             ) : (
               <>
@@ -189,7 +193,7 @@ export default function DashboardPage() {
                     {isFetchingNextPage && (
                       <div className="flex items-center gap-2 text-muted-foreground">
                         <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-purple-600" />
-                        <span>Loading more sessions...</span>
+                        <span>Chargement...</span>
                       </div>
                     )}
                   </div>
@@ -206,9 +210,9 @@ export default function DashboardPage() {
       <ConfirmDialog
         open={deleteDialogOpen}
         onOpenChange={setDeleteDialogOpen}
-        title="Delete Session"
-        description={`Are you sure you want to delete session "${sessionToDelete}"? This action cannot be undone.`}
-        confirmLabel="Delete"
+        title="Supprimer la correction"
+        description="Êtes-vous sûr de vouloir supprimer cette correction ? Cette action est irréversible."
+        confirmLabel="Supprimer"
         onConfirm={handleDeleteConfirm}
         variant="destructive"
         loading={deleteMutation.isPending}
