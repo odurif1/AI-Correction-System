@@ -39,9 +39,10 @@ export function EditableGradeCell({
       toast.success("Note mise à jour");
       setIsEditing(false);
     },
-    onError: () => {
+    onError: (error: Error) => {
       setValue(originalGrade); // Revert to original on error
-      toast.error("Erreur lors de la mise à jour");
+      console.error("Grade update error:", error);
+      toast.error(`Erreur: ${error.message || "Erreur lors de la mise à jour"}`);
     },
   });
 
@@ -101,6 +102,7 @@ export function EditableGradeCell({
           <button
             onClick={() => setIsEditing(true)}
             className="text-sm font-medium hover:bg-muted px-2 py-1 rounded transition-colors"
+            title="Cliquez sur une note pour la modifier"
           >
             {grade} / {maxPoints}
           </button>
