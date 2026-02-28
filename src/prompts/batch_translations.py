@@ -103,6 +103,7 @@ TRANSLATIONS_FR = {
         "name_disagreement_header": "Désaccord de nom",
         "you_read": "TOI as lu",
         "other_read": "L'autre correcteur a lu",
+        "other_grader_label": "l'autre correcteur",
 
         # Mission
         "mission_title": "TA MISSION",
@@ -283,6 +284,7 @@ TRANSLATIONS_EN = {
         "name_disagreement_header": "Name Disagreement",
         "you_read": "YOU read",
         "other_read": "THE OTHER GRADER read",
+        "other_grader_label": "the other grader",
 
         # Mission
         "mission_title": "YOUR MISSION",
