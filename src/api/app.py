@@ -1000,6 +1000,9 @@ def create_app() -> FastAPI:
 
         # Build graded copies list with full dual-LLM data
         graded_copies = []
+        # Create a mapping from copy_id to student_name
+        copy_student_names = {copy.id: copy.student_name for copy in session.copies}
+
         for graded in session.graded_copies:
             # Check for disagreements in grading_audit
             has_disagreements = False
@@ -1011,6 +1014,7 @@ def create_app() -> FastAPI:
 
             graded_info = {
                 "copy_id": graded.copy_id,
+                "student_name": copy_student_names.get(graded.copy_id),
                 "total_score": graded.total_score,
                 "max_score": graded.max_score,
                 "confidence": graded.confidence,

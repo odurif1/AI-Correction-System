@@ -459,7 +459,7 @@ export default function SessionDetailPage() {
                             onClick={() => handleSort("copy_id")}
                           >
                             <div className="flex items-center gap-1">
-                              Copy / Student
+                              Élève
                               {sortColumn === "copy_id" && (
                                 sortDirection === "asc" ? (
                                   <ChevronUp className="h-4 w-4 text-purple-600" />
@@ -502,21 +502,6 @@ export default function SessionDetailPage() {
                               )}
                             </div>
                           </TableHead>
-                          <TableHead
-                            className="cursor-pointer hover:bg-muted text-center min-w-[60px]"
-                            onClick={() => handleSort("percentage")}
-                          >
-                            <div className="flex items-center justify-center gap-1">
-                              %
-                              {sortColumn === "percentage" && (
-                                sortDirection === "asc" ? (
-                                  <ChevronUp className="h-4 w-4 text-purple-600" />
-                                ) : (
-                                  <ChevronDown className="h-4 w-4 text-purple-600" />
-                                )
-                              )}
-                            </div>
-                          </TableHead>
                           <TableHead className="text-center min-w-[100px]">Actions</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -528,7 +513,7 @@ export default function SessionDetailPage() {
                           return (
                             <TableRow key={graded.copy_id} className="hover:bg-muted/50">
                               <TableCell className="font-medium sticky left-0 bg-background">
-                                {graded.copy_id}
+                                {graded.student_name || graded.copy_id}
                               </TableCell>
                               {questionIds.map((questionId) => {
                                 // Check if this specific question has a disagreement
@@ -553,9 +538,6 @@ export default function SessionDetailPage() {
                               })}
                               <TableCell className="text-center font-medium">
                                 {graded.total_score.toFixed(1)}/{graded.max_score}
-                              </TableCell>
-                              <TableCell className="text-center">
-                                {((graded.total_score / graded.max_score) * 100).toFixed(1)}%
                               </TableCell>
                               <TableCell className="text-center">
                                 <Button variant="ghost" size="sm" asChild>

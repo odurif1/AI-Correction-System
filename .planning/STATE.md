@@ -268,7 +268,7 @@ Phases 1-4 complete. Phase 5 enables production deployment with containerization
 
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
-| 1 | Améliorer UX modification notes: auto-save on blur + bouton reset | 2026-02-28 | b3d7f1d | [1-am-liorer-ux-modification-notes-auto-sav](./quick/1-am-liorer-ux-modification-notes-auto-sav/) |
+| 1 | Améliorer UX modification notes: auto-save on blur + bouton reset | 2026-02-28 | 807da2b | [1-am-liorer-ux-modification-notes-auto-sav](./quick/1-am-liorer-ux-modification-notes-auto-sav/) |
 
 ### Accumulated Wisdom
 

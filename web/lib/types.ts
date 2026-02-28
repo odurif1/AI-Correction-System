@@ -6,6 +6,7 @@ export interface Session {
   copies_count: number;
   graded_count: number;
   average_score?: number;
+  max_score?: number;
   subject?: string;
   topic?: string;
 }
@@ -41,10 +42,66 @@ export interface CopySummary {
 
 export interface GradedCopySummary {
   copy_id: string;
+  student_name?: string;
   total_score: number;
   max_score: number;
   confidence: number;
   grades: Record<string, number>;
+  max_points_by_question: Record<string, number>;
+  grading_audit?: GradingAudit;
+  has_disagreements?: boolean;
+}
+
+export interface GradingAudit {
+  mode: string;
+  grading_method: string;
+  verification_mode: string;
+  providers: ProviderInfo[];
+  questions: Record<string, QuestionAudit>;
+  student_detection?: StudentDetectionAudit;
+  summary: AuditSummary;
+}
+
+export interface ProviderInfo {
+  id: string;
+  model: string;
+  tokens?: { prompt: number; completion: number };
+}
+
+export interface QuestionAudit {
+  llm_results: Record<string, LLMResult>;
+  resolution: ResolutionInfo;
+}
+
+export interface LLMResult {
+  grade: number;
+  max_points?: number;
+  reading?: string;
+  reasoning?: string;
+  feedback?: string;
+  confidence: number;
+}
+
+export interface ResolutionInfo {
+  final_grade: number;
+  final_max_points: number;
+  method: string;
+  phases: string[];
+  agreement?: boolean;
+}
+
+export interface StudentDetectionAudit {
+  final_name: string;
+  llm_results: Record<string, string>;
+  resolution: ResolutionInfo;
+}
+
+export interface AuditSummary {
+  total_questions: number;
+  agreed_initial: number;
+  required_verification: number;
+  required_ultimatum: number;
+  final_agreement_rate: number;
 }
 
 export interface CreateSessionRequest {
@@ -107,11 +164,25 @@ export type ProgressEventType =
   | "single_pass_start"
   | "single_pass_complete"
   | "analysis_complete"
-  | "verification_start"
   | "question_done"
   | "copy_done"
   | "copy_error"
-  | "session_complete";
+  | "session_complete"
+  // Sub-phase events for correction workflow
+  | "reading_start"        // Première lecture phase started
+  | "reading_done"         // Première lecture phase completed
+  | "verification_start"   // Vérification phase started
+  | "verification_done"    // Vérification phase completed
+  | "ultimatum_start"     // Ultimatum phase started
+  | "ultimatum_done";     // Ultimatum phase completed
+
+// Correction sub-phase type
+export type CorrectionSubPhase = "reading" | "verification" | "ultimatum";
+
+export interface CorrectionPhaseInfo {
+  currentPhase: CorrectionSubPhase;
+  phaseLabel: string;  // "Première lecture", "Vérification", "Ultimatum"
+}
 
 export interface ProgressEvent {
   type: ProgressEventType;
