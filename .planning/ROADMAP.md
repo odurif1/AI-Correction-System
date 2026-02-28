@@ -27,7 +27,7 @@
 
 | Phase | Goal | Status | Plans |
 |-------|------|--------|-------|
-| **Phase 6** | Token Deduction Fix | 🔴 Not started | 0/3 |
+| **Phase 6** | Token Deduction Fix | 🟡 Gap closure | 3/4 + 1 gap |
 | **Phase 7** | Subscription UX Polish | 🔴 Not started | 0/2 |
 | **Phase 8** | Bug Hunting & Quality Pass | 🔴 Not started | 0/1 |
 
@@ -46,11 +46,13 @@
 1. **PLAN-6.1: Token Aggregation Service** — Create service to aggregate tokens from providers
 2. **PLAN-6.2: Database Integration** — Add usage_records table for audit trail
 3. **PLAN-6.3: API Integration** — Wire service into grading completion flow
+4. **PLAN-6.4: Gap Closure — Exception Handling** — Fix unhandled exceptions causing grading failure
 
 **Delivers:**
 - ✅ Correct token deduction from user balances
 - ✅ Idempotent deduction (no double-charging)
 - ✅ Audit trail for every deduction
+- ✅ Robust error handling with graceful degradation
 
 **Dependencies:** None
 
@@ -126,7 +128,7 @@
 | 3. Core Grading | v1.0 | 4/4 | Complete | 2026-02-27 |
 | 4. UI & Polish | v1.0 | 6/6 | Complete | 2026-02-27 |
 | 5. Production | v1.0 | 4/4 | Complete | 2026-02-28 |
-| 6. Token Deduction | v1.1 | 0/3 | Not started | — |
+| 6. Token Deduction | v1.1 | 3/4 + 1 gap | Gap closure | — |
 | 7. Subscription UX | v1.1 | 0/2 | Not started | — |
 | 8. Bug Hunting | v1.1 | 0/1 | Not started | — |
 
