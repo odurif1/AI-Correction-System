@@ -15,6 +15,7 @@ interface LLMGradeCardProps {
   reading?: string;
   selected?: boolean;
   onClick?: () => void;
+  index?: number; // 0 = A, 1 = B
 }
 
 export function LLMGradeCard({
@@ -26,6 +27,7 @@ export function LLMGradeCard({
   reading,
   selected,
   onClick,
+  index = 0,
 }: LLMGradeCardProps) {
   const providerColors: Record<string, string> = {
     gemini: "bg-blue-500/10 text-blue-500 border-blue-500/20",
@@ -44,10 +46,7 @@ export function LLMGradeCard({
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <div>
-            <CardTitle className="text-lg">{provider}</CardTitle>
-            {model && (
-              <p className="text-xs text-muted-foreground">{model}</p>
-            )}
+            <CardTitle className="text-lg">Intelligence artificielle - {index === 0 ? 'A' : 'B'}</CardTitle>
           </div>
           <Badge
             variant="outline"
