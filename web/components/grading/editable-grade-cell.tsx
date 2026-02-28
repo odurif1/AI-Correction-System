@@ -14,6 +14,8 @@ interface EditableGradeCellProps {
   grade: number;
   maxPoints: number;
   hasDisagreement?: boolean;
+  /** The original LLM grade - used for reset functionality */
+  originalLLMGrade?: number;
 }
 
 export function EditableGradeCell({
@@ -23,24 +25,34 @@ export function EditableGradeCell({
   grade,
   maxPoints,
   hasDisagreement,
+  originalLLMGrade,
 }: EditableGradeCellProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [value, setValue] = useState(grade);
-  const [originalGrade, setOriginalGrade] = useState(grade);
   const inputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
+
+  // Track the initial grade from when component first mounted (the LLM's original grade)
+  // This ref never changes - it's the "reset to" value
+  const initialGradeRef = useRef<number | null>(null);
+
+  // Set initial grade only once when component mounts
+  useEffect(() => {
+    if (initialGradeRef.current === null) {
+      initialGradeRef.current = originalLLMGrade ?? grade;
+    }
+  }, [originalLLMGrade, grade]);
 
   const updateMutation = useMutation({
     mutationFn: (newGrade: number) =>
       api.updateGrade(sessionId, copyId, questionId, { new_grade: newGrade }),
-    onSuccess: (_, newGrade) => {
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
-      setOriginalGrade(newGrade);
       toast.success("Note mise à jour");
       setIsEditing(false);
     },
     onError: (error: Error) => {
-      setValue(originalGrade); // Revert to original on error
+      setValue(grade); // Revert to current saved grade on error
       console.error("Grade update error:", error);
       toast.error(`Erreur: ${error.message || "Erreur lors de la mise à jour"}`);
     },
@@ -53,10 +65,6 @@ export function EditableGradeCell({
     }
   }, [isEditing]);
 
-  useEffect(() => {
-    setOriginalGrade(grade);
-  }, [grade]);
-
   const handleSave = () => {
     if (value !== grade) {
       updateMutation.mutate(value);
@@ -66,17 +74,21 @@ export function EditableGradeCell({
   };
 
   const handleReset = () => {
-    setValue(originalGrade);
-    updateMutation.mutate(originalGrade);
+    const resetValue = initialGradeRef.current ?? grade;
+    setValue(resetValue);
+    updateMutation.mutate(resetValue);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") handleSave();
     if (e.key === "Escape") {
-      setValue(originalGrade);
+      setValue(grade);
       setIsEditing(false);
     }
   };
+
+  // Show reset button only if current grade differs from initial LLM grade
+  const showResetButton = initialGradeRef.current !== null && grade !== initialGradeRef.current;
 
   return (
     <div className="flex items-center gap-2">
@@ -106,7 +118,7 @@ export function EditableGradeCell({
           >
             {grade} / {maxPoints}
           </button>
-          {grade !== originalGrade && (
+          {showResetButton && (
             <Button
               size="icon"
               variant="ghost"

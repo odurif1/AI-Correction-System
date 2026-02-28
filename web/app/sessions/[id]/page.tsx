@@ -99,7 +99,7 @@ export default function SessionDetailPage() {
   // Update grading state based on session
   useEffect(() => {
     if (session) {
-      const gradingInProgress = session.status === "grading" || session.status === "analyzing";
+      const gradingInProgress = session.status === "correction";
       setIsGrading(gradingInProgress);
     }
   }, [session]);
@@ -235,9 +235,9 @@ export default function SessionDetailPage() {
         <Header />
         <main className="flex-1 container py-8">
           <div className="text-center">
-            <h1 className="text-2xl font-bold mb-4">Session not found</h1>
+            <h1 className="text-2xl font-bold mb-4">Correction non trouvée</h1>
             <Button asChild>
-              <Link href="/dashboard">Back to Dashboard</Link>
+              <Link href="/dashboard">Retour au tableau de bord</Link>
             </Button>
           </div>
         </main>
@@ -248,8 +248,12 @@ export default function SessionDetailPage() {
 
   // Use state variable for isGrading to track during grading
   // Derived from session status but also managed during transitions
-  const isGradingActive = session.status === "grading" || session.status === "analyzing";
-  const isComplete = session.status === "complete";
+  // Also detect interrupted grading: status is "correction" but all copies are graded
+  const wasInterrupted = session.status === "correction" &&
+    session.copies_count > 0 &&
+    session.graded_count === session.copies_count;
+  const isGradingActive = session.status === "correction" && !wasInterrupted;
+  const isComplete = session.status === "complete" || wasInterrupted;
   const hasDisagreements = disagreements.filter((d) => !d.resolved).length > 0;
 
   return (
@@ -260,7 +264,7 @@ export default function SessionDetailPage() {
         <Button variant="ghost" className="mb-6" asChild>
           <Link href="/dashboard">
             <ArrowLeft className="h-4 w-4 mr-2" />
-            Back to Dashboard
+            Retour au tableau de bord
           </Link>
         </Button>
 
@@ -271,7 +275,12 @@ export default function SessionDetailPage() {
               <h1 className="text-3xl font-bold tracking-tight">
                 Session {sessionId}
               </h1>
-              <SessionStatus status={session.status} />
+              <SessionStatus status={wasInterrupted ? "complete" : session.status} />
+              {wasInterrupted && (
+                <Badge variant="outline" className="text-amber-600 border-amber-600">
+                  Finalisée
+                </Badge>
+              )}
               {progress.connected && (
                 <Badge variant="outline" className="text-success border-success">
                   Live
@@ -282,7 +291,7 @@ export default function SessionDetailPage() {
               {session.subject && <span>{session.subject}</span>}
               {session.topic && <span> - {session.topic}</span>}
               <span className="mx-2">|</span>
-              Created {formatDate(session.created_at)}
+              Créée le {formatDate(session.created_at)}
             </div>
           </div>
 
@@ -298,7 +307,7 @@ export default function SessionDetailPage() {
                 ) : (
                   <Play className="h-4 w-4 mr-2" />
                 )}
-                Start Grading
+                Démarrer la correction
               </Button>
             )}
             {isComplete && (
@@ -315,7 +324,7 @@ export default function SessionDetailPage() {
                 <div>
                   <CardTitle className="flex items-center gap-2">
                     <Loader2 className="h-5 w-5 animate-spin text-purple-600" />
-                    Grading in Progress
+                    Correction en cours
                   </CardTitle>
                   <CardDescription className="mt-1">
                     {waitingMessage}
@@ -335,14 +344,14 @@ export default function SessionDetailPage() {
                   ) : (
                     <X className="h-4 w-4" />
                   )}
-                  Cancel
+                  Annuler
                 </Button>
               </div>
               {/* Progress summary */}
               <div className="flex items-center gap-4 text-sm text-muted-foreground mt-2" role="status" aria-live="polite">
                 <span>
-                  {progress.completedCopies} of {progress.totalCopies || session.copies_count} copies
-                  completed
+                  {progress.completedCopies} / {progress.totalCopies || session.copies_count} copies
+                  terminées
                 </span>
                 {agreementRate !== null && (
                   <span className="flex items-center gap-1">
@@ -367,7 +376,7 @@ export default function SessionDetailPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">
-                Total Copies
+                Total copies
               </CardTitle>
               <Users className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
@@ -378,7 +387,7 @@ export default function SessionDetailPage() {
 
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Graded</CardTitle>
+              <CardTitle className="text-sm font-medium">Corrigées</CardTitle>
               <BarChart3 className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
@@ -389,13 +398,13 @@ export default function SessionDetailPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">
-                Average Score
+                Moyenne
               </CardTitle>
               <BarChart3 className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold">
-                {session.average_score?.toFixed(1) || "-"}
+                {session.average_score?.toFixed(1) || "-"}/{session.max_score?.toFixed(0) || "-"}
               </div>
             </CardContent>
           </Card>
@@ -403,7 +412,7 @@ export default function SessionDetailPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">
-                Disagreements
+                Désaccords
               </CardTitle>
               <AlertTriangle className="h-4 w-4 text-muted-foreground" />
             </CardHeader>
@@ -419,11 +428,11 @@ export default function SessionDetailPage() {
         {isComplete && (
           <Tabs defaultValue="review" className="space-y-6">
             <TabsList>
-              <TabsTrigger value="review">Review</TabsTrigger>
-              <TabsTrigger value="analytics">Analytics</TabsTrigger>
+              <TabsTrigger value="review">Révision</TabsTrigger>
+              <TabsTrigger value="analytics">Statistiques</TabsTrigger>
               {hasDisagreements && (
                 <TabsTrigger value="disagreements">
-                  Disagreements
+                  Désaccords
                   <Badge variant="warning" className="ml-2">
                     {disagreements.filter((d) => !d.resolved).length}
                   </Badge>
@@ -435,9 +444,9 @@ export default function SessionDetailPage() {
             <TabsContent value="review">
               <Card>
                 <CardHeader>
-                  <CardTitle>Review Grades</CardTitle>
+                  <CardTitle>Réviser les notes</CardTitle>
                   <CardDescription>
-                    Click any grade to edit. Changes auto-save.
+                    Cliquez sur une note pour la modifier. Modifications auto-sauvegardées.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
@@ -524,7 +533,9 @@ export default function SessionDetailPage() {
                               {questionIds.map((questionId) => {
                                 // Check if this specific question has a disagreement
                                 const questionHasDisagreement = gradingAudit?.questions?.[questionId]?.resolution?.agreement === false;
-                                const maxPoints = session.question_weights?.[questionId] || 0;
+                                const maxPoints = graded.max_points_by_question?.[questionId] ?? session.question_weights?.[questionId] ?? 0;
+                                // Get the original LLM grade for reset functionality
+                                const originalLLMGrade = gradingAudit?.questions?.[questionId]?.resolution?.final_grade;
 
                                 return (
                                   <TableCell key={questionId} className="text-center">
@@ -535,6 +546,7 @@ export default function SessionDetailPage() {
                                       grade={graded.grades[questionId] || 0}
                                       maxPoints={maxPoints}
                                       hasDisagreement={questionHasDisagreement}
+                                      originalLLMGrade={originalLLMGrade}
                                     />
                                   </TableCell>
                                 );
@@ -574,18 +586,18 @@ export default function SessionDetailPage() {
                 <div className="grid gap-6 md:grid-cols-2">
                   <Card>
                     <CardHeader>
-                      <CardTitle>Statistics</CardTitle>
+                      <CardTitle>Statistiques</CardTitle>
                     </CardHeader>
                     <CardContent>
                       <dl className="grid grid-cols-2 gap-4">
                         <div>
-                          <dt className="text-sm text-muted-foreground">Mean</dt>
+                          <dt className="text-sm text-muted-foreground">Moyenne</dt>
                           <dd className="text-2xl font-bold">
                             {analytics.mean_score.toFixed(2)}
                           </dd>
                         </div>
                         <div>
-                          <dt className="text-sm text-muted-foreground">Median</dt>
+                          <dt className="text-sm text-muted-foreground">Médiane</dt>
                           <dd className="text-2xl font-bold">
                             {analytics.median_score.toFixed(2)}
                           </dd>
@@ -604,7 +616,7 @@ export default function SessionDetailPage() {
                         </div>
                         <div className="col-span-2">
                           <dt className="text-sm text-muted-foreground">
-                            Standard Deviation
+                            Écart-type
                           </dt>
                           <dd className="text-2xl font-bold">
                             {analytics.std_dev.toFixed(2)}
@@ -616,7 +628,7 @@ export default function SessionDetailPage() {
 
                   <ScoreDistribution
                     distribution={analytics.score_distribution}
-                    title="Score Distribution"
+                    title="Distribution des notes"
                   />
                 </div>
               )}
