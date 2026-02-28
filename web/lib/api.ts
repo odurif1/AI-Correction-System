@@ -291,7 +291,7 @@ class ApiClient {
     subscription_start: string | null;
     subscription_end: string | null;
   }> {
-    return this.fetchJson("/subscription/status");
+    return this.fetchJson("/api/subscription/status");
   }
 }
 
