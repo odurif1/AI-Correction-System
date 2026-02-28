@@ -58,10 +58,16 @@ skipped: 1
 ## Gaps
 
 - truth: "Docker Compose services start and run correctly"
-  status: failed
+  status: deferred
   reason: "User reported: App container fails to start - Python version mismatch. Local code uses Python 3.14 features but PyMuPDF doesn't support Python 3.13+ yet."
   severity: blocker
   test: 2
-  root_cause: ""
-  artifacts: []
-  missing: []
+  root_cause: "Python version incompatibility - code uses 3.14 features, PyMuPDF max is 3.12"
+  resolution: "Wait for PyMuPDF Python 3.13+ support (user decision: 2026-02-28)"
+  artifacts:
+    - path: "Dockerfile"
+      issue: "Uses Python 3.12 but code requires 3.13+"
+    - path: "requirements.txt"
+      issue: "PyMuPDF pinned version doesn't support 3.13+"
+  missing:
+    - "PyMuPDF wheel for Python 3.13+"
