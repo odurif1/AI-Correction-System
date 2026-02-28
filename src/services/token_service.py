@@ -114,8 +114,8 @@ class TokenDeductionService:
             UserNotFoundError: User doesn't exist in database
             DeductionError: Database or system error during deduction
         """
-        # Import here to avoid circular dependencies
-        from src.db.models import User, UsageRecord
+        # Import here to avoid circular dependencies - use same path as app.py
+        from db.models import User, UsageRecord
 
         # 1. Check idempotency: already deducted for this session?
         existing = db.query(UsageRecord).filter(
