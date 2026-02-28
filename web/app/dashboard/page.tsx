@@ -11,7 +11,6 @@ import { DashboardSkeleton } from "@/components/loading-skeletons";
 import { ConfirmDialog } from "@/components/confirmation-dialog";
 import { SessionCardsGrid } from "@/components/session-cards";
 import { NoSessionsState, ErrorState } from "@/components/empty-states";
-import { UsageBar } from "@/components/subscription/usage-bar";
 import { api } from "@/lib/api";
 import { Plus } from "lucide-react";
 import type { Session } from "@/lib/types";
@@ -130,9 +129,6 @@ export default function DashboardPage() {
       <Header />
 
       <main className="flex-1 container py-8 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        {/* Usage bar at top of dashboard */}
-        <UsageBar className="mb-6" />
-
         {isLoading && !data ? (
           <DashboardSkeleton />
         ) : !hasSessions ? (

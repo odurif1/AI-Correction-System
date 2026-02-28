@@ -5,6 +5,7 @@ import { Header } from "@/components/layout/header";
 import { Footer } from "@/components/layout/footer";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { UsageBar } from "@/components/subscription/usage-bar";
 import { CheckCircle2, Zap, Building, GraduationCap } from "lucide-react";
 import Link from "next/link";
 
@@ -68,13 +69,6 @@ export default function SubscriptionPage() {
 
   const currentTier = user?.subscription_tier || "free";
 
-  const formatTokens = (tokens: number) => {
-    if (tokens >= 1000000) {
-      return `${(tokens / 1000000).toFixed(1)}M`;
-    }
-    return tokens.toLocaleString();
-  };
-
   return (
     <div className="min-h-screen flex flex-col">
       <Header />
@@ -88,50 +82,9 @@ export default function SubscriptionPage() {
           </p>
 
           {currentTier !== "free" && (
-            <Card className="mb-8">
-              <CardHeader>
-                <CardTitle>Plan actuel</CardTitle>
-                <CardDescription>Votre consommation de tokens ce mois-ci</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Plan</p>
-                    <p className="text-2xl font-bold capitalize">{currentTier}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Tokens utilisés</p>
-                    <p className="text-2xl font-bold">{formatTokens(user?.tokens_used_this_month || 0)}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Tokens restants</p>
-                    <p className="text-2xl font-bold">{formatTokens(user?.remaining_tokens || 0)}</p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Limite mensuelle</p>
-                    <p className="text-2xl font-bold">{formatTokens(user?.monthly_token_limit || 0)}</p>
-                  </div>
-                </div>
-
-                {/* Progress bar */}
-                <div className="mt-6">
-                  <div className="flex justify-between text-sm mb-2">
-                    <span className="text-muted-foreground">Consommation</span>
-                    <span>
-                      {Math.round(((user?.tokens_used_this_month || 0) / (user?.monthly_token_limit || 1)) * 100)}%
-                    </span>
-                  </div>
-                  <div className="h-2 bg-muted rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-purple-500 rounded-full transition-all"
-                      style={{
-                        width: `${Math.min(100, ((user?.tokens_used_this_month || 0) / (user?.monthly_token_limit || 1)) * 100)}%`
-                      }}
-                    />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+            <div className="mb-8">
+              <UsageBar />
+            </div>
           )}
         </div>
 
