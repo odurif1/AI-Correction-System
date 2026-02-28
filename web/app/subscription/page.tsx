@@ -81,11 +81,9 @@ export default function SubscriptionPage() {
             Gérez votre abonnement et vos tokens
           </p>
 
-          {currentTier !== "free" && (
-            <div className="mb-8">
-              <UsageBar />
-            </div>
-          )}
+          <div className="mb-8">
+            <UsageBar />
+          </div>
         </div>
 
         {/* Available plans */}
