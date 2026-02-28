@@ -77,6 +77,10 @@ from api.schemas import (
 # Import auth module
 from api.auth import router as auth_router, get_current_user, get_admin_user
 
+# Import token deduction service
+from services.token_service import TokenDeductionService
+from services.token_service import InsufficientTokensError, UserNotFoundError, DeductionError
+
 # Import health check router
 from api.health import router as health_router
 
@@ -645,6 +649,9 @@ def create_app() -> FastAPI:
 
             result = analyzer.analyze(pdf_path, force_refresh=request.force_refresh)
 
+            # Debug log for exam_name
+            logger.info(f"Pre-analysis result exam_name: {result.exam_name}")
+
             # Store result in session for later use
             store.save_pre_analysis(result)
 
@@ -1008,6 +1015,14 @@ def create_app() -> FastAPI:
         # Create a mapping from copy_id to student_name
         copy_student_names = {copy.id: copy.student_name for copy in session.copies}
 
+        # Get subject from session.policy, or from pre-analysis exam_name
+        subject = session.policy.subject
+        if not subject:
+            # Try to get exam_name from pre-analysis
+            pre_analysis = store.load_pre_analysis()
+            if pre_analysis and pre_analysis.exam_name:
+                subject = pre_analysis.exam_name
+
         for graded in session.graded_copies:
             # Check for disagreements in grading_audit
             has_disagreements = False
@@ -1040,7 +1055,7 @@ def create_app() -> FastAPI:
             graded_count=len(session.graded_copies),
             average_score=average,
             max_score=max_score,
-            subject=session.policy.subject,
+            subject=subject,
             topic=session.policy.topic,
             copies=copies,
             graded_copies=graded_copies,
@@ -1252,25 +1267,66 @@ def create_app() -> FastAPI:
                 else:
                     avg = 0
 
-                await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_COMPLETE, {
-                    "average_score": avg,
-                    "total_copies": len(session.graded_copies)
-                })
+                # Broadcast completion AFTER token deduction (moved below deduction block)
+
+                # Deduct actual tokens used (not copy count)
+                db = SessionLocal()
+                try:
+                    deduction_svc = TokenDeductionService()
+                    result = deduction_svc.deduct_grading_usage(
+                        user_id=user_id,
+                        provider=orchestrator.ai,
+                        session_id=session_id,
+                        db=db
+                    )
+
+                    logger.info(
+                        f"Deducted {result['tokens_deducted']} tokens "
+                        f"from user {user_id} for session {session_id}"
+                    )
+
+                    # Reload user to get updated balance for WebSocket broadcast
+                    db_user = db.query(User).filter(User.id == user_id).first()
+
+                except InsufficientTokensError as e:
+                    # Grading succeeded but user can't afford the tokens
+                    await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_ERROR, {
+                        "error": "Insufficient tokens for grading",
+                        "tokens_required": e.tokens_required,
+                        "tokens_remaining": e.tokens_remaining
+                    })
+                    logger.error(f"Insufficient tokens for user {user_id}: {e.tokens_remaining} remaining, {e.tokens_required} required")
+                    return  # Exit early, don't broadcast success
+
+                except UserNotFoundError as e:
+                    await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_ERROR, {
+                        "error": "User not found"
+                    })
+                    logger.error(f"User not found during token deduction: {e}")
+                    return
+
+                except DeductionError as e:
+                    await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_ERROR, {
+                        "error": "Failed to record token usage"
+                    })
+                    logger.error(f"Token deduction failed for session {session_id}: {e}")
+                    return
+
+                finally:
+                    db.close()
 
                 # Update progress
                 if session_id in session_progress:
                     session_progress[session_id]["status"] = "complete"
                     session_progress[session_id]["copies_graded"] = len(session.graded_copies)
 
-                # Increment user usage counter
-                db = SessionLocal()
-                try:
-                    db_user = db.query(User).filter(User.id == user_id).first()
-                    if db_user and len(session.graded_copies) > 0:
-                        db_user.increment_usage(len(session.graded_copies))
-                        db.commit()
-                finally:
-                    db.close()
+                # Broadcast completion with token usage
+                await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_COMPLETE, {
+                    "average_score": avg,
+                    "total_copies": len(session.graded_copies),
+                    "tokens_used": result['tokens_deducted'],
+                    "remaining_tokens": db_user.remaining_tokens if db_user else 0
+                })
 
             except Exception as e:
                 logger.error(f"Grading error: {e}")
@@ -1372,6 +1428,14 @@ def create_app() -> FastAPI:
                 if session.policy.question_weights:
                     max_score = sum(session.policy.question_weights.values())
 
+                # Get subject from session.policy, or from pre-analysis exam_name
+                subject = session.policy.subject
+                if not subject:
+                    # Try to get exam_name from pre-analysis
+                    pre_analysis = store.load_pre_analysis()
+                    if pre_analysis and pre_analysis.exam_name:
+                        subject = pre_analysis.exam_name
+
                 session_list.append({
                     "session_id": session_id,
                     "status": session.status,
@@ -1380,7 +1444,7 @@ def create_app() -> FastAPI:
                     "graded_count": len(session.graded_copies),
                     "average_score": avg,
                     "max_score": max_score,
-                    "subject": session.policy.subject,
+                    "subject": subject,
                     "topic": session.policy.topic
                 })
 
