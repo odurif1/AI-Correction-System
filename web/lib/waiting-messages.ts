@@ -3,25 +3,26 @@
 import { useState, useEffect } from "react";
 
 export const WAITING_MESSAGES = [
-  "Restez zen...",
+  "Restez zen 🏯",
   "Prenez un café ☕",
   "L'IA réfléchit intensément 🤔",
   "Patience est mère de sûreté...",
+  "La patience est la mère de toutes les vertus",
+  "Le génie est une longue patience",
+  "Mieux vaut bonne attente que mauvaise hâte",
+  "La patience est une fleur qui ne se fane jamais 🌸",
+  "Attendre et espérer !",
   "La correction arrive bientôt",
-  "Un instant, svp...",
   "L'IA est sur le coup !",
   "Ça arrive, ça arrive...",
   "Merci de votre patience 🙏",
-  "Presque terminé...",
-  "L'IA fait chauffer les neurones",
+  "L'IA fait chauffer ses neurones",
   "Détendez-vous, on s'occupe de tout",
   "La magie de l'IA en action ✨",
   "Encouragez les algorithmes !",
-  "On y est presque...",
   "Corriger est un art délicat",
   "Vos copies sont entre bonnes mains",
   "L'IA travaille dur pour vous",
-  "Patientez encore un peu...",
 ];
 
 export function getRandomMessage(): string {

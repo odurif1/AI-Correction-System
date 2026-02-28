@@ -389,6 +389,7 @@ class PreAnalyzer:
             has_blocking_issues=has_blocking_issues,
             warnings=data.get("warnings", []),
             detected_language=data.get("detected_language", self.language),
+            exam_name=data.get("exam_name"),
         )
 
         # Add candidate_scales to the result (stored in extra dict or as attribute)
@@ -442,6 +443,7 @@ class PreAnalyzer:
                 analysis_id=data.get("analysis_id", ""),
                 cached=True,
                 analysis_duration_ms=data.get("analysis_duration_ms", 0.0),
+                exam_name=data.get("exam_name"),
             )
             return result
 

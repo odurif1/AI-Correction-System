@@ -132,7 +132,7 @@ class GradingSessionOrchestrator:
             self.session = GradingSession(
                 session_id=self.session_id,
                 created_at=datetime.now(),
-                status=SessionStatus.ANALYZING,
+                status=SessionStatus.DIAGNOSTIC,
                 user_id=effective_user_id,
                 pages_per_copy=pages_per_copy
             )
@@ -502,7 +502,7 @@ class GradingSessionOrchestrator:
         """
         from ai.single_pass_grader import SinglePassGrader
 
-        self.session.status = SessionStatus.GRADING
+        self.session.status = SessionStatus.CORRECTION
 
         total_copies = len(self.session.copies)
 
@@ -622,7 +622,8 @@ class GradingSessionOrchestrator:
                     mode="single",
                     grading_method="individual",
                     verification_mode="none",
-                    provider_names=[provider_name]
+                    provider_names=[provider_name],
+                    grading_scale=self.grading_scale
                 )
 
                 # Notify per question
@@ -2023,12 +2024,11 @@ class GradingSessionOrchestrator:
             batch_max_score = self.get_total_max_points()
             # If still 0, we'll prompt user after grading in main.py
 
-            # Build max_points_per_question summary from final resolved values
+            # Build max_points_per_question from confirmed grading scale (source of truth)
+            # Not from copy_result.questions which may have detected values
             max_points_per_question = {}
-            for qid, qdata in copy_result.questions.items():
-                max_pts = qdata.get('max_points', 0)
-                if max_pts > 0:
-                    max_points_per_question[qid] = max_pts
+            for qid in copy_result.questions.keys():
+                max_points_per_question[qid] = self.grading_scale.get(qid, 0)
 
             # Get comparison data for this copy if available
             copy_comparison = None
@@ -2146,7 +2146,8 @@ class GradingSessionOrchestrator:
                     mode="dual" if self._comparison_mode else "single",
                     grading_method=self._grading_mode or "batch",
                     verification_mode=self._batch_verify or "none",
-                    provider_names=(llm_comparison_data.get("options", {}).get("providers") if llm_comparison_data else None)
+                    provider_names=(llm_comparison_data.get("options", {}).get("providers") if llm_comparison_data else None),
+                    grading_scale=self.grading_scale
                 ) if copy_comparison else None
             )
 
@@ -2401,7 +2402,8 @@ class GradingSessionOrchestrator:
                     mode="dual",
                     grading_method="hybrid",
                     verification_mode="none",
-                    provider_names=[llm1_name, llm2_name]
+                    provider_names=[llm1_name, llm2_name],
+                    grading_scale=self.grading_scale
                 )
             )
 
@@ -2446,7 +2448,7 @@ class GradingSessionOrchestrator:
         if not hasattr(self.ai, 'grade_copy'):
             raise RuntimeError("AI provider does not support stateless grading")
 
-        self.session.status = SessionStatus.GRADING
+        self.session.status = SessionStatus.CORRECTION
 
         # Set progress callback
         if hasattr(self.ai, 'set_progress_callback') and progress_callback:
@@ -2619,7 +2621,8 @@ class GradingSessionOrchestrator:
                     mode="dual",
                     grading_method="individual",
                     verification_mode="none",
-                    provider_names=provider_names
+                    provider_names=provider_names,
+                    grading_scale=self.grading_scale
                 )
 
                 # Notify copy done
@@ -2912,6 +2915,7 @@ class GradingSessionOrchestrator:
         """Phase 0: Load PDFs and extract initial content.
 
         Logic:
+        0. Pre-analysis exists: Use pre-detected structure (students, names, page ranges)
         1. --auto-detect-structure: AI detects structure in batch (all students, names)
            - If --pages-per-copy: THEN split mechanically for grading
            - Else: use AI-detected page distribution
@@ -2923,7 +2927,18 @@ class GradingSessionOrchestrator:
 
         console = Console()
 
-        if self._auto_detect_structure:
+        # Check for existing pre-analysis first
+        pre_analysis = self.store.load_pre_analysis()
+        if pre_analysis and pre_analysis.students:
+            # In batch mode, use minimal loading (let LLMs detect students during grading)
+            if self._grading_mode == "batch":
+                console.print(f"[cyan]Mode batch: {len(pre_analysis.students)} élève(s) attendu(s)[/cyan]")
+                await self._load_copies_minimal()
+            else:
+                # Individual/hybrid mode: Use pre-detected structure
+                console.print(f"[bold cyan]📋 Utilisation du pré-analyse: {len(pre_analysis.students)} élève(s) détecté(s)[/bold cyan]")
+                await self._load_copies_from_pre_analysis(pre_analysis)
+        elif self._auto_detect_structure:
             # AUTO-DETECT MODE: AI detects structure (both LLMs)
             console.print("[bold cyan]🔍 Auto-détection de la structure (2 LLMs)...[/bold cyan]")
             await self._load_copies_with_dual_llm()
@@ -3251,6 +3266,78 @@ IMPORTANT:
 
         # Clean up temp_images if empty
         self.store.cleanup_temp_images()
+
+    async def _load_copies_from_pre_analysis(self, pre_analysis):
+        """
+        Load copies using pre-analysis data (already detected structure).
+
+        Uses the pre-detected student information (names, page ranges) to
+        split the PDF into individual copies.
+        """
+        from rich.console import Console
+        from vision.pdf_reader import PDFReader, split_pdf_by_ranges
+
+        console = Console()
+
+        for pdf_path in self.pdf_paths:
+            reader = PDFReader(pdf_path)
+            total_pages = reader.get_page_count()
+
+            # Build page ranges from pre-analysis students
+            # Pre-analysis uses 1-based page numbers, we need 0-based
+            ranges = []
+            student_names = []
+            for student in pre_analysis.students:
+                start_page = student.start_page - 1  # Convert to 0-based
+                end_page = student.end_page - 1  # Convert to 0-based
+                ranges.append((start_page, end_page))
+                student_names.append(student.name)
+                console.print(f"  [dim]  • {student.name}: pages {student.start_page}-{student.end_page}[/dim]")
+
+            # Split PDF by ranges
+            split_dir = Path(self.store.session_dir) / "splits"
+            split_dir.mkdir(parents=True, exist_ok=True)
+            split_paths = split_pdf_by_ranges(pdf_path, str(split_dir), ranges)
+
+            # Create a copy for each split
+            for i, (split_path, student_name) in enumerate(zip(split_paths, student_names)):
+                split_reader = PDFReader(split_path)
+                split_page_count = split_reader.get_page_count()
+
+                # Extract page images for this copy
+                copy_dir = self.store.session_dir / "copies" / f"copy_{i+1}"
+                copy_dir.mkdir(parents=True, exist_ok=True)
+                page_images = []
+                for page_num in range(split_page_count):
+                    image_bytes = split_reader.get_page_image_bytes(page_num)
+                    image_path = str(copy_dir / f"page_{page_num}.png")
+                    with open(image_path, 'wb') as f:
+                        f.write(image_bytes)
+                    page_images.append(image_path)
+                split_reader.close()
+
+                copy = CopyDocument(
+                    pdf_path=split_path,
+                    page_count=split_page_count,
+                    student_name=student_name,
+                    content_summary={},
+                    page_images=page_images,
+                    language=pre_analysis.detected_language or 'fr'
+                )
+
+                self.session.copies.append(copy)
+
+                # Save the split PDF
+                with open(split_path, 'rb') as f:
+                    pdf_bytes = f.read()
+                self.store.save_copy(copy, pdf_bytes, copy_number=i + 1)
+
+            reader.close()
+
+        # Mark structure as pre-detected
+        self._structure_pre_detected = True
+
+        console.print(f"[green]✓ {len(self.session.copies)} copie(s) créée(s) depuis le pré-analyse[/green]")
 
     async def _resplit_by_pages(self):
         """
@@ -4043,7 +4130,7 @@ Reponds UNIQUEMENT par:
 
     async def _analyze_phase(self):
         """Phase 1: Cross-copy analysis (OPTIONAL - skipped for speed)."""
-        self.session.status = SessionStatus.ANALYZING
+        self.session.status = SessionStatus.DIAGNOSTIC
 
         # Skip cross-copy analysis for now - it's slow and not essential
         # Can be re-enabled later with a --full-analysis flag
@@ -4056,11 +4143,11 @@ Reponds UNIQUEMENT par:
         self._save_sync()
 
         # Transition to grading
-        self.session.status = SessionStatus.GRADING
+        self.session.status = SessionStatus.CORRECTION
 
     async def _calibration_phase(self):
         """Phase 3: Calibration and consistency check."""
-        self.session.status = SessionStatus.CALIBRATING
+        self.session.status = SessionStatus.CORRECTION
 
         # Check for inconsistencies
         detector = ConsistencyDetector(self.session)

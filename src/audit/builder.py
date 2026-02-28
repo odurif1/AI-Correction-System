@@ -107,9 +107,10 @@ class AuditBuilder:
         # Convert llm_results dicts to LLMResult models
         llm_result_models = {}
         for provider_id, result in llm_results.items():
+            max_pts = result.get("max_points")
             llm_result_models[provider_id] = LLMResult(
                 grade=float(result.get("grade", 0)),
-                max_points=float(result.get("max_points", 1.0)),
+                max_points=float(max_pts) if max_pts is not None else None,
                 reading=result.get("reading", "") or result.get("student_answer_read", ""),
                 reasoning=result.get("reasoning", ""),
                 feedback=result.get("feedback", "") or result.get("student_feedback", ""),
@@ -117,9 +118,10 @@ class AuditBuilder:
             )
 
         # Convert resolution dict to ResolutionInfo model
+        final_max_pts = resolution.get("final_max_points")
         resolution_model = ResolutionInfo(
             final_grade=float(resolution.get("final_grade", 0)),
-            final_max_points=float(resolution.get("final_max_points", 1.0)),
+            final_max_points=float(final_max_pts) if final_max_pts is not None else 0.0,
             method=resolution.get("method", "unknown"),
             phases=resolution.get("phases", ["initial"]),
             agreement=resolution.get("agreement"),
@@ -219,7 +221,8 @@ def build_audit_from_llm_comparison(
     mode: str,
     grading_method: str,
     verification_mode: str,
-    provider_names: List[str] = None
+    provider_names: List[str] = None,
+    grading_scale: Dict[str, float] = None
 ) -> GradingAudit:
     """
     Build a GradingAudit from legacy llm_comparison data structure.
@@ -233,6 +236,7 @@ def build_audit_from_llm_comparison(
         grading_method: "batch", "individual", or "hybrid"
         verification_mode: "grouped", "per-copy", "per-question", or "none"
         provider_names: List of provider names ["gemini-2.5-flash", "gpt-4o"]
+        grading_scale: Dict of {question_id: max_points} - source of truth for max_points
 
     Returns:
         GradingAudit with converted data
@@ -267,18 +271,37 @@ def build_audit_from_llm_comparison(
             if not isinstance(qdata, dict):
                 continue
 
+            # Get max_points from grading_scale (source of truth)
+            question_max_points = grading_scale.get(qid) if grading_scale else None
+
+            # Fallback: try to get max_points from LLM data if not in grading_scale
+            if question_max_points is None:
+                # Check LLM1 data
+                llm1_mp = qdata.get(llm1_name, {}).get("max_points")
+                llm2_mp = qdata.get(llm2_name, {}).get("max_points")
+                # Use LLM1's max_points, or LLM2's if LLM1 doesn't have it
+                question_max_points = llm1_mp if llm1_mp is not None else llm2_mp
+
             # Build llm_results
             llm_results = {}
 
             # LLM1 data
             llm1_data = qdata.get(llm1_name, {})
             if llm1_data:
-                llm_results["LLM1"] = llm1_data
+                # Use grading_scale for max_points, not LLM-reported value
+                llm1_data_copy = dict(llm1_data)
+                if question_max_points is not None:
+                    llm1_data_copy["max_points"] = question_max_points
+                llm_results["LLM1"] = llm1_data_copy
 
             # LLM2 data
             llm2_data = qdata.get(llm2_name, {})
             if llm2_data:
-                llm_results["LLM2"] = llm2_data
+                # Use grading_scale for max_points, not LLM-reported value
+                llm2_data_copy = dict(llm2_data)
+                if question_max_points is not None:
+                    llm2_data_copy["max_points"] = question_max_points
+                llm_results["LLM2"] = llm2_data_copy
 
             # Build resolution (phases block removed - redundant with llm_results)
             agreement = True
@@ -287,15 +310,15 @@ def build_audit_from_llm_comparison(
             if llm_results:
                 initial_grade1 = llm1_data.get("grade", 0) if llm1_data else 0
                 initial_grade2 = llm2_data.get("grade", 0) if llm2_data else 0
-                initial_mp1 = llm1_data.get("max_points", 1.0) if llm1_data else 1.0
-                initial_mp2 = llm2_data.get("max_points", 1.0) if llm2_data else 1.0
+                # Use grading_scale for max_points in agreement calculation
+                mp_for_threshold = question_max_points if question_max_points is not None else 1.0
 
                 # Check agreement (within threshold - default 10%)
                 try:
                     from config.settings import get_settings
-                    threshold = max(initial_mp1, initial_mp2) * get_settings().grade_agreement_threshold
+                    threshold = mp_for_threshold * get_settings().grade_agreement_threshold
                 except Exception:
-                    threshold = max(initial_mp1, initial_mp2) * 0.1  # Default 10%
+                    threshold = mp_for_threshold * 0.1  # Default 10%
                 agreement = abs(initial_grade1 - initial_grade2) < threshold
 
             # Build phases list (for tracking which phases occurred)
@@ -309,9 +332,12 @@ def build_audit_from_llm_comparison(
 
             final_data = qdata.get("final", qdata.get("_initial_final", qdata.get("_pending_final", {})))
 
+            # Use grading_scale for final_max_points
+            final_max_pts = question_max_points if question_max_points is not None else final_data.get("max_points")
+
             resolution = {
                 "final_grade": final_data.get("grade", 0),
-                "final_max_points": final_data.get("max_points", 1.0),
+                "final_max_points": final_max_pts,
                 "method": final_data.get("method", "unknown"),
                 "phases": phases_list,
                 "agreement": final_data.get("agreement", agreement),

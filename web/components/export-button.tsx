@@ -80,12 +80,12 @@ export function ExportButton({
             {exporting ? (
               <>
                 <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Exporting...
+                Export...
               </>
             ) : (
               <>
                 <Download className="h-4 w-4 mr-2" />
-                Export
+                Exporter
               </>
             )}
           </Button>

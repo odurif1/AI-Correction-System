@@ -107,7 +107,7 @@ def test_grading_session():
     )
 
     assert session.session_id == "test_session"
-    assert session.status == "analyzing"
+    assert session.status == "diagnostic"
     assert session.copies_processed == 0
     assert len(session.copies) == 0
     assert len(session.graded_copies) == 0

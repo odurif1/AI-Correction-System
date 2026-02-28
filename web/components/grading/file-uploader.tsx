@@ -119,7 +119,7 @@ export function FileUploader({
           />
           <Button variant="outline" className="mt-4 min-h-[44px] min-w-[120px] transition-colors hover:bg-purple-50 hover:border-purple-300" asChild>
             <label htmlFor="file-upload" className="cursor-pointer">
-              Select Files
+              Sélectionner fichiers
             </label>
           </Button>
         </CardContent>
@@ -128,7 +128,7 @@ export function FileUploader({
       {displayFiles.length > 0 && (
         <div className="space-y-2">
           <p className="text-sm font-medium">
-            {displayFiles.length} file{displayFiles.length !== 1 ? "s" : ""} selected
+            {displayFiles.length} fichier{displayFiles.length !== 1 ? "s" : ""} sélectionné{displayFiles.length !== 1 ? "s" : ""}
           </p>
           <div className="grid gap-2">
             {displayFiles.map((fileWithProgress, index) => {

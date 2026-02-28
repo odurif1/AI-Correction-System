@@ -19,7 +19,7 @@ def session_with_inconsistency():
     """Create a session with grading inconsistencies."""
     session = GradingSession(
         session_id="test_session",
-        status="calibrating"
+        status="correction"
     )
 
     # Add copies
@@ -129,7 +129,7 @@ def test_empty_session():
     """Test handling of empty session."""
     session = GradingSession(
         session_id="empty_session",
-        status="calibrating"
+        status="correction"
     )
 
     detector = ConsistencyDetector(session)

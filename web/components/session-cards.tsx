@@ -15,9 +15,24 @@ interface SessionCardProps {
 
 export function SessionCard({ session, onDelete }: SessionCardProps) {
   // Determine the primary action based on session status
-  const isInProgress = session.status === "created" || session.status === "grading";
-  const actionText = isInProgress ? "Resume" : "View results";
-  const actionIcon = isInProgress ? <FileText className="h-3.5 w-3.5 mr-1" /> : <Eye className="h-3.5 w-3.5 mr-1" />;
+  const isDiagnostic = session.status === "diagnostic";
+  const isCorrection = session.status === "correction";
+  const isInProgress = isDiagnostic || isCorrection;
+  const actionText = isDiagnostic
+    ? "Continuer le diagnostic"
+    : isCorrection
+    ? "Voir la correction"
+    : "Voir résultats";
+  const actionIcon = isInProgress ? (
+    <FileText className="h-3.5 w-3.5 mr-1" />
+  ) : (
+    <Eye className="h-3.5 w-3.5 mr-1" />
+  );
+
+  // For diagnostic status, link to resume; for others, go to session page
+  const actionHref = isDiagnostic
+    ? `/sessions/new?resume=${session.session_id}`
+    : `/sessions/${session.session_id}`;
 
   return (
     <Card className="hover:shadow-md transition-all duration-200 rounded-lg">
@@ -44,7 +59,7 @@ export function SessionCard({ session, onDelete }: SessionCardProps) {
           </div>
           <div className="flex items-center gap-1 text-muted-foreground">
             <Users className="h-3.5 w-3.5" />
-            <span>{session.average_score?.toFixed(1) || "-"}</span>
+            <span>{session.average_score?.toFixed(1) || "-"}/{session.max_score?.toFixed(0) || "-"}</span>
           </div>
           <div className="flex items-center gap-1 text-muted-foreground">
             <Calendar className="h-3.5 w-3.5" />
@@ -59,7 +74,7 @@ export function SessionCard({ session, onDelete }: SessionCardProps) {
             className="flex-1 hover:bg-purple-50 hover:border-purple-200 hover:text-purple-700"
             asChild
           >
-            <Link href={`/sessions/${session.session_id}`}>
+            <Link href={actionHref}>
               {actionIcon}
               {actionText}
             </Link>
@@ -88,12 +103,12 @@ export function SessionCardsGrid({ sessions, onDelete }: SessionCardsGridProps) 
     return (
       <div className="text-center py-12">
         <FileText className="h-16 w-16 mx-auto text-muted-foreground/50 mb-4" />
-        <h3 className="font-semibold text-lg mb-2">No sessions yet</h3>
+        <h3 className="font-semibold text-lg mb-2">Aucune correction</h3>
         <p className="text-muted-foreground mb-4">
-          Create your first session to start grading papers
+          Créez votre première correction pour commencer
         </p>
         <Button asChild className="bg-purple-600 hover:bg-purple-700">
-          <Link href="/sessions/new">Create Session</Link>
+          <Link href="/sessions/new">Nouvelle correction</Link>
         </Button>
       </div>
     );

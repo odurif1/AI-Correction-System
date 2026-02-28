@@ -657,62 +657,28 @@ class SessionIndex:
 
     def list_sessions(self) -> List[str]:
         """Liste toutes les sessions de l'utilisateur."""
-        # Si user_id est défini, on doit filtrer les sessions par propriétaire
         if self.user_id:
-            # Vérifier d'abord l'index utilisateur
-            if self.index_file.exists():
-                with open(self.index_file, 'r', encoding='utf-8') as f:
-                    index = json.load(f)
-                return list(index.keys())
-
-            # Fallback: scanner le dossier utilisateur
-            if self.index_file.parent.exists():
+            # Scan sessions directory directly (source of truth)
+            sessions_dir = self.base_dir / "sessions" / self.user_id
+            if sessions_dir.exists():
                 return [
-                    d.name for d in self.index_file.parent.iterdir()
+                    d.name for d in sessions_dir.iterdir()
                     if d.is_dir() and (d / SESSION_JSON).exists()
                 ]
-
-            # Dernier fallback: scanner toutes les sessions et filtrer par user_id
-            # Cela gère le cas des sessions créées avant la migration multi-tenant
-            global_index_file = self.base_dir / SESSIONS_INDEX
-            if global_index_file.exists():
-                with open(global_index_file, 'r', encoding='utf-8') as f:
-                    global_index = json.load(f)
-
-                user_sessions = []
-                for session_id, info in global_index.items():
-                    # Vérifier si la session appartient à cet utilisateur
-                    session_user_id = info.get('user_id')
-                    if session_user_id == self.user_id:
-                        user_sessions.append(session_id)
-                    elif session_user_id is None:
-                        # Session sans user_id - vérifier dans le fichier session.json
-                        session_file = self.base_dir / session_id / SESSION_JSON
-                        if session_file.exists():
-                            try:
-                                with open(session_file, 'r', encoding='utf-8') as f:
-                                    session_data = json.load(f)
-                                if session_data.get('user_id') == self.user_id:
-                                    user_sessions.append(session_id)
-                            except (json.JSONDecodeError, IOError):
-                                pass
-                return user_sessions
-
             return []
 
-        # Mode sans user_id (admin/debug) - retourne toutes les sessions
-        if self.index_file.exists():
-            with open(self.index_file, 'r', encoding='utf-8') as f:
-                index = json.load(f)
-            return list(index.keys())
-
-        if not self.index_file.parent.exists():
+        # Mode sans user_id (admin/debug) - scan all sessions
+        sessions_dir = self.base_dir / "sessions"
+        if not sessions_dir.exists():
             return []
 
-        return [
-            d.name for d in self.index_file.parent.iterdir()
-            if d.is_dir() and (d / SESSION_JSON).exists()
-        ]
+        session_ids = []
+        for user_dir in sessions_dir.iterdir():
+            if user_dir.is_dir():
+                for session_dir in user_dir.iterdir():
+                    if session_dir.is_dir() and (session_dir / SESSION_JSON).exists():
+                        session_ids.append(session_dir.name)
+        return session_ids
 
     def get_session_info(self, session_id: str) -> Optional[Dict]:
         """Récupère les infos d'une session."""

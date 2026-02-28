@@ -1470,7 +1470,8 @@ def command_list(args):
         return 0
 
     table = Table(title="Sessions")
-    table.add_column("Session ID", style="cyan")
+    table.add_column("Name", style="cyan", max_width=30)
+    table.add_column("ID", style="dim", width=8)
     table.add_column("Created", style="green")
     table.add_column("Status", style="yellow")
 
@@ -1479,8 +1480,18 @@ def command_list(args):
         session = session_store.load_session()
 
         if session:
+            # Get session name from policy.subject or use "Unnamed"
+            name = session.policy.subject or "Unnamed Session"
+            # Truncate name if too long
+            if len(name) > 28:
+                name = name[:25] + "..."
+
+            # Truncate UUID to first 8 characters for display
+            short_id = session_id[:8]
+
             table.add_row(
-                session_id,
+                name,
+                short_id,
                 str(session.created_at)[:19],
                 session.status
             )

@@ -1,7 +1,7 @@
 "use client";
 
 import { useParams, useRouter } from "next/navigation";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,7 @@ import { ScoreDistribution } from "@/components/grading/score-distribution";
 import { DisagreementCard } from "@/components/grading/disagreement-card";
 import { ExportButton } from "@/components/export-button";
 import { EditableGradeCell } from "@/components/grading/editable-grade-cell";
+import { EditableStudentName } from "@/components/grading/editable-student-name";
 import { useProgressSocket } from "@/lib/websocket";
 import { useRotatingMessage } from "@/lib/waiting-messages";
 import { api } from "@/lib/api";
@@ -51,6 +52,7 @@ import type { Disagreement, SessionDetail, Analytics } from "@/lib/types";
 export default function SessionDetailPage() {
   const params = useParams();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const sessionId = params.id as string;
 
   const [disagreements, setDisagreements] = useState<Disagreement[]>([]);
@@ -123,17 +125,21 @@ export default function SessionDetailPage() {
   // Resolve disagreement mutation
   const resolveMutation = useMutation({
     mutationFn: ({
+      copyId,
       questionId,
       decision,
     }: {
+      copyId: string;
       questionId: string;
       decision: any;
-    }) => api.resolveDisagreement(sessionId, questionId, decision),
+    }) => api.resolveDisagreement(sessionId, copyId, questionId, decision),
     onSuccess: (_, { questionId }) => {
       // Remove resolved disagreement from list
       setDisagreements((prev) =>
         prev.filter((d) => d.question_id !== questionId)
       );
+      // Invalidate session to refresh the grades table
+      queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
     },
   });
 
@@ -273,7 +279,7 @@ export default function SessionDetailPage() {
           <div>
             <div className="flex items-center gap-3 mb-2">
               <h1 className="text-3xl font-bold tracking-tight">
-                Session {sessionId}
+                {session.subject || `Session ${sessionId.slice(0, 8)}`}
               </h1>
               <SessionStatus status={wasInterrupted ? "complete" : session.status} />
               {wasInterrupted && (
@@ -513,7 +519,11 @@ export default function SessionDetailPage() {
                           return (
                             <TableRow key={graded.copy_id} className="hover:bg-muted/50">
                               <TableCell className="font-medium sticky left-0 bg-background">
-                                {graded.student_name || graded.copy_id}
+                                <EditableStudentName
+                                  sessionId={sessionId}
+                                  copyId={graded.copy_id}
+                                  studentName={graded.student_name}
+                                />
                               </TableCell>
                               {questionIds.map((questionId) => {
                                 // Check if this specific question has a disagreement
@@ -628,6 +638,7 @@ export default function SessionDetailPage() {
                         disagreement={disagreement}
                         onResolve={async (decision) => {
                           await resolveMutation.mutateAsync({
+                            copyId: disagreement.copy_id,
                             questionId: disagreement.question_id,
                             decision,
                           });

@@ -21,7 +21,8 @@ TRANSLATIONS_FR = {
             "SUJET: Le sujet est-il inclus dans le PDF ou séparé ?",
             "ÉLÈVES: Combien d'élèves ? Pour chaque élève: nom, page de début, page de fin",
             "BARÈME: Quels sont les points attribués à chaque question ?",
-            "LANGUE: Quelle est la langue principale du document ?"
+            "LANGUE: Quelle est la langue principale du document ?",
+            "NOM DE L'EXAMEN: Génère un nom court pour cet examen (format: 'Matière - Type', max 50 caractères, ex: 'Mathématiques - Contrôle')"
         ],
 
         # Critical instructions
@@ -33,18 +34,6 @@ TRANSLATIONS_FR = {
             "Si tu vois des noms différents sur des pages différentes = plusieurs élèves",
             "Structure 'one_pdf_all_students' = plusieurs élèves dans UN SEUL fichier PDF",
             "Structure 'one_pdf_one_student' = un seul élève dans tout le PDF"
-        ],
-
-        # Mission
-        "mission_title": "TA MISSION",
-        "mission_intro": "Analyse ce document PDF pour déterminer sa structure et son contenu. Tu dois détecter:",
-        "detection_steps": [
-            "TYPE DE DOCUMENT: S'agit-il de copies d'élèves, d'un sujet, ou d'un document sans rapport ?",
-            "STRUCTURE: Un seul élève par PDF ou plusieurs élèves dans ce PDF ? ATTENTION: analyse TOUTES les pages!",
-            "SUJET: Le sujet est-il inclus dans le PDF ou séparé ?",
-            "ÉLÈVES: Combien d'élèves ? Pour chaque élève: nom, page de début, page de fin",
-            "BARÈME: Quels sont les points attribués à chaque question ?",
-            "LANGUE: Quelle est la langue principale du document ?"
         ],
 
         # Blocking criteria
@@ -80,6 +69,7 @@ TRANSLATIONS_FR = {
         "field_grading_scale": "Barème détecté: {question_id: points}",
         "field_blocking_issues": "Liste des problèmes bloquants (vide = OK)",
         "field_warnings": "Liste des avertissements (non-bloquants)",
+        "field_exam_name": "Nom court de l'examen (ex: 'Mathématiques - Contrôle')",
 
         # Document types
         "document_types_title": "Types de documents",
@@ -158,7 +148,8 @@ TRANSLATIONS_EN = {
             "SUBJECT: Is the subject included in the PDF or separate?",
             "STUDENTS: How many students and which pages for each?",
             "GRADING SCALE: What are the points assigned to each question?",
-            "LANGUAGE: What is the main language of the document?"
+            "LANGUAGE: What is the main language of the document?",
+            "EXAM NAME: Generate a short name for this exam (format: 'Subject - Type', max 50 chars, ex: 'Mathematics - Quiz')"
         ],
 
         # Blocking criteria
@@ -194,6 +185,7 @@ TRANSLATIONS_EN = {
         "field_grading_scale": "Detected grading scale: {question_id: points}",
         "field_blocking_issues": "List of blocking issues (empty = OK)",
         "field_warnings": "List of warnings (non-blocking)",
+        "field_exam_name": "Short exam name (ex: 'Mathematics - Quiz')",
 
         # Document types
         "document_types_title": "Document types",

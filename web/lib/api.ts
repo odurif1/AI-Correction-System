@@ -174,11 +174,12 @@ class ApiClient {
 
   async resolveDisagreement(
     sessionId: string,
+    copyId: string,
     questionId: string,
     decision: ResolveDecision
   ): Promise<{ success: boolean }> {
     return this.fetchJson(
-      `/api/sessions/${sessionId}/disagreements/${questionId}/resolve`,
+      `/api/sessions/${sessionId}/disagreements/${copyId}/${questionId}/resolve`,
       {
         method: "POST",
         body: JSON.stringify(decision),
@@ -277,6 +278,21 @@ class ApiClient {
           question_id: questionId,
           new_grade: data.new_grade,
         }),
+      }
+    );
+  }
+
+  // Student name updates
+  async updateStudentName(
+    sessionId: string,
+    copyId: string,
+    studentName: string
+  ): Promise<{ success: boolean; copy_id: string; old_name: string | null; new_name: string }> {
+    return this.fetchJson(
+      `/api/sessions/${sessionId}/copies/${copyId}/student-name`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ student_name: studentName }),
       }
     );
   }

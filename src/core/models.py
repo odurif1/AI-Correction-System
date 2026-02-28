@@ -32,14 +32,15 @@ class UncertaintyType(str, Enum):
 
 
 class SessionStatus(str, Enum):
-    """Status of a grading session."""
-    ANALYZING = "analyzing"
-    GRADING = "grading"
-    CALIBRATING = "calibrating"
-    COMPLETE = "complete"
-    PAUSED = "paused"
-    PRE_ANALYZING = "pre_analyzing"
-    READY_FOR_GRADING = "ready_for_grading"
+    """Status of a grading session.
+
+    Simplified status flow:
+    Upload PDF → DIAGNOSTIC → CORRECTION → COMPLETE
+    """
+    DIAGNOSTIC = "diagnostic"      # Pre-analysis in progress or awaiting confirmation
+    CORRECTION = "correction"      # Grading in progress
+    COMPLETE = "complete"          # Finished
+    ERROR = "error"                # Error occurred
 
 
 class DocumentType(str, Enum):
@@ -129,6 +130,9 @@ class PreAnalysisResult(BaseModel):
     # Langue détectée
     detected_language: str = "fr"
 
+    # Nom de l'examen (généré automatiquement par le LLM)
+    exam_name: Optional[str] = None
+
     # Métadonnées
     analysis_id: str = Field(default_factory=generate_id)
     cached: bool = False
@@ -209,7 +213,7 @@ class GradingSession(BaseModel):
     """
     session_id: str = Field(default_factory=generate_id)
     created_at: datetime = Field(default_factory=datetime.now)
-    status: SessionStatus = SessionStatus.ANALYZING
+    status: SessionStatus = SessionStatus.DIAGNOSTIC
 
     # User ownership (for multi-tenant)
     user_id: Optional[str] = None
@@ -302,6 +306,7 @@ class ProviderInfo(BaseModel):
 class LLMResult(BaseModel):
     """Result from a single LLM for a question."""
     grade: float
+    max_points: Optional[float] = None  # None if not provided by LLM
     reading: str = ""
     reasoning: str = ""
     feedback: str = ""

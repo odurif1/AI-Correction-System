@@ -149,7 +149,8 @@ def _build_json_example(t: dict) -> str:
   "has_blocking_issues": false,
   "warnings": [],
 
-  "detected_language": "fr"
+  "detected_language": "fr",
+  "exam_name": "Mathématiques - Contrôle"
 }}
 ```
 
@@ -160,6 +161,7 @@ def _build_json_example(t: dict) -> str:
 - `grading_scale`: {t['field_grading_scale']}
 - `blocking_issues`: {t['field_blocking_issues']}
 - `warnings`: {t['field_warnings']}
+- `exam_name`: {t['field_exam_name']}
 
 **{t['document_types_title']}**:
 - `student_copies`: {t['doc_type_student_copies']}

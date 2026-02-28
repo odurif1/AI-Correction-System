@@ -17,7 +17,7 @@ def sample_session():
     """Create a sample grading session."""
     session = GradingSession(
         session_id="test_session",
-        status="calibrating"
+        status="correction"
     )
 
     # Add copies with different embeddings

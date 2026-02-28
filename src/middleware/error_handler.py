@@ -93,9 +93,10 @@ async def sentry_exception_handler(request: Request, exc: Exception) -> JSONResp
     # Send to Sentry
     sentry_sdk.capture_exception(exc)
 
-    # Log error
+    # Log error - escape curly braces to avoid loguru format interpretation
+    error_msg = str(exc).replace("{", "{{").replace("}", "}}")
     logger.error(
-        f"Unhandled exception: {exc}",
+        f"Unhandled exception: {error_msg}",
         exc_info=True,
         extra={
             "request_path": request.url.path,

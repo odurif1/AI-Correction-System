@@ -110,7 +110,7 @@ export function DisagreementCard({
         )}
       </CardContent>
 
-      <CardFooter className="flex-wrap gap-2">
+      <CardFooter className="flex-wrap gap-2 justify-center">
         <Button
           variant={selected === "llm1" ? "default" : "outline"}
           size="sm"

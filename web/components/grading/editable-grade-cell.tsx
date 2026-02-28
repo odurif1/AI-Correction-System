@@ -29,6 +29,7 @@ export function EditableGradeCell({
 }: EditableGradeCellProps) {
   const [isEditing, setIsEditing] = useState(false);
   const [value, setValue] = useState(grade);
+  const [disagreementAcknowledged, setDisagreementAcknowledged] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const queryClient = useQueryClient();
 
@@ -90,9 +91,17 @@ export function EditableGradeCell({
   // Show reset button only if current grade differs from initial LLM grade
   const showResetButton = initialGradeRef.current !== null && grade !== initialGradeRef.current;
 
+  // Show warning only if there's a disagreement and user hasn't acknowledged it
+  const showWarning = hasDisagreement && !disagreementAcknowledged;
+
+  const handleClick = () => {
+    setDisagreementAcknowledged(true);
+    setIsEditing(true);
+  };
+
   return (
     <div className="flex items-center gap-2">
-      {hasDisagreement && <AlertTriangle className="h-4 w-4 text-warning" />}
+      {showWarning && <AlertTriangle className="h-4 w-4 text-warning" />}
       {isEditing ? (
         <div className="flex items-center gap-1">
           <input
@@ -112,7 +121,7 @@ export function EditableGradeCell({
       ) : (
         <div className="flex items-center gap-1">
           <button
-            onClick={() => setIsEditing(true)}
+            onClick={handleClick}
             className="text-sm font-medium hover:bg-muted px-2 py-1 rounded transition-colors"
             title="Cliquez sur une note pour la modifier"
           >

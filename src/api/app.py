@@ -71,7 +71,7 @@ from api.schemas import (
     SettingsResponse, UpdateSettingsRequest, ExportOptions,
     PreAnalysisRequest, PreAnalysisResponse, ConfirmPreAnalysisRequest,
     ConfirmPreAnalysisResponse, StudentInfoSchema, CandidateScale,
-    StartGradingRequest, UpdateGradeRequest, UpdateGradeResponse
+    StartGradingRequest, UpdateGradeRequest, UpdateGradeResponse, UpdateStudentNameRequest
 )
 
 # Import auth module
@@ -699,7 +699,8 @@ def create_app() -> FastAPI:
                 overall_quality_score=result.overall_quality_score,
                 detected_language=result.detected_language,
                 cached=result.cached,
-                analysis_duration_ms=result.analysis_duration_ms
+                analysis_duration_ms=result.analysis_duration_ms,
+                exam_name=result.exam_name
             )
 
         except Exception as e:
@@ -793,6 +794,10 @@ def create_app() -> FastAPI:
             # Set question weights from final grading scale
             session.policy.question_weights = grading_scale
             session.status = SessionStatus.CORRECTION  # Grading starts now
+
+            # Propagate exam_name to session.policy.subject if not already set
+            if pre_analysis.exam_name and not session.policy.subject:
+                session.policy.subject = pre_analysis.exam_name
 
             # Store student name adjustments in session metadata for later use
             if not session.storage_path:
@@ -1103,6 +1108,35 @@ def create_app() -> FastAPI:
             new_total=graded.total_score,
             max_score=graded.max_score
         )
+
+    @app.patch("/api/sessions/{session_id}/copies/{copy_id}/student-name")
+    async def update_student_name(
+        session_id: str,
+        copy_id: str,
+        request: UpdateStudentNameRequest,
+        current_user = Depends(get_current_user)
+    ):
+        """Update the student name for a copy."""
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Find the copy document
+        copy = next((c for c in session.copies if c.id == copy_id), None)
+        if not copy:
+            raise HTTPException(status_code=404, detail="Copy not found")
+
+        # Update student name
+        old_name = copy.student_name
+        copy.student_name = request.student_name
+
+        # Persist immediately
+        store.save_session(session)
+
+        return {"success": True, "copy_id": copy_id, "old_name": old_name, "new_name": request.student_name}
 
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str, current_user = Depends(get_current_user)):
@@ -1428,14 +1462,15 @@ def create_app() -> FastAPI:
 
         return disagreements
 
-    @app.post("/api/sessions/{session_id}/disagreements/{question_id}/resolve")
+    @app.post("/api/sessions/{session_id}/disagreements/{copy_id}/{question_id}/resolve")
     async def resolve_disagreement(
         session_id: str,
+        copy_id: str,
         question_id: str,
         request: ResolveDisagreementRequest,
         current_user = Depends(get_current_user)
     ):
-        """Resolve a disagreement."""
+        """Resolve a disagreement by marking it as agreed and optionally updating the grade."""
         user_id = current_user.id
         store = SessionStore(session_id, user_id=user_id)
         session = store.load_session()
@@ -1443,9 +1478,37 @@ def create_app() -> FastAPI:
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
 
-        # This is a simplified resolution - in a real implementation,
-        # you would update the actual graded copy
-        # For now, just acknowledge the resolution
+        # Find the graded copy
+        graded = next((g for g in session.graded_copies if g.copy_id == copy_id), None)
+        if not graded:
+            raise HTTPException(status_code=404, detail="Graded copy not found")
+
+        # Update the disagreement status in grading_audit
+        if graded.grading_audit and question_id in graded.grading_audit.questions:
+            graded.grading_audit.questions[question_id].resolution.agreement = True
+
+            # Update the grade based on the decision
+            if request.action == "llm1":
+                llm1_key = list(graded.grading_audit.questions[question_id].llm_results.keys())[0]
+                new_grade = graded.grading_audit.questions[question_id].llm_results[llm1_key].grade
+            elif request.action == "llm2":
+                keys = list(graded.grading_audit.questions[question_id].llm_results.keys())
+                llm2_key = keys[1] if len(keys) > 1 else keys[0]
+                new_grade = graded.grading_audit.questions[question_id].llm_results[llm2_key].grade
+            elif request.action == "average":
+                results = list(graded.grading_audit.questions[question_id].llm_results.values())
+                new_grade = sum(r.grade for r in results) / len(results)
+            elif request.action == "custom" and request.custom_grade is not None:
+                new_grade = request.custom_grade
+            else:
+                new_grade = graded.grades.get(question_id, 0)
+
+            # Update the grade
+            graded.grades[question_id] = new_grade
+            graded.total_score = sum(graded.grades.values())
+
+            # Persist the session
+            store.save_session(session)
 
         return {"success": True, "question_id": question_id, "action": request.action}
 
