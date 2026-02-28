@@ -52,12 +52,17 @@ Fonctionnalités livrées en v1.0 MVP (2026-02-28) :
 
 ### Active
 
-Objectifs pour v1.1 :
+**v1.1 — Polish & Fix** (Current milestone)
 
+- [ ] Token deduction not working (backend)
+- [ ] Move token bar to Subscription page (UX)
+- [ ] Bug hunting pass through app
+
+**Deferred to v1.2+:**
 - [ ] Docker deployment (blocked: PyMuPDF Python 3.13+ support pending)
 - [ ] Calibration across copies (GRAD-07)
 - [ ] Error states with user-friendly messages (UI-07)
-- [ ] CI/CD pipeline (OPS-03 - deferred)
+- [ ] CI/CD pipeline (OPS-03)
 
 ### Out of Scope
 
