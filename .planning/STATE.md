@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Polish & Fix
 status: planning
-last_updated: "2026-02-28T20:23:53.815Z"
+last_updated: "2026-02-28T20:25:06.025Z"
 progress:
   total_phases: 1
   completed_phases: 0
   total_plans: 3
-  completed_plans: 1
-  percent: 33
+  completed_plans: 2
+  percent: 67
 ---
 
 # State: La Corrigeuse
@@ -33,7 +33,7 @@ v1.1 — Polish & Fix: Token deduction fix, subscription UX, bug hunting.
 **Phase:** 6 (Token Deduction Fix)
 **Plan:** —
 **Status:** Ready for planning
-**Progress:** [███░░░░░░░] 33%
+**Progress:** [███████░░░] 67%
 
 **Target for v1.1:**
 - Fix token deduction (backend bug - copy count vs token count)
