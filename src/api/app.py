@@ -72,7 +72,8 @@ from api.schemas import (
     DetectionRequest, DetectionResponse, ConfirmDetectionRequest,
     ConfirmDetectionResponse, StudentInfoSchema, CandidateScale,
     StartGradingRequest, UpdateGradeRequest, UpdateGradeResponse, UpdateStudentNameRequest,
-    UpdateSessionSubjectRequest
+    UpdateSessionSubjectRequest, UpdateQuestionWeightRequest, UpdateQuestionWeightResponse,
+    UpdateQuestionNameRequest, UpdateQuestionNameResponse
 )
 
 # Import auth module
@@ -1058,7 +1059,8 @@ def create_app() -> FastAPI:
             topic=session.policy.topic,
             copies=copies,
             graded_copies=graded_copies,
-            question_weights=session.policy.question_weights
+            question_weights=session.policy.question_weights,
+            question_names=session.policy.question_names
         )
 
     @app.patch("/api/sessions/{session_id}/copies/{copy_id}/grades", response_model=UpdateGradeResponse)
@@ -1174,6 +1176,117 @@ def create_app() -> FastAPI:
         store.save_session(session)
 
         return {"success": True, "session_id": session_id, "old_subject": old_subject, "new_subject": request.subject}
+
+    @app.patch("/api/sessions/{session_id}/question-weights", response_model=UpdateQuestionWeightResponse)
+    async def update_question_weight(
+        session_id: str,
+        request: UpdateQuestionWeightRequest,
+        current_user = Depends(get_current_user)
+    ):
+        """
+        Update the max points (weight) for a question.
+
+        This will:
+        1. Update the question weight in the session policy
+        2. Recalculate max_score for all graded copies
+        3. Cap any grades that exceed the new max points
+        """
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Check if question exists in weights
+        if request.question_id not in session.policy.question_weights:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Question {request.question_id} not found in grading scale"
+            )
+
+        # Store old values
+        old_weight = session.policy.question_weights[request.question_id]
+        old_max_score = sum(session.policy.question_weights.values())
+
+        # Update weight
+        session.policy.question_weights[request.question_id] = request.new_weight
+        new_max_score = sum(session.policy.question_weights.values())
+
+        # Update max_score and cap grades for all graded copies
+        updated_copies = 0
+        for graded in session.graded_copies:
+            # Update max_points_by_question if it exists
+            if graded.max_points_by_question and request.question_id in graded.max_points_by_question:
+                graded.max_points_by_question[request.question_id] = request.new_weight
+
+            # Cap grade if it exceeds new max
+            if request.question_id in graded.grades:
+                if graded.grades[request.question_id] > request.new_weight:
+                    graded.grades[request.question_id] = request.new_weight
+                    updated_copies += 1
+
+            # Recalculate total score
+            graded.total_score = sum(graded.grades.values())
+            # Recalculate max_score from weights
+            graded.max_score = sum(
+                session.policy.question_weights.get(q, 0)
+                for q in graded.grades.keys()
+            )
+
+        # Persist changes
+        store.save_session(session)
+
+        return UpdateQuestionWeightResponse(
+            success=True,
+            question_id=request.question_id,
+            old_weight=old_weight,
+            new_weight=request.new_weight,
+            old_max_score=old_max_score,
+            new_max_score=new_max_score,
+            updated_copies=updated_copies
+        )
+
+    @app.patch("/api/sessions/{session_id}/question-names", response_model=UpdateQuestionNameResponse)
+    async def update_question_name(
+        session_id: str,
+        request: UpdateQuestionNameRequest,
+        current_user = Depends(get_current_user)
+    ):
+        """
+        Update the display name for a question.
+
+        This allows teachers to give custom names to questions (e.g., "Exercice 1 - Calcul").
+        """
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Check if question exists in weights
+        if request.question_id not in session.policy.question_weights:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Question {request.question_id} not found in grading scale"
+            )
+
+        # Store old name
+        old_name = session.policy.question_names.get(request.question_id)
+
+        # Update name
+        session.policy.question_names[request.question_id] = request.new_name
+
+        # Persist changes
+        store.save_session(session)
+
+        return UpdateQuestionNameResponse(
+            success=True,
+            question_id=request.question_id,
+            old_name=old_name,
+            new_name=request.new_name
+        )
 
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str, current_user = Depends(get_current_user)):
@@ -1301,8 +1414,14 @@ def create_app() -> FastAPI:
                 }
                 db_user = None
 
+                logger.info(f"[TOKEN_DEBUG] Starting token deduction for session {session_id}, user {user_id}")
+
                 db = SessionLocal()
                 try:
+                    # Get token usage from provider for debugging
+                    provider_usage = orchestrator.ai.get_token_usage() if hasattr(orchestrator.ai, 'get_token_usage') else {}
+                    logger.info(f"[TOKEN_DEBUG] Provider usage: {provider_usage}")
+
                     deduction_svc = TokenDeductionService()
                     result = deduction_svc.deduct_grading_usage(
                         user_id=user_id,
