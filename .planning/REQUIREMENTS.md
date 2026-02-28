@@ -81,7 +81,7 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 
 ### Cost Management
 
-- [ ] **COST-01**: Token usage tracked per session and per user
+- [x] **COST-01**: Token usage tracked per session and per user
 - [x] **COST-02**: Token costs estimated and displayed to user before grading
 - [ ] **COST-03**: Model tiering — lightweight model for detection, premium for grading
 - [x] **COST-04**: Prompt caching enabled for repeated grading criteria

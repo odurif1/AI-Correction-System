@@ -5,13 +5,13 @@ milestone_name: milestone
 current_phase: Phase 5 (Production Readiness)
 current_plan: 05-01 (Docker Containerization)
 status: completed
-last_updated: "2026-02-28T15:48:00.000Z"
+last_updated: "2026-02-28T15:55:59.532Z"
 progress:
   total_phases: 5
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 24
-  completed_plans: 21
-  percent: 88
+  completed_plans: 24
+  percent: 100
 ---
 
 # State: La Corrigeuse
@@ -36,7 +36,7 @@ Production readiness - containerization, security scanning, cost optimization, s
 **Phase:** 5 - Production Readiness
 **Plan:** 05-01 - Docker Containerization
 **Status:** Complete
-**Progress:** [████████░] 88%
+**Progress:** [██████████] 100%
 
 **What was built:**
 Multi-stage Docker build (Python 3.11 + Node 20) for FastAPI + Next.js, Docker Compose orchestration with nginx reverse proxy, rate limiting (10r/s), WebSocket support, volume-based SQLite persistence.
@@ -232,6 +232,9 @@ Phases 1-4 complete. Phase 5 enables production deployment with containerization
 - [Phase 05-03]: Prompt caching enabled by default with 5-minute TTL - OpenAI (50% discount), Gemini (75% discount), Claude (90% discount)
 - [Phase 05-03]: Cached tokens extracted from API response metadata (prompt_tokens_details.cached, cached_content_token_count)
 - [Phase 05]: Security scanning integration with pip-audit and bandit - JSON output for CI/CD, medium severity threshold, continue on findings
+- [Phase 05]: FREE tier: 100K tokens one-shot (no monthly reset)
+- [Phase 05]: Stripe Checkout for hosted payments (no PCI burden)
+- [Phase 05]: Webhook-based tier sync (eventual consistency)
 
 ### Active Todos
 
