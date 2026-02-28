@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     openrouter_vision_model: Optional[str] = None
 
     # Comparison Mode (dual LLM)
-    comparison_mode: bool = False
+    comparison_mode: bool = True
     llm1_provider: Optional[str] = None
     llm1_model: Optional[str] = None
     llm2_provider: Optional[str] = None
@@ -82,6 +82,10 @@ class Settings(BaseSettings):
     sendgrid_api_key: str = ""
     sendgrid_sender: str = "noreply@lacorrigeuse.fr"
     sendgrid_sandbox_mode: bool = False
+
+    # Prompt caching
+    enable_prompt_caching: bool = True
+    cache_ttl_seconds: int = 300  # 5 minutes default
 
     # Validators
     @field_validator('jwt_secret')

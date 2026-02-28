@@ -146,6 +146,14 @@ class OpenAIProvider(BaseProvider):
             else:
                 images_list = [str(images) if isinstance(images, (str, Path)) else "<bytes>"]
 
+        # Extract cached tokens from response usage
+        cached_tokens = 0
+        if response.usage:
+            # OpenAI may report cached tokens in usage details
+            usage_details = getattr(response.usage, 'prompt_tokens_details', None)
+            if usage_details:
+                cached_tokens = getattr(usage_details, 'cached', 0)
+
         self._log_call(
             prompt_type="vision",
             input_summary=f"Vision: {prompt[:80]}...",
@@ -153,6 +161,7 @@ class OpenAIProvider(BaseProvider):
             duration_ms=(time.time() - start_time) * 1000,
             prompt_tokens=response.usage.prompt_tokens if response.usage else None,
             completion_tokens=response.usage.completion_tokens if response.usage else None,
+            cached_tokens=cached_tokens if cached_tokens > 0 else None,
             full_prompt=prompt,
             full_response=result,
             images=images_list,
@@ -189,6 +198,14 @@ class OpenAIProvider(BaseProvider):
         response = self.client.chat.completions.create(**kwargs)
         result = response.choices[0].message.content or ""
 
+        # Extract cached tokens from response usage
+        cached_tokens = 0
+        if response.usage:
+            # OpenAI may report cached tokens in usage details
+            usage_details = getattr(response.usage, 'prompt_tokens_details', None)
+            if usage_details:
+                cached_tokens = getattr(usage_details, 'cached', 0)
+
         self._log_call(
             prompt_type="text",
             input_summary=f"Text: {prompt[:80]}...",
@@ -196,6 +213,7 @@ class OpenAIProvider(BaseProvider):
             duration_ms=(time.time() - start_time) * 1000,
             prompt_tokens=response.usage.prompt_tokens if response.usage else None,
             completion_tokens=response.usage.completion_tokens if response.usage else None,
+            cached_tokens=cached_tokens if cached_tokens > 0 else None,
             full_prompt=prompt,
             full_response=result,
             model_name=self.model

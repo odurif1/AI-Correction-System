@@ -186,9 +186,12 @@ class GeminiProvider(BaseProvider):
         # Extract token usage
         prompt_tokens = None
         completion_tokens = None
+        cached_tokens = None
         if hasattr(response, 'usage_metadata') and response.usage_metadata:
             prompt_tokens = getattr(response.usage_metadata, 'prompt_token_count', None)
             completion_tokens = getattr(response.usage_metadata, 'candidates_token_count', None)
+            # Extract cached tokens (Gemini 2.5+ implicit caching)
+            cached_tokens = getattr(response.usage_metadata, 'cached_content_token_count', None)
 
         # Log call
         duration = (time.time() - start_time) * 1000
@@ -206,6 +209,7 @@ class GeminiProvider(BaseProvider):
             duration_ms=duration,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens,
             full_prompt=prompt,
             full_response=result,
             images=images_list,
@@ -256,9 +260,12 @@ class GeminiProvider(BaseProvider):
         # Extract token usage
         prompt_tokens = None
         completion_tokens = None
+        cached_tokens = None
         if hasattr(response, 'usage_metadata') and response.usage_metadata:
             prompt_tokens = getattr(response.usage_metadata, 'prompt_token_count', None)
             completion_tokens = getattr(response.usage_metadata, 'candidates_token_count', None)
+            # Extract cached tokens (Gemini 2.5+ implicit caching)
+            cached_tokens = getattr(response.usage_metadata, 'cached_content_token_count', None)
 
         # Log call
         duration = (time.time() - start_time) * 1000
@@ -269,6 +276,7 @@ class GeminiProvider(BaseProvider):
             duration_ms=duration,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            cached_tokens=cached_tokens,
             full_prompt=prompt,
             full_response=result,
             model_name=self.model
