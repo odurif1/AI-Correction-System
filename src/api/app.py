@@ -891,9 +891,43 @@ def create_app() -> FastAPI:
                 else:
                     avg = 0
 
+                # Deduct actual tokens used
+                result = {
+                    'tokens_deducted': 0,
+                    'remaining_tokens': 0,
+                    'usage_record_id': None,
+                    'is_duplicate': False
+                }
+                db_user = None
+
+                try:
+                    db = SessionLocal()
+                    deduction_svc = TokenDeductionService()
+                    result = deduction_svc.deduct_grading_usage(
+                        user_id=user_id,
+                        provider=orchestrator.ai,
+                        session_id=session_id,
+                        db=db
+                    )
+                    logger.info(f"Deducted {result['tokens_deducted']} tokens for session {session_id}")
+                    db_user = db.query(User).filter(User.id == user_id).first()
+                    db.close()
+                except InsufficientTokensError as e:
+                    await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_ERROR, {
+                        "error": "Insufficient tokens",
+                        "tokens_required": e.tokens_required,
+                        "tokens_remaining": e.tokens_remaining
+                    })
+                    logger.error(f"Insufficient tokens for user {user_id}")
+                except Exception as e:
+                    logger.error(f"Token deduction error for session {session_id}: {e}")
+                    # Continue without blocking - grading already done
+
                 await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_COMPLETE, {
                     "average_score": avg,
-                    "total_copies": len(session.graded_copies) if session else 0
+                    "total_copies": len(session.graded_copies) if session else 0,
+                    "tokens_used": result['tokens_deducted'],
+                    "remaining_tokens": db_user.remaining_tokens if db_user else 0
                 })
 
                 # Update session status in database
@@ -1415,6 +1449,11 @@ def create_app() -> FastAPI:
                 db_user = None
 
                 logger.info(f"[TOKEN_DEBUG] Starting token deduction for session {session_id}, user {user_id}")
+
+                # Also write to file for debugging
+                with open("/tmp/token_debug.log", "a") as f:
+                    f.write(f"\n=== {session_id} ===\n")
+                    f.write(f"User: {user_id}\n")
 
                 db = SessionLocal()
                 try:
