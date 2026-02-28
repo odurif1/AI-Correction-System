@@ -64,14 +64,17 @@ export function EditableGradeCell({
     }
   };
 
-  const handleCancel = () => {
-    setValue(grade);
-    setIsEditing(false);
+  const handleReset = () => {
+    setValue(originalGrade);
+    updateMutation.mutate(originalGrade);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") handleSave();
-    if (e.key === "Escape") handleCancel();
+    if (e.key === "Escape") {
+      setValue(originalGrade);
+      setIsEditing(false);
+    }
   };
 
   return (
@@ -94,12 +97,25 @@ export function EditableGradeCell({
           <span className="text-sm text-muted-foreground">/ {maxPoints}</span>
         </div>
       ) : (
-        <button
-          onClick={() => setIsEditing(true)}
-          className="text-sm font-medium hover:bg-muted px-2 py-1 rounded transition-colors"
-        >
-          {grade} / {maxPoints}
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => setIsEditing(true)}
+            className="text-sm font-medium hover:bg-muted px-2 py-1 rounded transition-colors"
+          >
+            {grade} / {maxPoints}
+          </button>
+          {grade !== originalGrade && (
+            <Button
+              size="icon"
+              variant="ghost"
+              className="h-6 w-6"
+              onClick={handleReset}
+              title="Restaurer la note originale de l'IA"
+            >
+              <RotateCcw className="h-3 w-3 text-muted-foreground" />
+            </Button>
+          )}
+        </div>
       )}
     </div>
   );
