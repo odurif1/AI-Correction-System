@@ -31,6 +31,7 @@ import { DisagreementCard } from "@/components/grading/disagreement-card";
 import { ExportButton } from "@/components/export-button";
 import { EditableGradeCell } from "@/components/grading/editable-grade-cell";
 import { EditableStudentName } from "@/components/grading/editable-student-name";
+import { EditableExamName } from "@/components/grading/editable-exam-name";
 import { useProgressSocket } from "@/lib/websocket";
 import { useRotatingMessage } from "@/lib/waiting-messages";
 import { api } from "@/lib/api";
@@ -278,9 +279,11 @@ export default function SessionDetailPage() {
         <div className="flex items-start justify-between mb-8">
           <div>
             <div className="flex items-center gap-3 mb-2">
-              <h1 className="text-3xl font-bold tracking-tight">
-                {session.subject || `Session ${sessionId.slice(0, 8)}`}
-              </h1>
+              <EditableExamName
+                sessionId={sessionId}
+                subject={session.subject}
+                fallback={`Session ${sessionId.slice(0, 8)}`}
+              />
               <SessionStatus status={wasInterrupted ? "complete" : session.status} />
               {wasInterrupted && (
                 <Badge variant="outline" className="text-amber-600 border-amber-600">

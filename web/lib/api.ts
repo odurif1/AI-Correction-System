@@ -297,6 +297,20 @@ class ApiClient {
     );
   }
 
+  // Session subject updates
+  async updateSessionSubject(
+    sessionId: string,
+    subject: string
+  ): Promise<{ success: boolean; session_id: string; old_subject: string | null; new_subject: string }> {
+    return this.fetchJson(
+      `/api/sessions/${sessionId}/subject`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ subject }),
+      }
+    );
+  }
+
   // Subscription
   async getSubscriptionStatus(): Promise<{
     tier: string;

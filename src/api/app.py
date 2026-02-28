@@ -69,9 +69,10 @@ from api.schemas import (
     DisagreementResponse, ResolveDisagreementRequest,
     AnalyticsResponse, ProviderResponse, ProviderModel,
     SettingsResponse, UpdateSettingsRequest, ExportOptions,
-    PreAnalysisRequest, PreAnalysisResponse, ConfirmPreAnalysisRequest,
-    ConfirmPreAnalysisResponse, StudentInfoSchema, CandidateScale,
-    StartGradingRequest, UpdateGradeRequest, UpdateGradeResponse, UpdateStudentNameRequest
+    DetectionRequest, DetectionResponse, ConfirmDetectionRequest,
+    ConfirmDetectionResponse, StudentInfoSchema, CandidateScale,
+    StartGradingRequest, UpdateGradeRequest, UpdateGradeResponse, UpdateStudentNameRequest,
+    UpdateSessionSubjectRequest
 )
 
 # Import auth module
@@ -569,25 +570,23 @@ def create_app() -> FastAPI:
             "validation_results": validation_results
         }
 
-    @app.post("/api/sessions/{session_id}/pre-analyze", response_model=PreAnalysisResponse)
-    async def pre_analyze_session(
+    @app.post("/api/sessions/{session_id}/detect", response_model=DetectionResponse)
+    async def detect_session(
         session_id: str,
-        request: PreAnalysisRequest,
+        request: DetectionRequest,
         background_tasks: BackgroundTasks,
         current_user = Depends(get_current_user)
     ):
         """
-        Pre-analyze the uploaded PDF to detect structure and grading scale.
+        Detect PDF structure and grading scale.
 
-        This analysis is performed before grading to:
+        This detection is performed before grading to:
         - Validate the PDF contains student copies
         - Detect document structure (one student or multiple per PDF)
         - Detect grading scale / barème (with multiple candidate scales if uncertain)
         - Identify blocking issues
-
-        Results are cached for the session.
         """
-        from analysis.pre_analysis import PreAnalyzer
+        from analysis.detection import Detector
 
         user_id = current_user.id
 
@@ -608,30 +607,30 @@ def create_app() -> FastAPI:
         # Use the first PDF (we only support one PDF per session)
         pdf_path = str(pdf_files[0])
 
-        # Check tier-based limits for re-diagnosis (force_refresh)
+        # Check tier-based limits for re-detection (force_refresh)
         if request.force_refresh:
             from db import SubscriptionTier
             tier = current_user.subscription_tier
 
-            # FREE tier cannot re-diagnose (consumes ~5-7K tokens)
+            # FREE tier cannot re-detect (consumes ~5-7K tokens)
             if tier == SubscriptionTier.FREE:
                 raise HTTPException(
                     status_code=403,
-                    detail="Re-diagnostic non disponible sur le plan FREE. Passez à ESSENTIEL pour re-analyser."
+                    detail="Re-détection non disponible sur le plan FREE. Passez à ESSENTIEL."
                 )
 
-            # ESSENTIEL can only re-diagnose once per session
+            # ESSENTIEL can only re-detect once per session
             if tier == SubscriptionTier.ESSENTIEL:
-                existing = store.load_pre_analysis()
-                if existing and not existing.cached:
+                existing = store.load_detection()
+                if existing:
                     raise HTTPException(
                         status_code=403,
-                        detail="Re-diagnostic limité à 1x par session sur ESSENTIEL. Passez à PRO pour illimité."
+                        detail="Re-détection limitée à 1x par session sur ESSENTIEL. Passez à PRO pour illimité."
                     )
 
         # Update session progress
         if session_id in session_progress:
-            session_progress[session_id]["status"] = "diagnostic"
+            session_progress[session_id]["status"] = "detection"
 
         # Update session file status
         session = store.load_session()
@@ -640,20 +639,20 @@ def create_app() -> FastAPI:
             store.save_session(session)
 
         try:
-            # Run pre-analysis
-            analyzer = PreAnalyzer(
+            # Run detection
+            detector = Detector(
                 user_id=user_id,
                 session_id=session_id,
                 language="fr"  # TODO: Get from user preferences
             )
 
-            result = analyzer.analyze(pdf_path, force_refresh=request.force_refresh)
+            result = detector.detect(pdf_path, mode=request.mode, force_refresh=request.force_refresh)
 
             # Debug log for exam_name
-            logger.info(f"Pre-analysis result exam_name: {result.exam_name}")
+            logger.info(f"Detection result exam_name: {result.exam_name}")
 
             # Store result in session for later use
-            store.save_pre_analysis(result)
+            store.save_detection(result)
 
             # Convert students to schema
             students = [
@@ -677,7 +676,7 @@ def create_app() -> FastAPI:
 
             # Update progress
             if session_id in session_progress:
-                session_progress[session_id]["status"] = "diagnostic"
+                session_progress[session_id]["status"] = "detection"
 
             # Update session file status
             session = store.load_session()
@@ -685,8 +684,9 @@ def create_app() -> FastAPI:
                 session.status = SessionStatus.DIAGNOSTIC
                 store.save_session(session)
 
-            return PreAnalysisResponse(
-                analysis_id=result.analysis_id,
+            return DetectionResponse(
+                detection_id=result.detection_id,
+                mode=result.mode,
                 is_valid_pdf=result.is_valid_pdf,
                 page_count=result.page_count,
                 document_type=result.document_type.value,
@@ -705,27 +705,26 @@ def create_app() -> FastAPI:
                 quality_issues=result.quality_issues,
                 overall_quality_score=result.overall_quality_score,
                 detected_language=result.detected_language,
-                cached=result.cached,
-                analysis_duration_ms=result.analysis_duration_ms,
+                detection_duration_ms=result.detection_duration_ms,
                 exam_name=result.exam_name
             )
 
         except Exception as e:
-            logger.error(f"Pre-analysis error: {e}")
+            logger.error(f"Detection error: {e}")
             if session_id in session_progress:
                 session_progress[session_id]["status"] = "error"
                 session_progress[session_id]["error"] = str(e)
-            raise HTTPException(status_code=500, detail=f"Pre-analysis failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Detection failed: {str(e)}")
 
-    @app.post("/api/sessions/{session_id}/confirm-pre-analysis", response_model=ConfirmPreAnalysisResponse)
-    async def confirm_pre_analysis(
+    @app.post("/api/sessions/{session_id}/confirm-detection", response_model=ConfirmDetectionResponse)
+    async def confirm_detection(
         session_id: str,
-        request: ConfirmPreAnalysisRequest,
+        request: ConfirmDetectionRequest,
         background_tasks: BackgroundTasks,
         current_user = Depends(get_current_user)
     ):
         """
-        Confirm pre-analysis and automatically start grading.
+        Confirm detection and automatically start grading.
 
         Allows:
         - Selecting from multiple candidate grading scales
@@ -737,31 +736,31 @@ def create_app() -> FastAPI:
         user_id = current_user.id
 
         # Check session exists
-        logger.info(f"Confirm pre-analysis: session_id={session_id}, user_id={user_id}")
+        logger.info(f"Confirm detection: session_id={session_id}, user_id={user_id}")
         store = SessionStore(session_id, user_id=user_id)
         logger.info(f"Session dir: {store.session_dir}, exists: {store.exists()}")
         if not store.exists():
             logger.warning(f"Session not found: {session_id} for user {user_id}")
             raise HTTPException(status_code=404, detail="Session not found")
 
-        # Load pre-analysis result
-        pre_analysis = store.load_pre_analysis()
-        if not pre_analysis:
-            raise HTTPException(status_code=400, detail="No pre-analysis found. Run /pre-analyze first.")
+        # Load detection result
+        detection = store.load_detection()
+        if not detection:
+            raise HTTPException(status_code=400, detail="No detection found. Run /detect first.")
 
         # Check for blocking issues
-        if pre_analysis.has_blocking_issues:
+        if detection.has_blocking_issues:
             raise HTTPException(
                 status_code=400,
-                detail=f"Cannot confirm: blocking issues detected: {pre_analysis.blocking_issues}"
+                detail=f"Cannot confirm: blocking issues detected: {detection.blocking_issues}"
             )
 
         # Start with detected grading scale
-        grading_scale = dict(pre_analysis.grading_scale)
+        grading_scale = dict(detection.grading_scale)
 
         # Apply selected_scale_index if provided
         if request.selected_scale_index is not None:
-            candidate_scales = pre_analysis.candidate_scales
+            candidate_scales = detection.candidate_scales
             if not candidate_scales:
                 raise HTTPException(
                     status_code=400,
@@ -784,16 +783,16 @@ def create_app() -> FastAPI:
 
             # Apply student name overrides
             if "student_names" in request.adjustments:
-                # Update student names in pre_analysis result
+                # Update student names in detection result
                 student_names = request.adjustments["student_names"]
                 for student_idx, name in student_names.items():
                     # Find the student by index and update name
-                    for student in pre_analysis.students:
+                    for student in detection.students:
                         if student.index == student_idx:
                             student.name = name
                             break
-                # Save updated pre-analysis with new names
-                store.save_pre_analysis(pre_analysis)
+                # Save updated detection with new names
+                store.save_detection(detection)
 
         # Update session with confirmed settings
         session = store.load_session()
@@ -803,8 +802,8 @@ def create_app() -> FastAPI:
             session.status = SessionStatus.CORRECTION  # Grading starts now
 
             # Propagate exam_name to session.policy.subject if not already set
-            if pre_analysis.exam_name and not session.policy.subject:
-                session.policy.subject = pre_analysis.exam_name
+            if detection.exam_name and not session.policy.subject:
+                session.policy.subject = detection.exam_name
 
             # Store student name adjustments in session metadata for later use
             if not session.storage_path:
@@ -947,12 +946,12 @@ def create_app() -> FastAPI:
         # Add background task
         background_tasks.add_task(auto_grade_task)
 
-        return ConfirmPreAnalysisResponse(
+        return ConfirmDetectionResponse(
             success=True,
             session_id=session_id,
             status="correction",  # Status changed - grading started automatically
             grading_scale=grading_scale,
-            num_students=pre_analysis.num_students_detected
+            num_students=detection.num_students_detected
         )
 
     @app.get("/api/sessions/{session_id}", response_model=SessionDetailResponse)
@@ -1015,13 +1014,13 @@ def create_app() -> FastAPI:
         # Create a mapping from copy_id to student_name
         copy_student_names = {copy.id: copy.student_name for copy in session.copies}
 
-        # Get subject from session.policy, or from pre-analysis exam_name
+        # Get subject from session.policy, or from detection exam_name
         subject = session.policy.subject
         if not subject:
-            # Try to get exam_name from pre-analysis
-            pre_analysis = store.load_pre_analysis()
-            if pre_analysis and pre_analysis.exam_name:
-                subject = pre_analysis.exam_name
+            # Try to get exam_name from detection
+            detection = store.load_detection()
+            if detection and detection.exam_name:
+                subject = detection.exam_name
 
         for graded in session.graded_copies:
             # Check for disagreements in grading_audit
@@ -1152,6 +1151,29 @@ def create_app() -> FastAPI:
         store.save_session(session)
 
         return {"success": True, "copy_id": copy_id, "old_name": old_name, "new_name": request.student_name}
+
+    @app.patch("/api/sessions/{session_id}/subject")
+    async def update_session_subject(
+        session_id: str,
+        request: UpdateSessionSubjectRequest,
+        current_user = Depends(get_current_user)
+    ):
+        """Update the session subject (exam name)."""
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        # Update subject in session policy
+        old_subject = session.policy.subject
+        session.policy.subject = request.subject
+
+        # Persist immediately
+        store.save_session(session)
+
+        return {"success": True, "session_id": session_id, "old_subject": old_subject, "new_subject": request.subject}
 
     @app.delete("/api/sessions/{session_id}")
     async def delete_session(session_id: str, current_user = Depends(get_current_user)):
@@ -1450,13 +1472,13 @@ def create_app() -> FastAPI:
                 if session.policy.question_weights:
                     max_score = sum(session.policy.question_weights.values())
 
-                # Get subject from session.policy, or from pre-analysis exam_name
+                # Get subject from session.policy, or from detection exam_name
                 subject = session.policy.subject
                 if not subject:
-                    # Try to get exam_name from pre-analysis
-                    pre_analysis = store.load_pre_analysis()
-                    if pre_analysis and pre_analysis.exam_name:
-                        subject = pre_analysis.exam_name
+                    # Try to get exam_name from detection
+                    detection = store.load_detection()
+                    if detection and detection.exam_name:
+                        subject = detection.exam_name
 
                 session_list.append({
                     "session_id": session_id,
