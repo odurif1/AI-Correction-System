@@ -2,24 +2,24 @@
 gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
-current_phase: Phase 4 (User Interface & Polish)
-current_plan: 04-04 (Review Screen with Inline Editing)
-status: completed
-last_updated: "2026-02-27T21:25:20.481Z"
+current_phase: Phase 5 (Production Readiness)
+current_plan: 05-03 (Token Cost Estimation and Prompt Caching)
+status: in_progress
+last_updated: "2026-02-28T15:44:00.000Z"
 progress:
-  total_phases: 4
+  total_phases: 5
   completed_phases: 4
-  total_plans: 20
-  completed_plans: 20
-  percent: 95
+  total_plans: 24
+  completed_plans: 22
+  percent: 92
 ---
 
 # State: La Corrigeuse
 
-**Last updated:** 2026-02-27
-**Current phase:** Phase 4 (User Interface & Polish)
-**Current plan:** 04-04 (Review Screen with Inline Editing)
-**Status:** Milestone complete
+**Last updated:** 2026-02-28
+**Current phase:** Phase 5 (Production Readiness)
+**Current plan:** 05-03 (Token Cost Estimation and Prompt Caching)
+**Status:** In Progress
 
 ## Project Reference
 
@@ -29,20 +29,20 @@ progress:
 La Corrigeuse est un assistant de correction automatique pour enseignants. Elle lit les copies manuscrites (PDF) et les corrige via LLM avec double-vérification IA. Le prof upload, l'IA corrige, le prof valide et exporte vers Pronote ou Excel.
 
 **Current focus:**
-Core grading experience - PDF upload workflow with multi-scale detection and teacher confirmation.
+Production readiness - cost optimization, containerization, subscription management.
 
 ## Current Position
 
-**Phase:** 4 - User Interface & Polish
-**Plan:** 04-04 - Review Screen with Inline Editing
+**Phase:** 5 - Production Readiness
+**Plan:** 05-03 - Token Cost Estimation and Prompt Caching
 **Status:** Complete
-**Progress:** [██████████] 95%
+**Progress:** [██████████] 92%
 
 **What was built:**
-Review screen with sortable grades table, inline editing with auto-save, dual-LLM disagreement highlighting, PDF links, and CSV/JSON/Excel export dropdown.
+Provider-specific pricing tables with cached token discounts, automatic extraction of cached tokens from API responses, cost calculation infrastructure ready for dashboard integration.
 
 **Why this phase:**
-Phase 3 (Core Grading Experience) is complete. UI polish and professional presentation are required for production launch.
+Phases 1-4 are complete. Production deployment requires cost tracking and optimization to manage LLM expenses at scale.
 
 ## Performance Metrics
 
@@ -104,6 +104,18 @@ Phase 3 (Core Grading Experience) is complete. UI polish and professional presen
 - All 6 GradingSessionOrchestrator API instantiations now pass workflow_state parameter
 - Student name disagreements auto-resolve using confidence-based logic instead of blocking CLI prompts
 - Dual-LLM batch grading now completes successfully in API context
+
+**Phase 5 Plan 03 (2026-02-28):**
+- Duration: 2 minutes (131 seconds)
+- Tasks completed: 3
+- Files modified: 5
+- Commits: 2
+- Provider-specific pricing tables (9 models: Claude, OpenAI, Gemini) in src/llm/pricing.py
+- Cost calculation function with cached token discounts (prompt_cost, completion_cost, cached_cost, total_cost, cached_savings)
+- OpenAI provider extracts cached tokens from response.usage.prompt_tokens_details.cached
+- Gemini provider extracts cached tokens from response.usage_metadata.cached_content_token_count
+- Prompt caching settings added to Settings (enable_prompt_caching=True, cache_ttl_seconds=300)
+- Costs displayed AFTER grading only (user decision) - not before grading
 
 ## Accumulated Context
 
@@ -200,6 +212,10 @@ Phase 3 (Core Grading Experience) is complete. UI polish and professional presen
 - [Phase 04]: Sortable table with sticky first column for horizontal scrolling on smaller screens
 - [Phase 04]: Dual-LLM disagreement icons at per-question level using grading_audit.questions[].resolution.agreement field
 - [Phase 04.1]: 20-second interval for useRotatingMessage based on user feedback
+- [Phase 05-03]: Provider-specific pricing tables centralized in src/llm/pricing.py - 9 models (Claude, OpenAI, Gemini) with prompt/completion/cached pricing
+- [Phase 05-03]: Cost displayed AFTER grading only (user decision) - not before grading to avoid decision paralysis
+- [Phase 05-03]: Prompt caching enabled by default with 5-minute TTL - OpenAI (50% discount), Gemini (75% discount), Claude (90% discount)
+- [Phase 05-03]: Cached tokens extracted from API response metadata (prompt_tokens_details.cached, cached_content_token_count)
 
 ### Active Todos
 
@@ -246,15 +262,15 @@ Phase 3 (Core Grading Experience) is complete. UI polish and professional presen
 
 ## Session Continuity
 
-**Last action:** Completed Phase 4 Plan 04.2 - Fix Dual-LLM Grading Completion
-**Next action:** UAT gap closure plan complete. Ready for re-testing of previously blocked tests (13, 15, 19, 20, 21) or Phase 5.
+**Last action:** Completed Phase 5 Plan 03 - Token Cost Estimation and Prompt Caching
+**Next action:** Continue Phase 5 plans (05-04: Docker containerization, 05-01: Security scanning)
 
 **Session info:**
-- Stopped at: Completed 04.2-Fix Dual-LLM Grading Completion (auto_mode for API orchestrators, name disagreement auto-resolution)
-- Timestamp: 2026-02-27T21:18:09Z
+- Stopped at: Completed 05-03 Token Cost Estimation and Prompt Caching (pricing tables, cached token extraction, cost calculation)
+- Timestamp: 2026-02-28T15:44:00Z
 
 **Quick context for next session:**
-We're building an AI-powered grading SaaS for French teachers. Phase 1 (Security Foundation) complete. Phase 2 (Observability & Monitoring) complete. Phase 3 (Core Grading Experience) complete. Phase 4 (User Interface & Polish) complete including UAT gap closure (04.2). All 20 plans across 4 phases are done. Dual-LLM grading now completes successfully with auto_mode enabled. System ready for production beta testing or Phase 5 (Production Readiness & Cost Optimization).
+We're building an AI-powered grading SaaS for French teachers. Phases 1-4 complete (Security, Observability, Core Grading, UI). Phase 5 (Production Readiness) in progress. Plan 05-03 complete: provider-specific pricing tables, cached token extraction from API responses, cost calculation infrastructure. Cost display will be integrated in dashboard/session detail AFTER grading per user decision. Ready for 05-04 (Docker) or 05-01 (security scanning).
 
 **State preservation:**
 - PROJECT.md: Core value, requirements, constraints, key decisions

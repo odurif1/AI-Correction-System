@@ -123,17 +123,21 @@
 **Depends on:** Phase 4 (requires complete application to deploy), Phase 2 (requires metrics to monitor costs)
 
 **Requirements:**
-- Operations: OPS-01, OPS-02, OPS-03, OPS-04, OPS-05
-- Cost Management: COST-01, COST-02, COST-03, COST-04
+- Operations: OPS-01, OPS-02, OPS-03 (deferred), OPS-04, OPS-05
+- Cost Management: COST-01, COST-02, COST-03 (not implemented), COST-04
 
 **Success Criteria** (what must be TRUE):
 1. Application containerizes with Docker multi-stage builds and runs via docker-compose
-2. CI/CD pipeline runs tests and security scans (pip-audit, bandit) on every push
-3. Token usage is tracked per session with cost estimates displayed before grading
-4. Lightweight model is used for detection phase, premium model for grading (model tiering)
-5. Prompt caching is enabled for repeated grading criteria to reduce costs
+2. Security scanning tools (pip-audit, bandit) are available via `make scan` command
+3. Token usage is tracked per session with cost estimates displayed AFTER grading (not before)
+4. Prompt caching is enabled for repeated grading criteria to reduce costs
+5. Stripe webhook integration updates user subscription tier on payment/upgrade/downgrade
 
-**Plans:** TBD
+**Plans:** 4 plans
+- [ ] 05-01-PLAN.md — Docker multi-stage build with docker-compose and nginx reverse proxy
+- [ ] 05-02-PLAN.md — Security scanning (pip-audit, bandit) with Makefile integration
+- [ ] 05-03-PLAN.md — Token cost calculation and provider-specific prompt caching
+- [ ] 05-04-PLAN.md — User-facing usage tracking, cost display, and Stripe subscription webhooks
 
 ---
 ## Progress
@@ -144,7 +148,7 @@
 | 2. Observability & Monitoring | 4/4 | Complete | 2026-02-27 |
 | 3. Core Grading Experience | 3/3 | Complete | 2026-02-27 |
 | 4. User Interface & Polish | 6/6 | Complete   | 2026-02-27 |
-| 5. Production Readiness | 0/2 | Not started | - |
+| 5. Production Readiness | 0/4 | Not started | - |
 
 ## Phase Dependencies
 

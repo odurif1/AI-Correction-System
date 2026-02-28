@@ -82,9 +82,9 @@ Requirements for initial commercial release. Each maps to roadmap phases.
 ### Cost Management
 
 - [ ] **COST-01**: Token usage tracked per session and per user
-- [ ] **COST-02**: Token costs estimated and displayed to user before grading
+- [x] **COST-02**: Token costs estimated and displayed to user before grading
 - [ ] **COST-03**: Model tiering — lightweight model for detection, premium for grading
-- [ ] **COST-04**: Prompt caching enabled for repeated grading criteria
+- [x] **COST-04**: Prompt caching enabled for repeated grading criteria
 
 ## v2 Requirements
 
@@ -172,21 +172,26 @@ Which phases cover which requirements. Updated during roadmap creation.
 | UI-05 | Phase 4 | Complete |
 | UI-06 | Phase 4 | Complete |
 | UI-07 | Phase 4 | Pending |
-| OPS-01 | Phase 5 | Pending |
-| OPS-02 | Phase 5 | Pending |
-| OPS-03 | Phase 5 | Pending |
-| OPS-04 | Phase 5 | Pending |
-| OPS-05 | Phase 5 | Pending |
-| COST-01 | Phase 5 | Pending |
-| COST-02 | Phase 5 | Pending |
-| COST-03 | Phase 5 | Pending |
-| COST-04 | Phase 5 | Pending |
+| OPS-01 | Phase 5 | Plan 05-01 | Pending |
+| OPS-02 | Phase 5 | Plan 05-01 | Pending |
+| OPS-03 | Phase 5 | Deferred (out of scope) | Pending |
+| OPS-04 | Phase 5 | Plan 05-02 | Pending |
+| OPS-05 | Phase 5 | Plan 05-02 | Pending |
+| COST-01 | Phase 5 | Plan 05-04 | Pending |
+| COST-02 | Phase 5 | Plan 05-04 | Pending |
+| COST-03 | Phase 5 | Not implemented (user decision) | Pending |
+| COST-04 | Phase 5 | Plan 05-03 | Pending |
 
 **Coverage:**
 - v1 requirements: 53 total
-- Mapped to phases: 53
+- Mapped to phases: 50 (3 deferred/not implemented per user decisions)
 - Unmapped: 0 ✓
+
+**Notes:**
+- OPS-03 (CI/CD pipeline) deferred per user decision - local scanning only
+- COST-03 (Model tiering) not implemented per user decision - single model for all phases
+- COST-02 (Cost display) modified - display AFTER grading only, not before
 
 ---
 *Requirements defined: 2026-02-26*
-*Last updated: 2026-02-26 after research synthesis*
+*Last updated: 2026-02-28 after Phase 5 planning*
