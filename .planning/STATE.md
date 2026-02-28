@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Polish & Fix
 status: planning
-last_updated: "2026-02-28T20:25:06.025Z"
+last_updated: "2026-02-28T20:28:50.916Z"
 progress:
   total_phases: 1
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 3
-  completed_plans: 2
-  percent: 67
+  completed_plans: 3
+  percent: 100
 ---
 
 # State: La Corrigeuse
@@ -30,10 +30,10 @@ v1.1 — Polish & Fix: Token deduction fix, subscription UX, bug hunting.
 
 ## Current Position
 
-**Phase:** 6 (Token Deduction Fix)
-**Plan:** —
-**Status:** Ready for planning
-**Progress:** [███████░░░] 67%
+**Phase:** 6 (Token Deduction Fix) - COMPLETE
+**Plan:** 06-03-api-integration - COMPLETE
+**Status:** Phase 6 complete, ready for next phase
+**Progress:** [██████████] 100%
 
 **Target for v1.1:**
 - Fix token deduction (backend bug - copy count vs token count)
@@ -61,6 +61,13 @@ v1.1 — Polish & Fix: Token deduction fix, subscription UX, bug hunting.
 - No new libraries needed (code fix only)
 - Add usage_records table for audit trail
 
+**From v1.1 Phase 6 (Token Deduction Fix):**
+- TokenDeductionService integrates into grading completion flow
+- WebSocket completion events include tokens_used and remaining_tokens
+- InsufficientTokensError handled with user-friendly error messages
+- Idempotency prevents double-charging on retry/reconnection
+- Pass orchestrator.ai as provider (works with both single and dual LLM modes)
+
 ### Quick Tasks Completed
 
 | # | Description | Date | Commit |
@@ -80,7 +87,21 @@ v1.1 — Polish & Fix: Token deduction fix, subscription UX, bug hunting.
 
 ## Next Steps
 
-Run `/gsd:plan-phase 6` to create detailed execution plans for token deduction fix.
+Phase 6 (Token Deduction Fix) is complete. Token deduction bug is fixed:
+
+**Completed:**
+- TokenDeductionService created with idempotency and token aggregation
+- UsageRecord model created for audit trail
+- API integration complete - grading flow now deducts actual tokens
+
+**Recommended next actions:**
+1. Test grading flow with various token balances
+2. Verify WebSocket events display token usage correctly
+3. Test insufficient tokens error handling
+4. Move token bar to Subscription page (remaining v1.1 work)
+5. Bug hunting pass through app
+
+Run `/gsd:plan-phase` to start the next phase.
 
 ---
 *State updated: 2026-02-28 for v1.1 milestone*
