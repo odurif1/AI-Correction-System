@@ -36,3 +36,4 @@ pip-audit>=2.7.0
 bandit>=1.7.8
 
 stripe>=5.0.0
+gunicorn>=21.0.0

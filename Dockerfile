@@ -1,5 +1,5 @@
 # Stage 1: Python builder
-FROM python:3.11-slim AS python-builder
+FROM python:3.12-slim AS python-builder
 
 WORKDIR /app
 
@@ -9,9 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements and install with pip
+# Copy requirements and install system-wide (not --user)
 COPY requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Stage 2: Node builder for Next.js
 FROM node:20-alpine AS frontend-builder
@@ -27,19 +27,21 @@ COPY web/ ./
 RUN npm run build
 
 # Stage 3: Runtime
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 WORKDIR /app
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    gunicorn \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Python packages from builder stage
-COPY --from=python-builder /root/.local /root/.local
-COPY --from=python-builder /app /app
+# Copy Python packages from builder stage (installed system-wide)
+COPY --from=python-builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --from=python-builder /usr/local/bin /usr/local/bin
+
+# Copy application source code
+COPY src/ /app/
 
 # Copy Next.js build artifacts from frontend-builder
 COPY --from=frontend-builder /web/.next /app/web/.next
@@ -47,7 +49,6 @@ COPY --from=frontend-builder /web/public /app/web/public
 COPY --from=frontend-builder /web/package.json /app/web/
 
 # Ensure Python can find installed packages
-ENV PATH=/root/.local/bin:$PATH
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 
