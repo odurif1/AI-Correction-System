@@ -31,5 +31,5 @@ def get_db():
 
 def init_db():
     """Initialize database tables."""
-    from db.models import User  # noqa: F401
+    from db.models import User, UsageRecord  # noqa: F401
     Base.metadata.create_all(bind=engine)

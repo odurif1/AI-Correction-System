@@ -1,7 +1,7 @@
 """Database models for La Corrigeuse."""
 
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Integer, Boolean, ForeignKey, Enum as SQLEnum
+from sqlalchemy import Column, String, DateTime, Integer, Boolean, ForeignKey, Enum as SQLEnum, UniqueConstraint
 from sqlalchemy.orm import relationship
 from db.database import Base
 import enum
@@ -135,3 +135,28 @@ class PasswordResetToken(Base):
     expires_at = Column(DateTime, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
     used = Column(Boolean, default=False)
+
+
+class UsageRecord(Base):
+    """Token usage record for audit trail and billing reconciliation."""
+    __tablename__ = "usage_records"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    session_id = Column(String, nullable=False, index=True)
+
+    # Token breakdown (stored for cost analysis)
+    prompt_tokens = Column(Integer, nullable=False)
+    completion_tokens = Column(Integer, nullable=False)
+    cached_tokens = Column(Integer, default=0)
+    total_tokens = Column(Integer, nullable=False)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    user = relationship("User", backref="usage_records")
+
+    # Unique constraint for idempotency (one record per session per user)
+    __table_args__ = (
+        UniqueConstraint('user_id', 'session_id', name='uq_usage_record_session'),
+    )

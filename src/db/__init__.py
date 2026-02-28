@@ -1,7 +1,7 @@
 """Database module for La Corrigeuse."""
 
 from db.database import Base, engine, SessionLocal, get_db, init_db
-from db.models import User, SubscriptionTier, PasswordResetToken
+from db.models import User, SubscriptionTier, PasswordResetToken, UsageRecord
 
 __all__ = [
     "Base",
@@ -12,4 +12,5 @@ __all__ = [
     "User",
     "SubscriptionTier",
     "PasswordResetToken",
+    "UsageRecord",
 ]
