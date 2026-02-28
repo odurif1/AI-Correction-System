@@ -50,7 +50,6 @@ export function SessionStatus({ status, className }: SessionStatusProps) {
   return (
     <Badge variant={config.variant} className={cn(className)}>
       {config.icon}
-      {config.label}
     </Badge>
   );
 }
