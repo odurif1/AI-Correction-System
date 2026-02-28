@@ -34,3 +34,5 @@ sentry-sdk[fastapi]==1.40.0
 # Security scanning
 pip-audit>=2.7.0
 bandit>=1.7.8
+
+stripe>=5.0.0
