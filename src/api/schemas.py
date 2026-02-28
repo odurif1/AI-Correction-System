@@ -29,6 +29,7 @@ class SessionResponse(BaseModel):
     copies_count: int
     graded_count: int
     average_score: Optional[float] = None
+    max_score: Optional[float] = None
     subject: Optional[str] = None
     topic: Optional[str] = None
 
@@ -38,6 +39,20 @@ class SessionDetailResponse(SessionResponse):
     copies: List[Dict[str, Any]] = Field(default_factory=list)
     graded_copies: List[Dict[str, Any]] = Field(default_factory=list)
     question_weights: Dict[str, float] = Field(default_factory=dict)
+    cost_breakdown: Optional["CostBreakdown"] = None
+
+
+# ============================================================================
+# Cost Schemas
+# ============================================================================
+
+class CostBreakdown(BaseModel):
+    """Cost breakdown for a grading session."""
+    prompt_cost_usd: float
+    completion_cost_usd: float
+    cached_cost_usd: float
+    total_cost_usd: float
+    cached_savings_usd: float
 
 
 # ============================================================================
@@ -274,6 +289,11 @@ class ConfirmPreAnalysisRequest(BaseModel):
     confirm: bool = True
     adjustments: Optional[Dict[str, Any]] = None
     selected_scale_index: Optional[int] = None
+
+    # Grading configuration - equivalent to CLI: dual batch --batch-verify per-copy
+    grading_mode: Literal["individual", "batch", "hybrid"] = "batch"
+    batch_verify: Literal["per-question", "per-copy", "grouped"] = "per-copy"
+
     # adjustments can include:
     # - grading_scale: {"Q1": 3.0} to override detected scale
     # - students: [...] to override detected students
@@ -294,6 +314,12 @@ class StartGradingRequest(BaseModel):
     """Request to start grading with mode selection."""
     grading_mode: Literal["single", "dual"] = "dual"
     """Single LLM for faster grading, dual LLM for verification"""
+
+    grading_method: Literal["individual", "batch", "hybrid"] = "batch"
+    """Batch mode grades all copies together, individual grades each separately"""
+
+    batch_verify: Literal["per-question", "per-copy", "grouped"] = "per-copy"
+    """How to handle disagreements in batch dual mode"""
 
 
 # ============================================================================

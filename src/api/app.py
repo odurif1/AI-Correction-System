@@ -52,6 +52,7 @@ MAX_BATCH_SIZE = 50
 
 # Import workflow state before defining constant
 from core.workflow_state import CorrectionState
+from core.models import SessionStatus
 
 # API runs in auto-mode (no CLI interaction)
 API_WORKFLOW_STATE = CorrectionState(auto_mode=True)
@@ -78,6 +79,9 @@ from api.auth import router as auth_router, get_current_user, get_admin_user
 
 # Import health check router
 from api.health import router as health_router
+
+# Import subscription router
+from api.subscription import router as subscription_router
 
 # Import metrics collector
 from utils.metrics import get_metrics_collector
@@ -293,42 +297,14 @@ def create_app() -> FastAPI:
         init_db()
         stdlib_logger.info("Database initialized")
 
-        # One-time cleanup: Delete shared sessions (pre-multi-tenant)
-        await _cleanup_legacy_sessions()
-
-
-    async def _cleanup_legacy_sessions():
-        """Delete legacy sessions in shared namespace (pre-user-isolation)."""
-        import shutil
-        from pathlib import Path
-
-        sessions_dir = Path("data/sessions")
-
-        # Check if sessions directory exists
-        if not sessions_dir.exists():
-            return
-
-        # Find items in shared namespace (direct children, not user_id subdirs)
-        legacy_items = []
-        for item in sessions_dir.iterdir():
-            if item.is_dir() and not item.name.startswith("__"):  # Exclude __pycache__ etc
-                # If it doesn't look like a UUID, it's likely a user_id dir, keep it
-                # If it looks like a session_id (UUID format), it's legacy
-                if len(item.name) == 36 and item.name.count("-") == 4:  # UUID format
-                    legacy_items.append(item)
-
-        if legacy_items:
-            logger.warning(f"Found {len(legacy_items)} legacy sessions in shared namespace, deleting...")
-            for item in legacy_items:
-                shutil.rmtree(item)
-                logger.info(f"Deleted legacy session: {item.name}")
-            logger.info("Legacy session cleanup complete. Fresh start enforced.")
-
     # Include auth router
     app.include_router(auth_router, prefix="/api")
 
     # Include health check router
     app.include_router(health_router, tags=["health"])
+
+    # Include subscription router
+    app.include_router(subscription_router, prefix="/api")
 
     # Session storage (in-memory for active grading)
     active_sessions: Dict[str, GradingSessionOrchestrator] = {}
@@ -651,7 +627,13 @@ def create_app() -> FastAPI:
 
         # Update session progress
         if session_id in session_progress:
-            session_progress[session_id]["status"] = "pre_analyzing"
+            session_progress[session_id]["status"] = "diagnostic"
+
+        # Update session file status
+        session = store.load_session()
+        if session:
+            session.status = SessionStatus.DIAGNOSTIC
+            store.save_session(session)
 
         try:
             # Run pre-analysis
@@ -688,7 +670,13 @@ def create_app() -> FastAPI:
 
             # Update progress
             if session_id in session_progress:
-                session_progress[session_id]["status"] = "pre_analyzed"
+                session_progress[session_id]["status"] = "diagnostic"
+
+            # Update session file status
+            session = store.load_session()
+            if session:
+                session.status = SessionStatus.DIAGNOSTIC
+                store.save_session(session)
 
             return PreAnalysisResponse(
                 analysis_id=result.analysis_id,
@@ -741,8 +729,11 @@ def create_app() -> FastAPI:
         user_id = current_user.id
 
         # Check session exists
+        logger.info(f"Confirm pre-analysis: session_id={session_id}, user_id={user_id}")
         store = SessionStore(session_id, user_id=user_id)
+        logger.info(f"Session dir: {store.session_dir}, exists: {store.exists()}")
         if not store.exists():
+            logger.warning(f"Session not found: {session_id} for user {user_id}")
             raise HTTPException(status_code=404, detail="Session not found")
 
         # Load pre-analysis result
@@ -801,7 +792,7 @@ def create_app() -> FastAPI:
         if session:
             # Set question weights from final grading scale
             session.policy.question_weights = grading_scale
-            session.status = "ready_for_grading"
+            session.status = SessionStatus.CORRECTION  # Grading starts now
 
             # Store student name adjustments in session metadata for later use
             if not session.storage_path:
@@ -811,21 +802,26 @@ def create_app() -> FastAPI:
 
         # Update progress
         if session_id in session_progress:
-            session_progress[session_id]["status"] = "ready_for_grading"
+            session_progress[session_id]["status"] = "correction"
 
         # Auto-start grading after confirmation
         user_id = current_user.id
 
-        # Get or create orchestrator
+        # Get or create orchestrator with grading configuration
         if session_id not in active_sessions:
             orchestrator = GradingSessionOrchestrator(
                 session_id=session_id,
                 user_id=user_id,
-                workflow_state=API_WORKFLOW_STATE
+                workflow_state=API_WORKFLOW_STATE,
+                grading_mode=request.grading_mode,
+                batch_verify=request.batch_verify
             )
             active_sessions[session_id] = orchestrator
         else:
             orchestrator = active_sessions[session_id]
+            # Update grading configuration on existing orchestrator
+            orchestrator._grading_mode = request.grading_mode
+            orchestrator._batch_verify = request.batch_verify
 
         # Get uploaded PDF paths
         upload_dir = Path(f"temp/{session_id}")
@@ -844,7 +840,7 @@ def create_app() -> FastAPI:
 
                 # Update progress
                 if session_id in session_progress:
-                    session_progress[session_id]["status"] = "grading"
+                    session_progress[session_id]["status"] = "correction"
 
                 # Re-create store for this task context
                 task_store = SessionStore(session_id, user_id=user_id)
@@ -890,7 +886,6 @@ def create_app() -> FastAPI:
 
                 # Update session status in database
                 if session:
-                    from models.session import SessionStatus
                     session.status = SessionStatus.COMPLETE
                     task_store.save_session(session)
 
@@ -906,6 +901,36 @@ def create_app() -> FastAPI:
                 })
                 if session_id in session_progress:
                     session_progress[session_id]["status"] = "error"
+                # Reset session status so it doesn't stay stuck on "correction"
+                try:
+                    error_store = SessionStore(session_id, user_id=user_id)
+                    error_session = error_store.load_session()
+                    if error_session and error_session.status == SessionStatus.CORRECTION:
+                        error_session.status = SessionStatus.DIAGNOSTIC
+                        error_store.save_session(error_session)
+                except Exception as save_error:
+                    logger.warning(f"Could not update session status: {save_error}")
+            finally:
+                # Always attempt to finalize session status if grading completed
+                # This handles cases where the task was interrupted after grading
+                # but before the final status update
+                try:
+                    task_store = SessionStore(session_id, user_id=user_id)
+                    session = task_store.load_session()
+                    if session:
+                        # If we have graded copies, mark as complete
+                        if session.graded_copies and len(session.graded_copies) > 0:
+                            if session.status == SessionStatus.CORRECTION:
+                                logger.info(f"Finalizing interrupted session {session_id}")
+                                session.status = SessionStatus.COMPLETE
+                                task_store.save_session(session)
+                        # If still grading but no copies graded, reset to diagnostic
+                        elif session.status == SessionStatus.CORRECTION:
+                            logger.info(f"Resetting stuck session {session_id} to diagnostic")
+                            session.status = SessionStatus.DIAGNOSTIC
+                            task_store.save_session(session)
+                except Exception as finalize_error:
+                    logger.warning(f"Could not finalize session {session_id}: {finalize_error}")
 
         # Add background task
         background_tasks.add_task(auto_grade_task)
@@ -913,7 +938,7 @@ def create_app() -> FastAPI:
         return ConfirmPreAnalysisResponse(
             success=True,
             session_id=session_id,
-            status="grading",  # Status changed - grading started automatically
+            status="correction",  # Status changed - grading started automatically
             grading_scale=grading_scale,
             num_students=pre_analysis.num_students_detected
         )
@@ -930,16 +955,37 @@ def create_app() -> FastAPI:
         - has_disagreements: Flag indicating if any LLM disagreements occurred
         """
         user_id = current_user.id
+        logger.info(f"Get session: session_id={session_id}, user_id={user_id}")
         store = SessionStore(session_id, user_id=user_id)
         session = store.load_session()
 
         if not session:
+            logger.warning(f"Session not found in get_session: {session_id} for user {user_id}")
             raise HTTPException(status_code=404, detail="Session not found")
 
+        # Detect and fix stale "correction" status (orphaned after server restart/crash)
+        if session.status == SessionStatus.CORRECTION:
+            # If session is in correction but not in active_sessions, it's stale
+            if session_id not in active_sessions:
+                if session.graded_copies and len(session.graded_copies) > 0:
+                    # Has graded copies -> mark as complete
+                    logger.info(f"Recovering orphaned correction session {session_id} -> complete")
+                    session.status = SessionStatus.COMPLETE
+                    store.save_session(session)
+                else:
+                    # No graded copies -> reset to diagnostic
+                    logger.info(f"Recovering orphaned correction session {session_id} -> diagnostic")
+                    session.status = SessionStatus.DIAGNOSTIC
+                    store.save_session(session)
+
         average = None
+        max_score = None
         if session.graded_copies:
             scores = [g.total_score for g in session.graded_copies]
             average = sum(scores) / len(scores)
+        # Get max_score from grading_scale (source of truth)
+        if session.policy.question_weights:
+            max_score = sum(session.policy.question_weights.values())
 
         # Build copies list
         copies = []
@@ -969,6 +1015,7 @@ def create_app() -> FastAPI:
                 "max_score": graded.max_score,
                 "confidence": graded.confidence,
                 "grades": graded.grades,
+                "max_points_by_question": graded.max_points_by_question,
                 "confidence_by_question": graded.confidence_by_question,
                 "student_feedback": graded.student_feedback,
                 "grading_audit": graded.grading_audit.model_dump() if graded.grading_audit else None,
@@ -983,6 +1030,7 @@ def create_app() -> FastAPI:
             copies_count=len(session.copies),
             graded_count=len(session.graded_copies),
             average_score=average,
+            max_score=max_score,
             subject=session.policy.subject,
             topic=session.policy.topic,
             copies=copies,
@@ -1100,12 +1148,14 @@ def create_app() -> FastAPI:
         # Determine force_single_llm based on request
         force_single_llm = request.grading_mode == "single"
 
-        # Get or create orchestrator with proper force_single_llm setting
+        # Get or create orchestrator with proper grading configuration
         if session_id not in active_sessions:
             orchestrator = GradingSessionOrchestrator(
                 session_id=session_id,
                 user_id=user_id,
                 force_single_llm=force_single_llm,
+                grading_mode=request.grading_method,
+                batch_verify=request.batch_verify,
                 workflow_state=API_WORKFLOW_STATE
             )
             active_sessions[session_id] = orchestrator
@@ -1113,6 +1163,8 @@ def create_app() -> FastAPI:
             orchestrator = active_sessions[session_id]
             # Update force_single_llm on existing orchestrator
             orchestrator._force_single_llm = force_single_llm
+            orchestrator._grading_mode = request.grading_method
+            orchestrator._batch_verify = request.batch_verify
 
         # Store selected grading mode in session_progress for UI reference
         if session_id in session_progress:
@@ -1195,7 +1247,7 @@ def create_app() -> FastAPI:
 
         # Update progress
         if session_id in session_progress:
-            session_progress[session_id]["status"] = "grading"
+            session_progress[session_id]["status"] = "correction"
 
         return GradeResponse(
             success=True,
@@ -1274,9 +1326,13 @@ def create_app() -> FastAPI:
             session = store.load_session()
             if session:
                 avg = None
+                max_score = None
                 if session.graded_copies:
                     scores = [g.total_score for g in session.graded_copies]
                     avg = sum(scores) / len(scores)
+                # Get max_score from grading_scale (source of truth)
+                if session.policy.question_weights:
+                    max_score = sum(session.policy.question_weights.values())
 
                 session_list.append({
                     "session_id": session_id,
@@ -1285,6 +1341,7 @@ def create_app() -> FastAPI:
                     "copies_count": len(session.copies),
                     "graded_count": len(session.graded_copies),
                     "average_score": avg,
+                    "max_score": max_score,
                     "subject": session.policy.subject,
                     "topic": session.policy.topic
                 })
