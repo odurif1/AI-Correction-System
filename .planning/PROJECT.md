@@ -50,19 +50,30 @@ Fonctionnalités livrées en v1.0 MVP (2026-02-28) :
 - ✓ Token cost tracking with prompt caching — v1.0
 - ✓ Stripe subscription webhooks — v1.0
 
+Fonctionnalités livrées en v1.1 Polish & Fix (2026-03-01) :
+
+**Token Deduction:**
+- ✓ TokenDeductionService with idempotency and race condition prevention — v1.1
+- ✓ UsageRecord model for token audit trail — v1.1
+- ✓ Actual tokens deducted (not copy count) — v1.1
+- ✓ Robust exception handling with graceful degradation — v1.1
+
+**Subscription UX:**
+- ✓ Stripe Customer Portal for self-service billing — v1.1
+- ✓ Billing history with last 12 invoices — v1.1
+- ✓ Self-service upgrade/downgrade with proration — v1.1
+
 ### Active
 
-**v1.1 — Polish & Fix** (Current milestone)
+**v1.2+ — Next Milestone** (To be defined)
 
-- [ ] Token deduction not working (backend)
-- [ ] Move token bar to Subscription page (UX)
-- [ ] Bug hunting pass through app
-
-**Deferred to v1.2+:**
+- [ ] Bug hunting pass through app (Phase 8)
 - [ ] Docker deployment (blocked: PyMuPDF Python 3.13+ support pending)
 - [ ] Calibration across copies (GRAD-07)
 - [ ] Error states with user-friendly messages (UI-07)
 - [ ] CI/CD pipeline (OPS-03)
+- [ ] Token estimation accuracy improvements
+- [ ] Usage notification system
 
 ### Out of Scope
 
@@ -75,12 +86,19 @@ Fonctionnalités livrées en v1.0 MVP (2026-02-28) :
 
 ## Context
 
-**v1.0 MVP shipped** with 34k Python LOC, 100k TypeScript LOC.
+**v1.1 Polish & Fix shipped** with ~45k total LOC (Python + TypeScript).
 
-Architecture en couches : Core (session orchestration), AI providers (Gemini, OpenAI, GLM), Grading, Vision (PDF), Storage, API, Export.
+Architecture en couches : Core (session orchestration), AI providers (Gemini, OpenAI, GLM), Grading, Vision (PDF), Storage, API, Export, Services (token deduction).
+
+**v1.1 Improvements:**
+- Token deduction now charges actual tokens used (not copy count)
+- Idempotent deduction prevents double-charging on retries
+- Full audit trail via UsageRecord model
+- Self-service subscription management via Stripe Portal
 
 **Known Issues:**
 - Docker deployment blocked by PyMuPDF Python 3.13+ compatibility
+- Phase 8 (Bug Hunting) deferred to v1.2
 - 11 transitive dependency CVEs identified (pip-audit)
 - 2 LOW bandit findings (MD5 usage in non-crypto context)
 
@@ -106,6 +124,11 @@ Stack : Python 3.14, FastAPI, Pydantic, SQLAlchemy, Next.js 16, TailwindCSS, Rad
 | Single model (no tiering) | User decision - simplify UX | ✓ Good |
 | CI/CD deferred | Local scanning sufficient for pilot | ⚠️ Revisit for scale |
 | Prompt caching enabled | Reduce costs 50-90% | ✓ Good |
+| Service layer for token deduction | Testability, reusability, separation of concerns | ✓ Good |
+| Row locking for deductions | Prevent race conditions in concurrent requests | ✓ Good |
+| Database-level idempotency | UniqueConstraint on (user_id, session_id) | ✓ Good |
+| Stripe Portal for billing | Self-service, Stripe-maintained UX | ✓ Good |
+| Proration: immediate upgrades, next-cycle downgrades | Standard SaaS pattern, user-friendly | ✓ Good |
 
 ---
-*Last updated: 2026-02-28 after v1.0 MVP milestone*
+*Last updated: 2026-03-02 after v1.1 Polish & Fix milestone*

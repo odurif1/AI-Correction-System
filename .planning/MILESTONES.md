@@ -1,5 +1,14 @@
 # Milestones
 
+## v1.1 Polish & Fix (Shipped: 2026-03-01)
+
+**Phases completed:** 2 phases, 6 plans, 4 tasks
+
+**Key accomplishments:**
+- Billing history table with last 12 invoices and self-service upgrade/downgrade with confirmation dialogs showing correct proration behavior
+
+---
+
 ## v1.0 MVP (Shipped: 2026-02-28)
 
 **Phases completed:** 5 phases, 24 plans
