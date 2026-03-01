@@ -40,6 +40,16 @@ v1.2 planning — Bug hunting pass, improvements, or new features based on user 
 - ✓ Stripe Customer Portal
 - ✓ Billing history + upgrade/downgrade
 
+**Quick Tasks (2026-03-01):**
+- ✓ Dashboard view toggle (grid/list) with localStorage persistence
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 1 | Améliorer UX modification notes: auto-save on blur + bouton reset | 2026-02-28 | 807da2b | — |
+| 2 | Dashboard view toggle (grid/list) with localStorage persistence | 2026-03-02 | d42098e | [2-revoir-l-affichage-du-dashboard-vue-list](./quick/2-revoir-l-affichage-du-dashboard-vue-list/) |
+
 ## Accumulated Context
 
 ### Decisions Made
