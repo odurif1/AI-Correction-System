@@ -56,9 +56,10 @@ export default function DashboardPage() {
     },
   });
 
-  // Flatten sessions from all pages
+  // Flatten sessions from all pages and sort by date (most recent first)
   const allSessions = useMemo(() => {
-    return data?.pages.flatMap((page) => page.sessions) || [];
+    const sessions = data?.pages.flatMap((page) => page.sessions) || [];
+    return sessions.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   }, [data]);
 
   // Filter sessions by status
