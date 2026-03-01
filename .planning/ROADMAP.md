@@ -28,7 +28,7 @@
 | Phase | Goal | Status | Plans |
 |-------|------|--------|-------|
 | **Phase 6** | Token Deduction Fix | 🟡 Gap closure | 3/4 + 1 gap |
-| **Phase 7** | Subscription UX Polish | 🔴 Not started | 0/2 |
+| **Phase 7** | Subscription UX Polish | 🟡 Planning | 0/2 |
 | **Phase 8** | Bug Hunting & Quality Pass | 🔴 Not started | 0/1 |
 
 ---
@@ -60,23 +60,28 @@
 
 #### Phase 7: Subscription UX Polish
 
-**Goal:** Move token bar to subscription page and enhance subscription management
+**Goal:** Enhance subscription page with Stripe Customer Portal, billing history, and self-service plan changes
 
 **Context:**
-- Token usage bar currently on dashboard
-- Subscription page exists but lacks full billing management
-- Users expect usage/billing in the same location
+- UsageBar already on subscription page (completed in Phase 5)
+- Subscription page lacks billing management features
+- Users expect self-service billing (portal, invoices, plan changes)
+
+**Requirements:** [UX-02]
 
 **Plans:**
-1. **PLAN-7.1: Move Usage Bar** — Relocate from dashboard to subscription page
-2. **PLAN-7.2: Subscription Enhancements** — Add Stripe portal, billing history, upgrade CTAs
+- [ ] 07-01-PLAN.md — Stripe Customer Portal integration for billing management
+- [ ] 07-02-PLAN.md — Billing history display and upgrade/downgrade functionality
 
 **Delivers:**
-- ✅ Token usage on subscription page with color-coded thresholds
-- ✅ Stripe Customer Portal for payment method management
-- ✅ Billing history section
+- ✅ Stripe Customer Portal access for payment method management
+- ✅ Billing history table with invoice PDF downloads
+- ✅ Self-service upgrade/downgrade with confirmation dialogs
+- ✅ Proper proration behavior (immediate upgrades, next-cycle downgrades)
 
 **Dependencies:** Phase 6 (token deduction must work first)
+
+**Status:** 🟡 Planning complete — Ready for execution
 
 ---
 
@@ -129,10 +134,10 @@
 | 4. UI & Polish | v1.0 | 6/6 | Complete | 2026-02-27 |
 | 5. Production | v1.0 | 4/4 | Complete | 2026-02-28 |
 | 6. Token Deduction | v1.1 | 3/4 + 1 gap | Gap closure | — |
-| 7. Subscription UX | v1.1 | 0/2 | Not started | — |
+| 7. Subscription UX | v1.1 | 0/2 | Planning complete | — |
 | 8. Bug Hunting | v1.1 | 0/1 | Not started | — |
 
 ---
 *Roadmap created: 2026-02-26*
 *v1.0 MVP shipped: 2026-02-28*
-*v1.1 planning: 2026-02-28*
+*v1.1 planning: 2026-03-01*
