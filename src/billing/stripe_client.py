@@ -48,3 +48,15 @@ class StripeClient:
     def get_subscription(self, subscription_id: str) -> stripe.Subscription:
         """Retrieve subscription details from Stripe."""
         return stripe.Subscription.retrieve(subscription_id)
+
+    def create_portal_session(
+        self,
+        customer_id: str,
+        return_url: str
+    ) -> stripe.billing_portal.Session:
+        """Create a Customer Portal session for billing management."""
+        session = stripe.billing_portal.Session.create(
+            customer=customer_id,
+            return_url=return_url,
+        )
+        return session
