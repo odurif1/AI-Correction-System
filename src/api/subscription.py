@@ -108,3 +108,71 @@ async def create_portal_session(
         return_url=f"{frontend_url}/subscription"
     )
     return {"portal_url": session.url}
+
+
+@router.get("/invoices")
+async def list_invoices(
+    current_user: User = Depends(get_current_user)
+):
+    """List billing history invoices."""
+    if not current_user.stripe_customer_id:
+        return {"invoices": []}
+
+    client = StripeClient()
+    invoices = client.list_invoices(current_user.stripe_customer_id)
+
+    # Format invoices for frontend
+    formatted_invoices = []
+    for inv in invoices:
+        formatted_invoices.append({
+            "id": inv.id,
+            "number": inv.number,
+            "date": inv.created,
+            "amount_paid": inv.amount_paid,
+            "currency": inv.currency,
+            "status": inv.status,
+            "invoice_pdf": inv.invoice_pdf,
+            "hosted_invoice_url": inv.hosted_invoice_url
+        })
+
+    return {"invoices": formatted_invoices}
+
+
+@router.post("/update")
+async def update_subscription(
+    tier: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update subscription tier."""
+    if tier not in ["essentiel", "pro", "max"]:
+        raise HTTPException(status_code=400, detail="Invalid tier")
+
+    if not current_user.stripe_subscription_id:
+        raise HTTPException(status_code=400, detail="No subscription found")
+
+    # Determine if this is a downgrade
+    tier_order = {"essentiel": 1, "pro": 2, "max": 3}
+    current_level = tier_order.get(current_user.subscription_tier.value, 0)
+    new_level = tier_order.get(tier, 0)
+    is_downgrade = new_level < current_level
+
+    client = StripeClient()
+    price_id = client.price_ids.get(tier)
+
+    if not price_id:
+        raise HTTPException(status_code=400, detail="Invalid tier")
+
+    # Update subscription
+    updated_sub = client.update_subscription(
+        subscription_id=current_user.stripe_subscription_id,
+        new_price_id=price_id,
+        is_downgrade=is_downgrade
+    )
+
+    # Update user tier in database (will be synced by webhook too)
+    from db.models import SubscriptionTier
+    current_user.subscription_tier = SubscriptionTier(tier)
+    db.commit()
+
+    return {"success": True, "tier": tier}
