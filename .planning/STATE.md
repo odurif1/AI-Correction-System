@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Polish & Fix
-status: in_progress
-last_updated: "2026-03-01T22:51:22.000Z"
+status: executing
+last_updated: "2026-03-01T22:56:36.313Z"
 progress:
   total_phases: 2
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 6
-  completed_plans: 5
-  percent: 83
+  completed_plans: 6
+  percent: 100
 ---
 
 # State: La Corrigeuse
@@ -33,7 +33,7 @@ v1.1 — Polish & Fix: Token deduction fix, subscription UX, bug hunting.
 **Phase:** 7 (Subscription UX Polish) - IN PROGRESS
 **Plan:** 07-01-stripe-portal-integration - COMPLETE
 **Status:** Plan 7-1 complete, ready for plan 7-2
-**Progress:** [████████░░] 83% (5/6 plans complete)
+**Progress:** [██████████] 100%
 
 **Target for v1.1:**
 - Fix token deduction (backend bug - copy count vs token count) ✓ DONE
@@ -76,6 +76,9 @@ v1.1 — Polish & Fix: Token deduction fix, subscription UX, bug hunting.
 - French error messages for user-friendly UX
 - Return URL to /subscription page for context continuity
 - External redirect pattern using window.location.href
+- [Phase 07]: Upgrade uses create_prorations for immediate prorated charge
+- [Phase 07]: Downgrade uses none proration to take effect next billing cycle
+- [Phase 07]: BillingHistory returns null for free tier (early return pattern)
 
 ### Quick Tasks Completed
 
