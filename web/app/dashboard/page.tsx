@@ -2,7 +2,7 @@
 
 import { useInfiniteQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/layout/header";
 import { Footer } from "@/components/layout/footer";
@@ -11,10 +11,9 @@ import { ConfirmDialog } from "@/components/confirmation-dialog";
 import { SessionCardsGrid } from "@/components/session-cards";
 import { NoSessionsState, ErrorState } from "@/components/empty-states";
 import { api } from "@/lib/api";
-import { Plus } from "lucide-react";
+import { Plus, Grid, List } from "lucide-react";
 import type { Session } from "@/lib/types";
 import { useInView } from "react-intersection-observer";
-import { useEffect } from "react";
 
 const SESSIONS_PER_PAGE = 20;
 
@@ -23,8 +22,22 @@ export default function DashboardPage() {
 
   // State
   const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [viewMode, setViewMode] = useState<"grid" | "list">(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("dashboardViewMode");
+      return saved === "list" ? "list" : "grid";
+    }
+    return "grid";
+  });
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
+
+  // Persist view mode to localStorage
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("dashboardViewMode", viewMode);
+    }
+  }, [viewMode]);
 
   // Infinite scroll query
   const {
@@ -157,6 +170,21 @@ export default function DashboardPage() {
                   <option value="error">Erreur</option>
                 </select>
 
+                {/* View mode toggle */}
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={() => setViewMode(viewMode === "grid" ? "list" : "grid")}
+                  className="hover:bg-purple-50 hover:border-purple-200 hover:text-purple-700"
+                  title={viewMode === "grid" ? "Vue liste" : "Vue grille"}
+                >
+                  {viewMode === "grid" ? (
+                    <List className="h-4 w-4" />
+                  ) : (
+                    <Grid className="h-4 w-4" />
+                  )}
+                </Button>
+
                 {/* New session CTA */}
                 <Button
                   asChild
@@ -180,6 +208,7 @@ export default function DashboardPage() {
                 <SessionCardsGrid
                   sessions={filteredSessions}
                   onDelete={handleDeleteClick}
+                  viewMode={viewMode}
                 />
 
                 {/* Load more trigger */}
