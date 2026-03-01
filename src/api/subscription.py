@@ -91,3 +91,20 @@ async def get_subscription_status(
         "subscription_start": current_user.subscription_start.isoformat() if current_user.subscription_start else None,
         "subscription_end": current_user.subscription_end.isoformat() if current_user.subscription_end else None,
     }
+
+
+@router.post("/portal")
+async def create_portal_session(
+    current_user: User = Depends(get_current_user)
+):
+    """Create Stripe Customer Portal session for billing management."""
+    if not current_user.stripe_customer_id:
+        raise HTTPException(status_code=400, detail="No Stripe customer found")
+
+    client = StripeClient()
+    frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:3000')
+    session = client.create_portal_session(
+        customer_id=current_user.stripe_customer_id,
+        return_url=f"{frontend_url}/subscription"
+    )
+    return {"portal_url": session.url}
