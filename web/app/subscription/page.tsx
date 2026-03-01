@@ -8,6 +8,9 @@ import { Button } from "@/components/ui/button";
 import { UsageBar } from "@/components/subscription/usage-bar";
 import { CheckCircle2, Zap, Building, GraduationCap } from "lucide-react";
 import Link from "next/link";
+import { api } from "@/lib/api";
+import { ApiError } from "@/lib/api";
+import { toast } from "sonner";
 
 const plans = [
   {
@@ -69,6 +72,19 @@ export default function SubscriptionPage() {
 
   const currentTier = user?.subscription_tier || "free";
 
+  const handleManageBilling = async () => {
+    try {
+      const response = await api.createPortalSession();
+      window.location.href = response.portal_url;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 400) {
+        toast.error("Aucun compte de facturation trouvé");
+      } else {
+        toast.error("Impossible d'ouvrir le portail de facturation. Réessayez.");
+      }
+    }
+  };
+
   return (
     <div className="min-h-screen flex flex-col">
       <Header />
@@ -84,6 +100,14 @@ export default function SubscriptionPage() {
           <div className="mb-8">
             <UsageBar />
           </div>
+
+          {currentTier !== 'free' && (
+            <div className="flex justify-center mb-8">
+              <Button variant="outline" onClick={handleManageBilling}>
+                Gérer la facturation
+              </Button>
+            </div>
+          )}
         </div>
 
         {/* Available plans */}
