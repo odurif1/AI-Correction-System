@@ -379,6 +379,31 @@ class ApiClient {
       method: "POST",
     });
   }
+
+  // Billing history
+  async getInvoices(): Promise<{ invoices: Array<{
+    id: string;
+    number: string | null;
+    date: number;
+    amount_paid: number;
+    currency: string;
+    status: string;
+    invoice_pdf: string | null;
+    hosted_invoice_url: string | null;
+  }> }> {
+    return this.fetchJson("/api/subscription/invoices");
+  }
+
+  // Plan changes
+  async updateSubscription(
+    tier: string,
+    isDowngrade: boolean
+  ): Promise<{ success: boolean; tier: string }> {
+    return this.fetchJson("/api/subscription/update", {
+      method: "POST",
+      body: JSON.stringify({ tier }),
+    });
+  }
 }
 
 export const api = new ApiClient();
