@@ -2,21 +2,21 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Polish & Fix
-status: completed
-last_updated: "2026-02-28T20:31:39.719Z"
+status: in_progress
+last_updated: "2026-03-01T22:51:22.000Z"
 progress:
-  total_phases: 1
+  total_phases: 2
   completed_phases: 1
-  total_plans: 3
-  completed_plans: 3
-  percent: 100
+  total_plans: 6
+  completed_plans: 5
+  percent: 83
 ---
 
 # State: La Corrigeuse
 
-**Last updated:** 2026-02-28
+**Last updated:** 2026-03-01
 **Milestone:** v1.1 — Polish & Fix
-**Status:** Milestone complete
+**Status:** Phase 7 in progress
 
 ## Project Reference
 
@@ -30,14 +30,14 @@ v1.1 — Polish & Fix: Token deduction fix, subscription UX, bug hunting.
 
 ## Current Position
 
-**Phase:** 6 (Token Deduction Fix) - COMPLETE
-**Plan:** 06-03-api-integration - COMPLETE
-**Status:** Phase 6 complete, ready for next phase
-**Progress:** [██████████] 100%
+**Phase:** 7 (Subscription UX Polish) - IN PROGRESS
+**Plan:** 07-01-stripe-portal-integration - COMPLETE
+**Status:** Plan 7-1 complete, ready for plan 7-2
+**Progress:** [████████░░] 83% (5/6 plans complete)
 
 **Target for v1.1:**
-- Fix token deduction (backend bug - copy count vs token count)
-- Move token bar to Subscription page
+- Fix token deduction (backend bug - copy count vs token count) ✓ DONE
+- Subscription UX polish (portal, billing history, upgrade/downgrade)
 - Bug hunting pass through app
 
 ## Accumulated Context
@@ -67,6 +67,15 @@ v1.1 — Polish & Fix: Token deduction fix, subscription UX, bug hunting.
 - InsufficientTokensError handled with user-friendly error messages
 - Idempotency prevents double-charging on retry/reconnection
 - Pass orchestrator.ai as provider (works with both single and dual LLM modes)
+- Robust exception handling with safe defaults and graceful degradation (plan 04)
+
+**From v1.1 Phase 7 Plan 1 (Stripe Portal Integration):**
+- Stripe Customer Portal integration for self-service billing management
+- Portal session creation with customer validation (free tier excluded)
+- "Gérer la facturation" button for paid tiers only
+- French error messages for user-friendly UX
+- Return URL to /subscription page for context continuity
+- External redirect pattern using window.location.href
 
 ### Quick Tasks Completed
 
@@ -87,21 +96,27 @@ v1.1 — Polish & Fix: Token deduction fix, subscription UX, bug hunting.
 
 ## Next Steps
 
-Phase 6 (Token Deduction Fix) is complete. Token deduction bug is fixed:
+Phase 7 (Subscription UX Polish) is in progress. Plan 7-1 (Stripe Portal Integration) is complete:
 
 **Completed:**
-- TokenDeductionService created with idempotency and token aggregation
-- UsageRecord model created for audit trail
-- API integration complete - grading flow now deducts actual tokens
+- TokenDeductionService created with idempotency and token aggregation (Phase 6)
+- UsageRecord model created for audit trail (Phase 6)
+- API integration complete - grading flow now deducts actual tokens (Phase 6)
+- Exception handling hardened - grading completes even on billing failures (Phase 6)
+- Stripe Customer Portal integration for self-service billing (Plan 7-1)
+- Portal session creation with customer validation (Plan 7-1)
+- "Gérer la facturation" button for paid tiers (Plan 7-1)
+
+**Remaining v1.1 work:**
+1. Plan 7-2: Billing history display and upgrade/downgrade flows
+2. Bug hunting pass through app
 
 **Recommended next actions:**
-1. Test grading flow with various token balances
-2. Verify WebSocket events display token usage correctly
-3. Test insufficient tokens error handling
-4. Move token bar to Subscription page (remaining v1.1 work)
-5. Bug hunting pass through app
+1. Execute Plan 7-2: billing history display + upgrade/downgrade
+2. Test portal integration with Stripe Customer Portal
+3. Bug hunting pass through app
 
-Run `/gsd:plan-phase` to start the next phase.
+Run `/gsd:execute-plan` to continue with plan 7-2.
 
 ---
-*State updated: 2026-02-28 for v1.1 milestone*
+*State updated: 2026-03-01 for Phase 7 Plan 01 completion*
