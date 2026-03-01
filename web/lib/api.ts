@@ -373,6 +373,12 @@ class ApiClient {
   }> {
     return this.fetchJson("/api/subscription/status");
   }
+
+  async createPortalSession(): Promise<{ portal_url: string }> {
+    return this.fetchJson("/api/subscription/portal", {
+      method: "POST",
+    });
+  }
 }
 
 export const api = new ApiClient();
