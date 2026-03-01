@@ -1,11 +1,23 @@
 "use client";
 
+import { useState } from "react";
 import { useAuth } from "@/lib/auth-context";
 import { Header } from "@/components/layout/header";
 import { Footer } from "@/components/layout/footer";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { UsageBar } from "@/components/subscription/usage-bar";
+import { BillingHistory } from "@/components/subscription/billing-history";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { CheckCircle2, Zap, Building, GraduationCap } from "lucide-react";
 import Link from "next/link";
 import { api } from "@/lib/api";
@@ -72,6 +84,12 @@ export default function SubscriptionPage() {
 
   const currentTier = user?.subscription_tier || "free";
 
+  const [confirmDialog, setConfirmDialog] = useState<{
+    open: boolean;
+    plan: string;
+    isUpgrade: boolean;
+  }>({ open: false, plan: "", isUpgrade: false });
+
   const handleManageBilling = async () => {
     try {
       const response = await api.createPortalSession();
@@ -82,6 +100,27 @@ export default function SubscriptionPage() {
       } else {
         toast.error("Impossible d'ouvrir le portail de facturation. Réessayez.");
       }
+    }
+  };
+
+  const handlePlanChange = (tier: string, isUpgrade: boolean) => {
+    setConfirmDialog({ open: true, plan: tier, isUpgrade });
+  };
+
+  const onConfirm = async () => {
+    try {
+      await api.updateSubscription(confirmDialog.plan, !confirmDialog.isUpgrade);
+      toast.success(
+        confirmDialog.isUpgrade
+          ? "Abonnement mis à niveau avec succès"
+          : "Abonnement changé au prochain cycle de facturation"
+      );
+      // Refresh page to update subscription status
+      window.location.reload();
+    } catch (error) {
+      toast.error("Impossible de changer d'abonnement. Réessayez.");
+    } finally {
+      setConfirmDialog({ ...confirmDialog, open: false });
     }
   };
 
@@ -162,8 +201,15 @@ export default function SubscriptionPage() {
                       className="w-full"
                       variant={isCurrentPlan ? "outline" : plan.popular ? "default" : "outline"}
                       disabled={isCurrentPlan}
+                      onClick={() => {
+                        if (!isCurrentPlan) {
+                          const tierOrder = { free: 0, essentiel: 1, pro: 2, max: 3 };
+                          const isUpgrade = tierOrder[plan.tier as keyof typeof tierOrder] > tierOrder[currentTier as keyof typeof tierOrder];
+                          handlePlanChange(plan.tier, isUpgrade);
+                        }
+                      }}
                     >
-                      {isCurrentPlan ? "Plan actuel" : "Choisir"}
+                      {isCurrentPlan ? "Plan actuel" : `Passer à ${plan.name}`}
                     </Button>
                   </CardContent>
                 </Card>
@@ -171,9 +217,36 @@ export default function SubscriptionPage() {
             })}
           </div>
         </div>
+
+        {/* Billing history */}
+        <BillingHistory currentTier={currentTier} />
       </main>
 
       <Footer />
+
+      {/* Plan change confirmation dialog */}
+      <AlertDialog open={confirmDialog.open} onOpenChange={(open) => setConfirmDialog({ ...confirmDialog, open })}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {confirmDialog.isUpgrade
+                ? `Passer à ${confirmDialog.plan.charAt(0).toUpperCase() + confirmDialog.plan.slice(1)}`
+                : `Revenir à ${confirmDialog.plan.charAt(0).toUpperCase() + confirmDialog.plan.slice(1)}`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmDialog.isUpgrade
+                ? "Vous serez débité de la différence au prorata et aurez un accès immédiat."
+                : "Votre abonnement changera au prochain cycle de facturation. Vous garderez votre accès actuel jusqu'à cette date."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Annuler</AlertDialogCancel>
+            <AlertDialogAction onClick={onConfirm}>
+              Confirmer
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
