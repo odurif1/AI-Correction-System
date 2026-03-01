@@ -60,3 +60,39 @@ class StripeClient:
             return_url=return_url,
         )
         return session
+
+    def list_invoices(
+        self,
+        customer_id: str,
+        limit: int = 12
+    ) -> list[stripe.Invoice]:
+        """List invoices for a customer."""
+        invoices = stripe.Invoice.list(
+            customer=customer_id,
+            limit=limit
+        )
+        return invoices.data
+
+    def update_subscription(
+        self,
+        subscription_id: str,
+        new_price_id: str,
+        is_downgrade: bool = False
+    ) -> stripe.Subscription:
+        """Update subscription tier with appropriate proration."""
+        # For upgrades: prorated immediate charge
+        # For downgrades: take effect next billing cycle
+        proration_behavior = "none" if is_downgrade else "create_prorations"
+
+        # Get current subscription to find subscription item
+        subscription = stripe.Subscription.retrieve(subscription_id)
+        subscription_item_id = subscription["items"]["data"][0]["id"]
+
+        return stripe.Subscription.modify(
+            subscription_id,
+            items=[{
+                "id": subscription_item_id,
+                "price": new_price_id
+            }],
+            proration_behavior=proration_behavior
+        )
