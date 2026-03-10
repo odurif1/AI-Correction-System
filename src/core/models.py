@@ -76,7 +76,7 @@ def generate_id() -> str:
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# PRE-ANALYSIS MODELS
+# DETECTION MODELS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 class StudentInfo(BaseModel):
@@ -88,13 +88,16 @@ class StudentInfo(BaseModel):
     confidence: float = 0.5
 
 
-class PreAnalysisResult(BaseModel):
+class DetectionResult(BaseModel):
     """
-    Result of pre-analyzing a PDF before grading.
+    Result of detecting PDF structure before grading.
 
     This validates that the PDF contains student copies and detects
     structure, grading scale, and potential issues.
     """
+    # Detection mode
+    mode: Literal["interactive", "auto"] = "interactive"
+
     # Validation PDF
     is_valid_pdf: bool = True
     page_count: int = 0
@@ -108,6 +111,11 @@ class PreAnalysisResult(BaseModel):
     subject_integration: SubjectIntegration = SubjectIntegration.NOT_DETECTED
     num_students_detected: int = 0
     students: List[StudentInfo] = Field(default_factory=list)
+
+    # Structure detection for consistent page counts
+    pages_per_student: Optional[int] = None  # Number of pages per student (if consistent)
+    consistent_pages_per_student: bool = False  # True if all students have same page count
+    subject_page_count: int = 0  # Number of pages for subject (0 if integrated)
 
     # Barème (grading scale)
     grading_scale: Dict[str, float] = Field(default_factory=dict)  # {"Q1": 2.0, "Q2": 3.0}
@@ -134,10 +142,9 @@ class PreAnalysisResult(BaseModel):
     exam_name: Optional[str] = None
 
     # Métadonnées
-    analysis_id: str = Field(default_factory=generate_id)
-    cached: bool = False
-    analysis_duration_ms: float = 0.0
-    analyzed_at: datetime = Field(default_factory=datetime.now)
+    detection_id: str = Field(default_factory=generate_id)
+    detection_duration_ms: float = 0.0
+    detected_at: datetime = Field(default_factory=datetime.now)
 
 
 class CopyDocument(BaseModel):
@@ -152,6 +159,10 @@ class CopyDocument(BaseModel):
     page_count: int = 1
     student_name: Optional[str] = None
     student_id: Optional[str] = None
+
+    # Position in original PDF (1-based page numbers)
+    start_page: Optional[int] = None  # First page of this copy in original PDF
+    end_page: Optional[int] = None    # Last page of this copy in original PDF
 
     # Detected language of the copy (auto-detected from content)
     language: Optional[str] = None  # 'fr', 'en', 'es', etc.
@@ -200,6 +211,10 @@ class GradingPolicy(BaseModel):
     # Weighting per question
     question_weights: Dict[str, float] = Field(default_factory=dict)
 
+    # Custom question names (optional, defaults to question_id if not set)
+    question_names: Dict[str, str] = Field(default_factory=dict)
+    # {"Q1": "Exercice 1 - Calcul", "Q2": "Exercice 2 - Algèbre"}
+
     # General subject context
     subject: Optional[str] = None
     topic: Optional[str] = None
@@ -241,6 +256,24 @@ class GradingSession(BaseModel):
 
     # Individual reading mode (PDF pre-split)
     pages_per_copy: Optional[int] = None  # If set, activates individual mode
+
+    def transition_to(self, new_status: SessionStatus):
+        """Validates and applies a state transition."""
+        if self.status == new_status:
+            return
+
+        valid_transitions = {
+            SessionStatus.DIAGNOSTIC: [SessionStatus.CORRECTION, SessionStatus.ERROR],
+            SessionStatus.CORRECTION: [SessionStatus.COMPLETE, SessionStatus.ERROR],
+            SessionStatus.COMPLETE: [SessionStatus.ERROR],
+            SessionStatus.ERROR: [SessionStatus.DIAGNOSTIC, SessionStatus.CORRECTION] # Allow retry
+        }
+        
+        if new_status not in valid_transitions.get(self.status, []):
+            raise ValueError(f"Invalid transition from {self.status.value} to {new_status.value}")
+            
+        self.status = new_status
+
 
 
 class GradedCopy(BaseModel):

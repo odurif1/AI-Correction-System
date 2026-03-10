@@ -1,8 +1,8 @@
 """
-Prompts for PDF pre-analysis.
+Prompts for PDF detection.
 
-This module contains prompts for analyzing PDF structure and content
-before grading to detect:
+This module contains prompts for detecting PDF structure and content
+before grading:
 - Document type (student copies, subject only, random document)
 - PDF structure (one student per PDF or all students in one PDF)
 - Grading scale / barème
@@ -11,14 +11,14 @@ before grading to detect:
 """
 
 from typing import List, Dict, Any
-from analysis.pre_analysis_translations import get_translations
+from analysis.detection_translations import get_translations
 
 
-def build_pre_analysis_prompt(
+def build_detection_prompt(
     language: str = "fr"
 ) -> str:
     """
-    Build the prompt for pre-analyzing a PDF.
+    Build the prompt for detecting PDF structure.
 
     Args:
         language: Language for prompts (fr, en)
@@ -26,7 +26,7 @@ def build_pre_analysis_prompt(
     Returns:
         Complete prompt string
     """
-    t = get_translations(language)["pre_analysis"]
+    t = get_translations(language)["detection"]
 
     # Build detection steps
     detection_steps = "\n".join(
@@ -57,7 +57,7 @@ def build_pre_analysis_prompt(
 
     return f"""{t['role']}
 
-═══════════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════════
 
 # {t['mission_title']}
 
@@ -65,13 +65,13 @@ def build_pre_analysis_prompt(
 
 {detection_steps}
 
-═══════════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════════
 
 # {t.get('critical_title', '⚠️ INSTRUCTIONS CRITIQUES')}
 
 {critical_instructions}
 
-═══════════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════════
 
 # {t['blocking_title']}
 
@@ -79,7 +79,7 @@ def build_pre_analysis_prompt(
 
 {blocking_criteria}
 
-═══════════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════════
 
 # {t['quality_title']}
 
@@ -87,20 +87,20 @@ def build_pre_analysis_prompt(
 
 {quality_issues}
 
-═══════════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════════
 
 # {t['response_format_title']}
 
 {json_example}
 
-═══════════════════════════════════════════════════════════════════
+══════════════════════════════════════════════════════════════════
 
 {t['final_instruction']}
 """
 
 
 def _build_json_example(t: dict) -> str:
-    """Build the JSON example for pre-analysis response."""
+    """Build the JSON example for detection response."""
     return f"""```json
 {{
   "document_type": "student_copies",
@@ -108,6 +108,11 @@ def _build_json_example(t: dict) -> str:
 
   "structure": "one_pdf_all_students",
   "subject_integration": "integrated",
+
+  "pages_per_student": 2,
+  "consistent_pages_per_student": true,
+  "subject_page_count": 0,
+
   "num_students_detected": 3,
   "students": [
     {{
@@ -158,6 +163,9 @@ def _build_json_example(t: dict) -> str:
 - `document_type`: {t['field_document_type']}
 - `structure`: {t['field_structure']}
 - `subject_integration`: {t['field_subject_integration']}
+- `pages_per_student`: Nombre de pages par élève (si constant)
+- `consistent_pages_per_student`: true si tous les élèves ont le même nombre de pages
+- `subject_page_count`: Nombre de pages du sujet (0 si intégré)
 - `grading_scale`: {t['field_grading_scale']}
 - `blocking_issues`: {t['field_blocking_issues']}
 - `warnings`: {t['field_warnings']}
@@ -183,7 +191,7 @@ def build_quick_structure_prompt(
     """
     Build a quick prompt to detect PDF structure only.
 
-    This is a lighter-weight analysis for faster results.
+    This is a lighter-weight detection for faster results.
 
     Args:
         page_count: Number of pages in the PDF
@@ -192,7 +200,7 @@ def build_quick_structure_prompt(
     Returns:
         Simplified prompt string
     """
-    t = get_translations(language)["quick_analysis"]
+    t = get_translations(language)["quick_detection"]
 
     return f"""{t['role']}
 

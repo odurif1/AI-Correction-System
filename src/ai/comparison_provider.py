@@ -204,6 +204,30 @@ class ComparisonProvider:
             "by_provider": provider_usage
         }
 
+    def get_estimated_cost(self) -> Dict[str, Any]:
+        """Get estimated cost from all providers."""
+        total_cost = 0.0
+        total_savings = 0.0
+        provider_costs = {}
+
+        for name, provider in self.providers:
+            if hasattr(provider, 'get_estimated_cost'):
+                try:
+                    cost_info = provider.get_estimated_cost()
+                    cost = cost_info.get('estimated_cost_usd', 0) or 0
+                    savings = cost_info.get('cached_savings_usd', 0) or 0
+                    provider_costs[name] = cost_info
+                    total_cost += cost
+                    total_savings += savings
+                except Exception:
+                    pass
+
+        return {
+            "estimated_cost_usd": round(total_cost, 4),
+            "cached_savings_usd": round(total_savings, 4),
+            "by_provider": provider_costs
+        }
+
     @property
     def primary_provider(self) -> Any:
         """Return the first provider as primary."""

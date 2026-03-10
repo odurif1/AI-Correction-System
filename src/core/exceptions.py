@@ -82,6 +82,11 @@ class APIResponseError(ProviderError):
     pass
 
 
+class OutputTruncatedError(ProviderError):
+    """Raised when LLM output is truncated due to max_output_tokens limit."""
+    pass
+
+
 class ParsingError(ProviderError):
     """Raised when parsing AI response fails."""
     pass
@@ -135,12 +140,27 @@ class GradingDisagreementError(GradingError):
     pass
 
 
+class DualLLMFailureError(GradingError):
+    """
+    Raised when one or both LLMs fail in dual LLM mode.
+
+    Dual LLM mode requires both providers to succeed for proper comparison.
+    """
+    def __init__(self, message: str, llm1_success: bool = False, llm2_success: bool = False):
+        super().__init__(message, {
+            'llm1_success': llm1_success,
+            'llm2_success': llm2_success
+        })
+        self.llm1_success = llm1_success
+        self.llm2_success = llm2_success
+
+
 class StudentNameMismatchError(GradingError):
     """
     Raised when LLMs detect different student names for the same copy.
 
     This indicates the LLMs are not aligned on which copies they're grading
-    and requires user intervention (--pages-per-copy or --auto-detect-structure).
+    and requires user intervention (--pages-per-copy).
     """
 
     def __init__(self, message: str, mismatches: list = None, llm1_only: list = None, llm2_only: list = None):

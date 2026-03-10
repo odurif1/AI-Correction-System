@@ -1,7 +1,7 @@
 """
-PDF Pre-Analysis module.
+PDF Detection module.
 
-This module provides functionality to analyze PDFs before grading to:
+This module provides functionality to detect PDF structure before grading:
 - Validate the PDF contains student copies
 - Detect document structure (one student or multiple)
 - Detect grading scale / barème
@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 
 from core.models import (
-    PreAnalysisResult,
+    DetectionResult,
     StudentInfo,
     DocumentType,
     PDFStructure,
@@ -29,23 +29,21 @@ from core.exceptions import (
 )
 from vision.pdf_reader import PDFReader
 from ai.provider_factory import create_ai_provider
-from analysis.pre_analysis_prompts import build_pre_analysis_prompt
-from analysis.pre_analysis_translations import get_translations
+from analysis.detection_prompts import build_detection_prompt
+from analysis.detection_translations import get_translations
 
 logger = logging.getLogger(__name__)
 
 
-class PreAnalyzer:
+class Detector:
     """
-    Analyzes PDF documents before grading.
+    Detects PDF document structure before grading.
 
-    This class performs a quick analysis of the PDF to:
+    This class performs detection of the PDF to:
     1. Validate it contains student copies
     2. Detect document structure
     3. Detect grading scale
     4. Identify blocking issues
-
-    Results can be cached to avoid re-analysis.
     """
 
     def __init__(
@@ -54,10 +52,10 @@ class PreAnalyzer:
         session_id: str,
         language: str = "fr",
         cache_dir: Path = None,
-        provider = None  # Optional: pass existing provider for token tracking
+        provider = None
     ):
         """
-        Initialize the pre-analyzer.
+        Initialize the detector.
 
         Args:
             user_id: User ID for storage
@@ -75,24 +73,26 @@ class PreAnalyzer:
         # Use provided provider or create new one
         self.provider = provider if provider else create_ai_provider()
 
-    def analyze(
+    def detect(
         self,
         pdf_path: str,
+        mode: str = "interactive",
         force_refresh: bool = False
-    ) -> PreAnalysisResult:
+    ) -> DetectionResult:
         """
-        Analyze a PDF document.
+        Detect PDF document structure.
 
         Args:
             pdf_path: Path to the PDF file
-            force_refresh: Force re-analysis even if cached
+            mode: Detection mode ("interactive" or "auto")
+            force_refresh: Force re-detection even if cached
 
         Returns:
-            PreAnalysisResult with detected information
+            DetectionResult with detected information
 
         Raises:
             InvalidPDFError: If PDF is invalid
-            AnalysisError: If analysis fails
+            AnalysisError: If detection fails
         """
         start_time = time.time()
 
@@ -101,8 +101,7 @@ class PreAnalyzer:
         if not force_refresh:
             cached = self._load_from_cache(cache_key)
             if cached:
-                cached.cached = True
-                logger.info(f"Loaded pre-analysis from cache: {cache_key}")
+                logger.info(f"Loaded detection from cache: {cache_key}")
                 return cached
 
         # Validate and read PDF
@@ -114,8 +113,7 @@ class PreAnalyzer:
         except Exception as e:
             raise InvalidPDFError(f"Failed to open PDF: {e}") from e
 
-        # Sample pages for analysis
-        # For efficiency, we don't analyze all pages if PDF is large
+        # Sample pages for detection
         sample_pages = self._get_sample_pages(page_count)
         sample_images = []
 
@@ -130,16 +128,16 @@ class PreAnalyzer:
             raise AnalysisError("Could not extract any pages from PDF")
 
         # Build prompt
-        prompt = build_pre_analysis_prompt(self.language)
+        prompt = build_detection_prompt(self.language)
 
         # Call AI with images
         try:
             # For the first pass, use the first few sample images
-            analysis_images = sample_images[:min(5, len(sample_images))]
+            detection_images = sample_images[:min(5, len(sample_images))]
 
             # Convert PIL images to format expected by provider
             image_paths = []
-            for page_num, img in analysis_images:
+            for page_num, img in detection_images:
                 # Save temporarily and pass path
                 temp_path = self.cache_dir / f"temp_page_{page_num}.png"
                 img.save(str(temp_path))
@@ -149,10 +147,10 @@ class PreAnalyzer:
             response = self._call_vision_with_multiple_images(prompt, image_paths)
 
             # Parse response
-            result = self._parse_response(response, page_count)
+            result = self._parse_response(response, page_count, mode)
 
             # Calculate duration
-            result.analysis_duration_ms = (time.time() - start_time) * 1000
+            result.detection_duration_ms = (time.time() - start_time) * 1000
 
             # Save to cache
             self._save_to_cache(cache_key, result)
@@ -167,8 +165,8 @@ class PreAnalyzer:
             return result
 
         except Exception as e:
-            logger.error(f"Pre-analysis failed: {e}")
-            raise AnalysisError(f"Pre-analysis failed: {e}") from e
+            logger.error(f"Detection failed: {e}")
+            raise AnalysisError(f"Detection failed: {e}") from e
 
         finally:
             pdf_reader.close()
@@ -192,76 +190,42 @@ class PreAnalyzer:
             raise AnalysisError("Provider does not support vision calls")
 
         # Gemini supports multiple images in a single call
-        # Pass all images as a list
         if len(image_paths) == 1:
             return self.provider.call_vision(prompt, image_path=image_paths[0])
 
         # For multiple images, pass the list to the provider
-        # The Gemini provider handles lists of images
         combined_prompt = f"{prompt}\n\nVoici les {len(image_paths)} pages du document à analyser:"
         return self.provider.call_vision(combined_prompt, image_path=image_paths)
 
     def _get_sample_pages(self, page_count: int) -> List[int]:
         """
-        Get sample page indices for analysis.
+        Get page indices for detection.
 
-        For large PDFs, we sample strategically:
-        - First pages (usually subject)
-        - Middle pages (sample of students)
-        - Last pages
-
-        Args:
-            page_count: Total number of pages
-
-        Returns:
-            List of 0-indexed page numbers to sample
+        Returns all pages — the cost is marginal since grading will
+        process them all anyway, and full coverage gives accurate
+        student detection (names + boundaries).
         """
-        if page_count <= 10:
-            # Small PDF: analyze all pages
-            return list(range(page_count))
-
-        if page_count <= 20:
-            # Medium PDF: first 3, middle 3, last 3
-            return [
-                0, 1, 2,  # First pages
-                page_count // 2 - 1, page_count // 2, page_count // 2 + 1,  # Middle
-                page_count - 3, page_count - 2, page_count - 1  # Last pages
-            ]
-
-        # Large PDF: sample more strategically
-        samples = []
-
-        # First 3 pages (subject)
-        samples.extend([0, 1, 2])
-
-        # Sample every ~5 pages for the rest
-        step = max(5, page_count // 10)
-        for i in range(3, page_count - 3, step):
-            samples.append(i)
-
-        # Last 2 pages
-        samples.extend([page_count - 2, page_count - 1])
-
-        return list(set(samples))  # Remove duplicates
+        return list(range(page_count))
 
     def _parse_response(
         self,
         response: str,
-        page_count: int
-    ) -> PreAnalysisResult:
+        page_count: int,
+        mode: str = "interactive"
+    ) -> DetectionResult:
         """
-        Parse AI response into PreAnalysisResult.
+        Parse AI response into DetectionResult.
 
         Args:
             response: Raw AI response
             page_count: Number of pages in PDF
+            mode: Detection mode
 
         Returns:
-            PreAnalysisResult
+            DetectionResult
         """
         # Extract JSON from response
         try:
-            # Try to find JSON in the response
             json_start = response.find("{")
             json_end = response.rfind("}") + 1
 
@@ -273,8 +237,8 @@ class PreAnalyzer:
 
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse JSON: {e}")
-            # Return a default result with low confidence
-            return PreAnalysisResult(
+            return DetectionResult(
+                mode=mode,
                 is_valid_pdf=True,
                 page_count=page_count,
                 document_type=DocumentType.UNCLEAR,
@@ -323,19 +287,17 @@ class PreAnalyzer:
         }
         subject_integration = subject_map.get(subject_str, SubjectIntegration.NOT_DETECTED)
 
-        # Parse candidate scales (new feature for multi-scale detection)
+        # Parse candidate scales
         candidate_scales = []
         raw_candidate_scales = data.get("candidate_scales", [])
 
         if raw_candidate_scales:
-            # AI returned multiple candidate scales
             for candidate in raw_candidate_scales:
                 candidate_scales.append({
                     "scale": candidate.get("scale", {}),
                     "confidence": candidate.get("confidence", 0.0)
                 })
         else:
-            # Backward compatibility: if single scale returned, store as first candidate
             single_scale = data.get("grading_scale", {})
             single_confidence = data.get("confidence_grading_scale", 0.5)
             if single_scale:
@@ -346,11 +308,28 @@ class PreAnalyzer:
 
         # Determine primary grading scale and confidence
         grading_scale = data.get("grading_scale", {})
+        
+        # Clean up grading scale values to ensure they are floats (handling cases like "1pt")
+        cleaned_scale = {}
+        for k, v in grading_scale.items():
+            try:
+                if isinstance(v, str):
+                    # Extract first number found in string
+                    import re
+                    match = re.search(r'[\d.]+', v)
+                    if match:
+                        cleaned_scale[k] = float(match.group())
+                    else:
+                        cleaned_scale[k] = 1.0 # fallback
+                else:
+                    cleaned_scale[k] = float(v)
+            except (ValueError, TypeError):
+                cleaned_scale[k] = 1.0 # fallback
+        grading_scale = cleaned_scale
+        
         confidence_grading_scale = data.get("confidence_grading_scale", 0.5)
 
-        # If candidate_scales is populated but grading_scale is empty, use best candidate
         if not grading_scale and candidate_scales:
-            # Sort by confidence and use the best one
             candidate_scales.sort(key=lambda x: x["confidence"], reverse=True)
             best_candidate = candidate_scales[0]
             grading_scale = best_candidate["scale"]
@@ -370,8 +349,9 @@ class PreAnalyzer:
         elif document_type == DocumentType.SUBJECT_ONLY:
             blocking_issues.append("Le document contient uniquement le sujet, pas de copies d'élèves")
 
-        # Build result with candidate_scales
-        result = PreAnalysisResult(
+        # Build result
+        result = DetectionResult(
+            mode=mode,
             is_valid_pdf=True,
             page_count=page_count,
             document_type=document_type,
@@ -380,6 +360,9 @@ class PreAnalyzer:
             subject_integration=subject_integration,
             num_students_detected=data.get("num_students_detected", len(students)),
             students=students,
+            pages_per_student=data.get("pages_per_student"),
+            consistent_pages_per_student=data.get("consistent_pages_per_student", False),
+            subject_page_count=data.get("subject_page_count", 0),
             grading_scale=grading_scale,
             confidence_grading_scale=confidence_grading_scale,
             questions_detected=data.get("questions_detected", []),
@@ -392,24 +375,21 @@ class PreAnalyzer:
             exam_name=data.get("exam_name"),
         )
 
-        # Add candidate_scales to the result (stored in extra dict or as attribute)
-        # Since PreAnalysisResult is a Pydantic model, we can add it to model_dump
-        # For now, we'll monkey-patch it onto the instance
+        # Add candidate_scales
         result.candidate_scales = candidate_scales
 
         return result
 
     def _get_cache_key(self, pdf_path: str) -> str:
         """Generate cache key based on PDF hash."""
-        # Use file size and modification time for quick hash
         path = Path(pdf_path)
         stat = path.stat()
         hash_input = f"{pdf_path}_{stat.st_size}_{stat.st_mtime}"
         return hashlib.md5(hash_input.encode()).hexdigest()
 
-    def _load_from_cache(self, cache_key: str) -> Optional[PreAnalysisResult]:
+    def _load_from_cache(self, cache_key: str) -> Optional[DetectionResult]:
         """Load result from cache if exists."""
-        cache_file = self.cache_dir / f"pre_analysis_{cache_key}.json"
+        cache_file = self.cache_dir / f"detection_{cache_key}.json"
         if not cache_file.exists():
             return None
 
@@ -417,11 +397,11 @@ class PreAnalyzer:
             with open(cache_file, "r") as f:
                 data = json.load(f)
 
-            # Reconstruct PreAnalysisResult
             students = [StudentInfo(**s) for s in data.get("students", [])]
             candidate_scales = data.get("candidate_scales", [])
 
-            result = PreAnalysisResult(
+            result = DetectionResult(
+                mode=data.get("mode", "interactive"),
                 is_valid_pdf=data.get("is_valid_pdf", True),
                 page_count=data.get("page_count", 0),
                 document_type=DocumentType(data.get("document_type", "unclear")),
@@ -430,6 +410,9 @@ class PreAnalyzer:
                 subject_integration=SubjectIntegration(data.get("subject_integration", "not_detected")),
                 num_students_detected=data.get("num_students_detected", 0),
                 students=students,
+                pages_per_student=data.get("pages_per_student"),
+                consistent_pages_per_student=data.get("consistent_pages_per_student", False),
+                subject_page_count=data.get("subject_page_count", 0),
                 grading_scale=data.get("grading_scale", {}),
                 confidence_grading_scale=data.get("confidence_grading_scale", 0.0),
                 candidate_scales=candidate_scales,
@@ -440,9 +423,8 @@ class PreAnalyzer:
                 has_blocking_issues=data.get("has_blocking_issues", False),
                 warnings=data.get("warnings", []),
                 detected_language=data.get("detected_language", "fr"),
-                analysis_id=data.get("analysis_id", ""),
-                cached=True,
-                analysis_duration_ms=data.get("analysis_duration_ms", 0.0),
+                detection_id=data.get("detection_id", ""),
+                detection_duration_ms=data.get("detection_duration_ms", 0.0),
                 exam_name=data.get("exam_name"),
             )
             return result
@@ -451,9 +433,9 @@ class PreAnalyzer:
             logger.warning(f"Failed to load cache: {e}")
             return None
 
-    def _save_to_cache(self, cache_key: str, result: PreAnalysisResult):
+    def _save_to_cache(self, cache_key: str, result: DetectionResult):
         """Save result to cache."""
-        cache_file = self.cache_dir / f"pre_analysis_{cache_key}.json"
+        cache_file = self.cache_dir / f"detection_{cache_key}.json"
 
         try:
             data = result.model_dump()
@@ -464,21 +446,19 @@ class PreAnalyzer:
             logger.warning(f"Failed to save cache: {e}")
 
 
-def quick_analyze_pdf(
+def quick_detect_pdf(
     pdf_path: str,
     language: str = "fr"
 ) -> Dict[str, Any]:
     """
-    Perform a quick analysis of a PDF.
-
-    This is a convenience function for one-off analysis.
+    Perform a quick detection of a PDF.
 
     Args:
         pdf_path: Path to PDF file
         language: Language for prompts
 
     Returns:
-        Dict with basic analysis results
+        Dict with basic detection results
     """
     try:
         pdf_reader = PDFReader(pdf_path)
@@ -488,7 +468,7 @@ def quick_analyze_pdf(
         return {
             "is_valid": True,
             "page_count": page_count,
-            "estimated_students": max(1, page_count // 2),  # Rough estimate
+            "estimated_students": max(1, page_count // 2),
         }
 
     except Exception as e:

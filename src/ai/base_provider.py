@@ -445,7 +445,7 @@ class BaseProvider(ABC):
             language=language
         )
 
-        response = self.call_vision(prompt, image_path=image_path)
+        response = self.call_vision(prompt, image_path=image_path, response_format="json")
         return self._parse_grading_response(response)
 
     def _parse_grading_response(self, response: str) -> Dict[str, Any]:

@@ -18,6 +18,64 @@ from prompts.batch_translations import get_translations
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
+# COMMON PREFIX FOR IMPLICIT CACHING
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def build_common_prefix(
+    questions: Dict[str, Dict[str, Any]],
+    language: str = "fr"
+) -> str:
+    """
+    Build the common prefix for Gemini implicit caching.
+
+    This prefix contains stable content shared across all phases:
+    - System role/instructions
+    - Barème (questions with max points)
+    - Grading rules
+
+    IMPORTANT: This prefix must be IDENTICAL across initial/verification/ultimatum
+    for Gemini's implicit caching to work (min 1024 tokens for Flash, 2048 for Pro).
+
+    Args:
+        questions: Dict of {question_id: {text, criteria, max_points}}
+        language: Language for prompts
+
+    Returns:
+        Common prefix string
+    """
+    t = get_translations(language)["batch"]
+
+    # Section questions/barème (stable)
+    questions_text = _build_questions_section(questions, t)
+
+    # Section règles (stable)
+    rules = "\n".join(
+        f'{i+1}. **{title}**: {desc}'
+        for i, (title, desc) in enumerate(t["rules"])
+    )
+
+    rubric_section = ""
+    if questions_text.strip():
+        rubric_section = f"""# {t['rubric_title']}
+
+{questions_text}
+
+═══════════════════════════════════════════════════════════════════
+"""
+
+    return f"""{t['role']}
+
+═══════════════════════════════════════════════════════════════════
+{rubric_section}
+# {t['rules_title']}
+
+{rules}
+
+═══════════════════════════════════════════════════════════════════
+"""
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # BATCH GRADING PROMPTS
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -25,7 +83,9 @@ def build_batch_grading_prompt(
     copies_data: List[Dict[str, Any]],
     questions: Dict[str, Dict[str, Any]],
     language: str = "fr",
-    detect_students: bool = False
+    detect_students: bool = False,
+    common_prefix: str = None,
+    detection_hints: Dict[str, Any] = None
 ) -> str:
     """
     Build a prompt for batch grading all copies at once.
@@ -35,17 +95,16 @@ def build_batch_grading_prompt(
         questions: Dict of {question_id: {text, criteria, max_points}}
         language: Language for prompts
         detect_students: If True, ask LLM to detect multiple students in the PDF
+        common_prefix: Optional pre-built common prefix for caching. If provided,
+                       uses this prefix instead of rebuilding the role/rules/barème section.
 
     Returns:
         Complete prompt string
     """
     t = get_translations(language)["batch"]
 
-    # Build questions section
-    questions_text = _build_questions_section(questions, t)
-
     # Build student detection section (if needed)
-    student_detection = _build_detection_section(detect_students, t)
+    student_detection = _build_detection_section(detect_students, t, detection_hints)
 
     # Determine copies instruction
     if detect_students:
@@ -56,19 +115,41 @@ def build_batch_grading_prompt(
     # Build copies steps
     copies_steps = "\n".join(f"{i+1}. {step}" for i, step in enumerate(t["copies_steps"]))
 
-    # Build rules section
-    rules = "\n".join(
-        f'{i+1}. **{title}**: {desc}'
-        for i, (title, desc) in enumerate(t["rules"])
-    )
-
     # Build JSON example
     json_example = _build_batch_json_example(t)
 
-    # Build rubric section only if questions are defined
-    rubric_section = ""
-    if questions_text.strip():
-        rubric_section = f"""
+    # Build the phase-specific content (copies + response format)
+    phase_content = f"""{student_detection}
+# {t['copies_title']}
+
+{copies_instruction}:
+{copies_steps}
+
+═══════════════════════════════════════════════════════════════════
+
+# {t['response_format_title']}
+
+{json_example}
+
+═══════════════════════════════════════════════════════════════════
+
+{t['final_instruction']}
+"""
+
+    # If common_prefix is provided, use it; otherwise build full prompt
+    if common_prefix:
+        return f"{common_prefix}\n{phase_content}"
+    else:
+        # Build full prompt without common prefix (backward compatible)
+        questions_text = _build_questions_section(questions, t)
+        rules = "\n".join(
+            f'{i+1}. **{title}**: {desc}'
+            for i, (title, desc) in enumerate(t["rules"])
+        )
+
+        rubric_section = ""
+        if questions_text.strip():
+            rubric_section = f"""
 # {t['rubric_title']}
 
 {questions_text}
@@ -76,7 +157,7 @@ def build_batch_grading_prompt(
 ═══════════════════════════════════════════════════════════════════
 """
 
-    return f"""{t['role']}
+        return f"""{t['role']}
 
 ═══════════════════════════════════════════════════════════════════
 {rubric_section}{student_detection}
@@ -125,13 +206,24 @@ def _build_questions_section(questions: Dict[str, Dict[str, Any]], t: dict) -> s
     return "".join(lines)
 
 
-def _build_detection_section(detect_students: bool, t: dict) -> str:
+def _build_detection_section(detect_students: bool, t: dict, detection_hints: dict = None) -> str:
     """Build the student detection section if needed."""
     if not detect_students:
         return ""
 
     steps = "\n".join(f"{i+1}. **{step}**" for i, step in enumerate(t["detection_steps"]))
     clues = "\n".join(f"- {clue}" for clue in t["detection_clue_list"])
+
+    hints_section = ""
+    if detection_hints:
+        expected = detection_hints.get('expected_students', 0)
+        pp = detection_hints.get('pages_per_student', 0)
+        subject_pages = detection_hints.get('subject_pages', 0)
+        hints_section = f"""
+**INDICE STRUCTUREL** : L'analyse préliminaire indique environ **{expected} copies d'élèves**, chacune faisant environ **{pp} pages**.
+{"Les " + str(subject_pages) + " premières pages sont le sujet de l'examen." if subject_pages else ""}
+Ces valeurs sont approximatives — certains élèves peuvent avoir plus ou moins de pages. Détecte les frontières réelles entre chaque copie.
+"""
 
     return f"""
 # {t['detection_title']}
@@ -142,7 +234,7 @@ def _build_detection_section(detect_students: bool, t: dict) -> str:
 
 {t['detection_clues']}
 {clues}
-"""
+{hints_section}"""
 
 
 def _build_batch_json_example(t: dict) -> str:
@@ -198,7 +290,8 @@ def build_dual_llm_verification_prompt(
     other_provider_name: str,
     is_own_perspective: bool = True,
     language: str = "fr",
-    name_disagreements: List[Dict[str, Any]] = None
+    name_disagreements: List[Dict[str, Any]] = None,
+    common_prefix: str = None
 ) -> str:
     """
     Build a verification prompt for ONE LLM showing both LLMs' grades.
@@ -210,6 +303,7 @@ def build_dual_llm_verification_prompt(
         is_own_perspective: If True, this LLM's grades are shown as "you"
         language: Language for prompts
         name_disagreements: Optional list of student name disagreements (for grouped mode)
+        common_prefix: Optional pre-built common prefix for implicit caching
 
     Returns:
         Complete prompt string
@@ -232,7 +326,8 @@ def build_dual_llm_verification_prompt(
     # Build JSON example
     json_example = _build_verification_json_example(t, name_disagreements is not None and len(name_disagreements) > 0)
 
-    return f"""{t['intro']}
+    # Build the phase-specific content
+    phase_content = f"""{t['intro']}
 
 {t['mission_intro']}
 
@@ -265,6 +360,12 @@ def build_dual_llm_verification_prompt(
 {t['final_instruction']}
 """
 
+    # If common_prefix is provided, prepend it for implicit caching
+    if common_prefix:
+        return f"{common_prefix}\n{phase_content}"
+    else:
+        return phase_content
+
 
 def _build_disagreements_section(
     disagreements: List[Any],
@@ -287,6 +388,14 @@ def _build_disagreements_section(
         # Get disagreement type
         disp_type = getattr(d, 'disagreement_type', 'grade')
 
+        # Build page info for explicit cache context
+        page_info = ""
+        if hasattr(d, 'pdf_start_page') and d.pdf_start_page:
+            if d.pdf_end_page and d.pdf_end_page != d.pdf_start_page:
+                page_info = f" (pages {d.pdf_start_page}-{d.pdf_end_page})"
+            else:
+                page_info = f" (page {d.pdf_start_page})"
+
         # Build warnings (only reading warning - no rubric warning since barème is frozen)
         warnings = []
         if disp_type in ("reading", "both"):
@@ -296,7 +405,7 @@ def _build_disagreements_section(
 
         # Use "L'AUTRE IA" without provider name (not relevant for grading)
         # Include max_points in grade display for context
-        lines.append(f"""## {t['disagreement_header']} {i}: Copie {d.copy_index}, {d.question_id}
+        lines.append(f"""## {t['disagreement_header']} {i}: Copie {d.copy_index}{page_info}, {d.question_id}
 
 **{t['you_gave'].format(provider=provider_name)}**: **{your_grade}/{your_max_pts}** pts
 - {t['your_reading']}: "{your_reading}"
@@ -416,7 +525,8 @@ def build_ultimatum_prompt(
     disagreements: List[Dict[str, Any]],
     provider_name: str,
     other_provider_name: str,
-    language: str = "fr"
+    language: str = "fr",
+    common_prefix: str = None
 ) -> str:
     """
     Build an ultimatum prompt for ONE LLM showing persistent disagreements.
@@ -426,6 +536,7 @@ def build_ultimatum_prompt(
         provider_name: Name of the LLM receiving this prompt
         other_provider_name: Name of the other LLM
         language: Language for prompts
+        common_prefix: Optional pre-built common prefix for implicit caching
 
     Returns:
         Complete prompt string
@@ -465,7 +576,8 @@ def build_ultimatum_prompt(
 }}
 ```"""
 
-    return f"""═══════════════════════════════════════════════════════════════════
+    # Build phase-specific content
+    phase_content = f"""═══════════════════════════════════════════════════════════════════
 {t['header']}
 ═══════════════════════════════════════════════════════════════════
 
@@ -493,6 +605,12 @@ def build_ultimatum_prompt(
 
 {t['final_instruction']}
 """
+
+    # If common_prefix is provided, prepend it for implicit caching
+    if common_prefix:
+        return f"{common_prefix}\n{phase_content}"
+    else:
+        return phase_content
 
 
 def _build_ultimatum_disagreements_section(

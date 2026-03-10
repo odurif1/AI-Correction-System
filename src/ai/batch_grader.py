@@ -22,11 +22,13 @@ from typing import List, Dict, Any, Optional, Tuple, Union
 
 from config.settings import get_settings
 from config.constants import MAX_RETRIES, RETRY_BASE_DELAY, GRADE_AGREEMENT_THRESHOLD
+from core.exceptions import OutputTruncatedError
 from utils.json_extractor import extract_json_from_response
 from prompts.batch import (
     build_batch_grading_prompt,
     build_dual_llm_verification_prompt,
     build_ultimatum_prompt,
+    build_common_prefix,
 )
 
 logger = logging.getLogger(__name__)
@@ -51,53 +53,37 @@ async def _call_provider_vision(
     provider,
     prompt: str,
     images: Optional[List[str]] = None,
-    max_retries: int = MAX_RETRIES
+    max_retries: int = MAX_RETRIES # Kept for signature compatibility but unused as tenacity handles retries
 ) -> Optional[str]:
     """
-    Call a provider's vision API with proper error handling and retry logic.
-
-    This is a shared utility function that handles the common pattern of:
-    - Calling provider.call_vision with optional images
-    - Ensuring the response is a string
-    - Handling exceptions gracefully
-    - Retrying on temporary errors (503, 429, etc.)
+    Call a provider's vision API.
+    Retries are now handled dynamically by the provider using tenacity.
 
     Args:
         provider: LLM provider instance
         prompt: The prompt to send
         images: Optional list of image paths
-        max_retries: Maximum number of retry attempts (default: 3)
+        max_retries: Ignored
 
     Returns:
-        Raw response as string, or None if all attempts failed
+        Raw response as string, or None if failed
     """
-    last_error = None
-
-    for attempt in range(max_retries + 1):
-        try:
-            raw_response = provider.call_vision(prompt, image_path=images or [])
-            if not isinstance(raw_response, str):
-                raw_response = str(raw_response)
-            return raw_response
-        except Exception as e:
-            last_error = e
-            error_str = str(e)
-
-            # Check if we should retry
-            if attempt < max_retries and _is_retryable_error(e):
-                delay = RETRY_BASE_DELAY * (2 ** attempt)  # Exponential backoff
-                logger.warning(
-                    f"API call failed (attempt {attempt + 1}/{max_retries + 1}): {e}. "
-                    f"Retrying in {delay:.1f}s..."
-                )
-                await asyncio.sleep(delay)
-            else:
-                # Non-retryable error or max retries exceeded
-                logger.error(f"Provider vision call failed: {e}")
-                return None
-
-    logger.error(f"All {max_retries + 1} attempts failed. Last error: {last_error}")
-    return None
+    try:
+        # Run synchronous call in a separate thread to avoid blocking the event loop
+        raw_response = await asyncio.to_thread(
+            provider.call_vision,
+            prompt, 
+            image_path=images or [], 
+            response_format="json"
+        )
+        if not isinstance(raw_response, str):
+            raw_response = str(raw_response)
+        return raw_response
+    except OutputTruncatedError:
+        raise  # Let truncation errors propagate
+    except Exception as e:
+        logger.error(f"Provider vision call failed after internal retries: {e}")
+        return None
 
 
 def get_agreement_threshold(max_points: float) -> float:
@@ -171,13 +157,26 @@ class BatchCopyResult:
     overall_feedback: str = ""
     image_paths: List[str] = field(default_factory=list)  # Paths to copy images
 
+    # Position in original PDF (1-based page numbers) for page-based matching
+    pdf_start_page: Optional[int] = None
+    pdf_end_page: Optional[int] = None
+
+    @property
+    def page_range(self) -> Optional[Tuple[int, int]]:
+        """Return page range as tuple, or None if not available."""
+        if self.pdf_start_page is not None and self.pdf_end_page is not None:
+            return (self.pdf_start_page, self.pdf_end_page)
+        return None
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "copy_index": self.copy_index,
             "student_name": self.student_name,
             "questions": self.questions,
             "overall_feedback": self.overall_feedback,
-            "image_paths": self.image_paths
+            "image_paths": self.image_paths,
+            "pdf_start_page": self.pdf_start_page,
+            "pdf_end_page": self.pdf_end_page
         }
 
 
@@ -226,7 +225,9 @@ class BatchGrader:
         copies: List[Dict[str, Any]],
         questions: Dict[str, Dict[str, Any]],
         language: str = "fr",
-        detect_students: bool = False
+        detect_students: bool = False,
+        common_prefix: str = None,
+        detection_hints: Dict[str, Any] = None
     ) -> BatchResult:
         """
         Grade a batch of copies in a single API call.
@@ -239,35 +240,38 @@ class BatchGrader:
             questions: Dict of {question_id: {text, criteria, max_points}}
             language: Language for prompts
             detect_students: If True, ask LLM to detect multiple students in single PDF
+            common_prefix: Optional pre-built common prefix for implicit caching.
+                          When provided, enables Gemini caching across all phases.
 
         Returns:
             BatchResult with all copy grades and detected patterns
         """
         start_time = time.time()
 
-        # Build prompt
-        prompt = build_batch_grading_prompt(copies, questions, language, detect_students)
+        # Build prompt with common prefix for caching
+        prompt = build_batch_grading_prompt(
+            copies, questions, language, detect_students,
+            common_prefix=common_prefix,
+            detection_hints=detection_hints
+        )
 
         # Collect all images from all copies
         all_images = []
         for copy in copies:
             all_images.extend(copy.get('image_paths', []))
 
-        # Call LLM with all images
-        try:
-            # Use call_vision directly to get raw response text
-            raw_response = self.provider.call_vision(prompt, image_path=all_images)
-            if not isinstance(raw_response, str):
-                raw_response = str(raw_response)
-
-        except Exception as e:
-            logger.error(f"Batch grading API call failed: {e}")
+        # Call LLM with all images (with retry logic)
+        raw_response = await _call_provider_vision(
+            self.provider, prompt, all_images, max_retries=MAX_RETRIES
+        )
+        if raw_response is None:
+            logger.error("Batch grading API call failed after all retries")
             return BatchResult(
                 copies=[],
                 patterns={},
-                raw_response=str(e),
+                raw_response="",
                 parse_success=False,
-                parse_errors=[f"API call failed: {str(e)}"],
+                parse_errors=["API call failed after all retries"],
                 duration_ms=(time.time() - start_time) * 1000
             )
 
@@ -294,10 +298,15 @@ class BatchGrader:
         for c in copies:
             all_input_images.extend(c.get('image_paths', []))
 
+        # Build lookup for input copies by copy_index (for page info)
+        copies_by_index = {c.get('copy_index'): c for c in copies}
+
         # Try to extract JSON from response
         data = extract_json_from_response(raw_response)
         if data is None:
             parse_errors.append("No JSON object found in response")
+            logger.warning(f"Failed to parse JSON. Response length: {len(raw_response) if raw_response else 0}")
+            logger.debug(f"Raw response (first 500 chars): {raw_response[:500] if raw_response else 'EMPTY'}")
         else:
             try:
                 # Parse copies
@@ -308,6 +317,10 @@ class BatchGrader:
                     # Parse questions
                     questions = {}
                     for qid, qdata in copy_data.get('questions', {}).items():
+                        # Skip if qdata is None (malformed response)
+                        if qdata is None:
+                            logger.warning(f"Question {qid} has None data, skipping")
+                            continue
                         questions[qid] = {
                             'student_answer_read': qdata.get('student_answer_read', ''),
                             'grade': _parse_grade_value(qdata.get('grade', 0)),
@@ -317,6 +330,11 @@ class BatchGrader:
                             'feedback': qdata.get('feedback', '')
                         }
 
+                    # Get page info from input copy if available
+                    input_copy = copies_by_index.get(copy_index, {})
+                    pdf_start_page = input_copy.get('start_page')
+                    pdf_end_page = input_copy.get('end_page')
+
                     # In batch mode, all input images are shared across detected copies
                     # (the LLM sees all pages and detects students from them)
                     copies_results.append(BatchCopyResult(
@@ -324,7 +342,9 @@ class BatchGrader:
                         student_name=student_name,
                         questions=questions,
                         overall_feedback=copy_data.get('overall_feedback', ''),
-                        image_paths=all_input_images  # All copies see all images
+                        image_paths=all_input_images,  # All copies see all images
+                        pdf_start_page=pdf_start_page,
+                        pdf_end_page=pdf_end_page
                     ))
 
                 # Parse patterns
@@ -472,6 +492,8 @@ class Disagreement:
     max_points: float  # Frozen barème (from pre-analysis)
     image_paths: List[str]  # Paths to the copy images
     disagreement_type: str = "grade"  # "grade", "reading", or combination
+    pdf_start_page: Optional[int] = None  # Page de début dans le PDF (1-based)
+    pdf_end_page: Optional[int] = None    # Page de fin dans le PDF (1-based)
 
 
 def detect_disagreements(
@@ -480,10 +502,14 @@ def detect_disagreements(
     llm1_name: str,
     llm2_name: str,
     copies_data: List[Dict[str, Any]],
-    threshold: Optional[float] = None
+    threshold: Optional[float] = None,
+    pdf_page_count: Optional[int] = None
 ) -> List[Disagreement]:
     """
     Detect disagreements between two LLM batch results.
+
+    Uses page-based matching when available (matches copies by overlapping
+    page ranges), with fallback to index-based matching.
 
     Args:
         llm1_result: First LLM's batch result
@@ -492,31 +518,60 @@ def detect_disagreements(
         llm2_name: Name of second LLM
         copies_data: Original copies data with image paths
         threshold: Minimum difference as percentage of max_points (default from settings)
+        pdf_page_count: Total pages in PDF (for validation logging)
 
     Returns:
         List of Disagreement objects
     """
+    from utils.page_matching import match_with_fallback, compare_llm_detections
+
     if threshold is None:
         threshold = get_settings().grade_agreement_threshold
 
+    # 1. VALIDATION: Log warnings if detections have issues
+    if pdf_page_count:
+        comparison = compare_llm_detections(
+            llm1_result.copies, llm2_result.copies, pdf_page_count
+        )
+        if comparison['has_issues']:
+            for w in comparison['llm1_warnings']:
+                logger.warning(f"LLM1 detection: {w}")
+            for w in comparison['llm2_warnings']:
+                logger.warning(f"LLM2 detection: {w}")
+            if comparison['copy_count_mismatch']:
+                logger.warning(
+                    f"Copy count mismatch: LLM1={comparison['llm1_copy_count']}, "
+                    f"LLM2={comparison['llm2_copy_count']}"
+                )
+
+    # 2. MATCHING: Use page-based matching with fallback to index
+    match_result = match_with_fallback(llm1_result.copies, llm2_result.copies)
+    logger.info(
+        f"Matching method: {match_result.match_method}, "
+        f"matched: {len(match_result.matches)}, "
+        f"LLM1 unmatched: {len(match_result.llm1_unmatched)}, "
+        f"LLM2 unmatched: {len(match_result.llm2_unmatched)}"
+    )
+
+    # 3. COMPARISON: Find disagreements among matched copies
     disagreements = []
 
-    # Build lookup for LLM2 results
-    llm2_copies = {c.copy_index: c for c in llm2_result.copies}
+    # Build lookup for copies_data by copy_index
+    copies_data_by_idx = {c['copy_index']: c for c in copies_data}
 
-    for llm1_copy in llm1_result.copies:
+    for match in match_result.matches:
+        llm1_copy = match['llm1_copy']
+        llm2_copy = match['llm2_copy']
         copy_idx = llm1_copy.copy_index
-        llm2_copy = llm2_copies.get(copy_idx)
-
-        if not llm2_copy:
-            continue
 
         # Get student name (prefer LLM1, fallback to LLM2)
         student_name = llm1_copy.student_name or llm2_copy.student_name or f"Élève {copy_idx}"
 
-        # Get image paths for this copy
-        copy_data = next((c for c in copies_data if c['copy_index'] == copy_idx), None)
+        # Get image paths and page info for this copy
+        copy_data = copies_data_by_idx.get(copy_idx)
         image_paths = copy_data.get('image_paths', []) if copy_data else []
+        pdf_start_page = copy_data.get('start_page') if copy_data else None
+        pdf_end_page = copy_data.get('end_page') if copy_data else None
 
         # Check each question
         for qid, q1_data in llm1_copy.questions.items():
@@ -534,9 +589,9 @@ def detect_disagreements(
             # Use relative threshold (percentage of max_points)
             relative_threshold = max_points * threshold
 
-            # Get readings
-            reading1 = q1_data.get('student_answer_read', '').strip().lower()
-            reading2 = q2_data.get('student_answer_read', '').strip().lower()
+            # Get readings (handle None values with 'or')
+            reading1 = (q1_data.get('student_answer_read') or '').strip().lower()
+            reading2 = (q2_data.get('student_answer_read') or '').strip().lower()
 
             # Detect reading disagreement (significant difference, not just case/whitespace)
             reading_disagreement = False
@@ -579,7 +634,9 @@ def detect_disagreements(
                     difference=diff,
                     max_points=max_points,
                     image_paths=image_paths,
-                    disagreement_type=disp_type
+                    disagreement_type=disp_type,
+                    pdf_start_page=pdf_start_page,
+                    pdf_end_page=pdf_end_page
                 ))
 
     return disagreements
@@ -1709,171 +1766,163 @@ def _parse_student_name_ultimatum_response(raw_response: str) -> Dict[int, Dict]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CONTEXT CACHING FOR VERIFICATION/ULTIMATUM (NO CHAT HISTORY)
+# IMPLICIT CACHING FOR VERIFICATION/ULTIMATUM
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Minimum tokens required for Gemini context caching
-MIN_CACHE_TOKENS = 2048
+# Gemini 2.5 implicit caching minimum tokens
+# Flash: 1,024 tokens | Pro: 2,048 tokens
+MIN_IMPLICIT_CACHE_TOKENS_FLASH = 1024
+MIN_IMPLICIT_CACHE_TOKENS_PRO = 2048
 
 
 class CacheManager:
     """
-    Manages context caching for verification/ultimatum phases.
+    Manages implicit caching for verification/ultimatum phases.
 
-    Uses generate_content + cache instead of Chat API to avoid re-sending
-    conversation history on each call. This saves ~50% tokens on verification
-    and ultimatum phases.
+    Uses Gemini 2.5's implicit caching feature which automatically caches
+    common prefixes in API requests. No explicit cache creation needed.
 
-    The key insight: verification and ultimatum prompts are SELF-CONTAINED.
-    They include all necessary context (disagreements, readings, reasoning).
-    No need for "memory" of previous conversation turns.
+    How it works:
+    - Gemini automatically caches when requests share the same prefix
+    - Minimum tokens: 1,024 (Flash) or 2,048 (Pro)
+    - Cost savings: ~75% on cached tokens
+    - TTL: System-managed (typically 5-10 minutes)
 
-    Flow:
-    1. Create cached context(s) with system prompt + images
-    2. Verification: generate_with_cache() - LLM sees cached content
-    3. Ultimatum: generate_with_cache() - LLM sees cached content (independent)
-
-    Benefits vs Chat API:
-    - Chat API re-sends entire history on each call (wasteful)
-    - generate_with_cache only sends new prompt + cache reference
-    - ~50% token savings on verification/ultimatum phases
+    Best practices:
+    - Keep stable content (system prompt + images) at the START
+    - Add dynamic content (questions) at the END
+    - Send requests within short time windows for cache hits
     """
 
     def __init__(self, providers: List[Tuple[str, Any]], cache_mode: str = "shared"):
         """
-        Initialize CacheManager.
+        Initialize CacheManager for implicit caching.
 
         Args:
             providers: List of (name, provider) tuples
-            cache_mode: "shared" for batch mode (ONE cache for ALL copies),
-                       "per_copy" for individual mode (ONE cache PER copy)
+            cache_mode: Ignored (kept for backward compatibility)
         """
         self.providers = providers
         self.cache_mode = cache_mode
-        # Cache IDs: {provider_name: {session_id: cache_id}} or {provider_name: {"shared": cache_id}}
-        self.caches_by_provider: Dict[str, Dict[str, str]] = {name: {} for name, _ in providers}
-        self._caching_supported: Dict[str, bool] = {}
+        # Store images by copy for building prompts
         self._images_by_copy: Dict[int, List[str]] = {}
-        self._initial_prompt: str = ""
-
-    def _check_caching_support(self, provider_name: str, provider: Any) -> bool:
-        if provider_name not in self._caching_supported:
-            self._caching_supported[provider_name] = provider.supports_context_caching()
-        return self._caching_supported[provider_name]
+        # Store the common prefix (system prompt + images)
+        self._prefix_content: Dict[int, Tuple[str, List[str]]] = {}  # copy_idx -> (prompt, images)
+        # Track cache statistics
+        self._cache_stats: Dict[str, Any] = {
+            "calls": 0,              # Total API calls made
+            "cached_tokens": 0,      # Total tokens served from cache
+            "total_tokens": 0,       # Total tokens processed
+            "estimated_savings": 0,  # Estimated token savings (75% of cached)
+        }
 
     async def create_sessions(
         self,
         copies_data: List[Dict[str, Any]],
-        initial_prompt: str
+        questions: Dict[str, Dict[str, Any]] = None,
+        language: str = "fr",
+        initial_prompt: str = None
     ):
         """
-        Create cached context(s) - no chat sessions needed.
+        Prepare prefix content for implicit caching.
 
-        In "shared" mode: ONE cache for ALL copies
-        In "per_copy" mode: ONE cache PER copy (if large enough)
+        Builds and stores a common prefix (role + rules + barème) that will be
+        shared across initial grading, verification, and ultimatum phases.
+        This enables Gemini's implicit caching to reduce token costs by ~75%.
 
         Args:
             copies_data: List with 'copy_index' and 'image_paths'
-            initial_prompt: The batch grading prompt (will be cached)
+            questions: Dict of {question_id: {text, criteria, max_points}}
+                       Required to build the common prefix for caching.
+            language: Language for prompts (default: "fr")
+            initial_prompt: DEPRECATED - kept for backward compatibility.
+                           If provided without questions, uses this as prefix.
         """
-        self._initial_prompt = initial_prompt
+        # Build common prefix from questions if provided
+        if questions:
+            common_prefix = build_common_prefix(questions, language)
+            prefix_chars = len(common_prefix)
+            logger.info(f"Built common prefix for caching: {prefix_chars} chars (~{prefix_chars // 4} tokens)")
+        elif initial_prompt:
+            # Backward compatibility: use provided prompt as prefix
+            common_prefix = initial_prompt
+            logger.info("Using provided initial_prompt as prefix (backward compatibility)")
+        else:
+            # No prefix available
+            common_prefix = ""
+            logger.warning("No questions or initial_prompt provided - caching disabled")
 
-        # Store images by copy
+        # Store images by copy and prefix content
         for copy_data in copies_data:
             copy_idx = copy_data.get('copy_index', 0)
             images = copy_data.get('image_paths', [])
             self._images_by_copy[copy_idx] = images
+            # Store prefix for this copy
+            self._prefix_content[copy_idx] = (common_prefix, images)
 
-        if self.cache_mode == "shared":
-            await self._create_shared_cache(copies_data, initial_prompt)
+        # Log setup info
+        total_images = sum(len(imgs) for imgs in self._images_by_copy.values())
+        prompt_chars = len(common_prefix) if common_prefix else 0
+        estimated_tokens = (prompt_chars // 4) + (total_images * 258)
+
+        # Determine minimum based on model
+        model_name = self.providers[0][1].vision_model if self.providers else ""
+        if "flash" in model_name.lower():
+            min_tokens = MIN_IMPLICIT_CACHE_TOKENS_FLASH
         else:
-            await self._create_per_copy_cache(copies_data, initial_prompt)
+            min_tokens = MIN_IMPLICIT_CACHE_TOKENS_PRO
 
-    async def _create_shared_cache(self, copies_data: List[Dict[str, Any]], initial_prompt: str):
-        """Create ONE shared cache for all copies (batch mode)."""
+        logger.info(
+            f"Implicit caching ready: {len(self._images_by_copy)} copies, "
+            f"{total_images} images, ~{estimated_tokens} tokens "
+            f"(min {min_tokens} for cache activation)"
+        )
 
-        # Collect ALL images from ALL copies
-        all_images = []
-        for copy_data in copies_data:
-            all_images.extend(copy_data.get('image_paths', []))
+        if estimated_tokens >= min_tokens:
+            logger.info(f"✓ Prefix content should trigger implicit caching (~75% token savings)")
+        else:
+            logger.info(
+                f"ℹ Content below cache threshold - requests will use regular pricing. "
+                f"Add more content for automatic caching."
+            )
 
-        # Create ONE shared cache per provider
-        for name, provider in self.providers:
-            caching_ok = self._check_caching_support(name, provider)
-
-            if caching_ok:
-                cache_id = provider.create_cached_context(
-                    system_prompt=initial_prompt,
-                    images=all_images,
-                    ttl_seconds=300  # 5 min TTL (enough for verification + ultimatum)
-                )
-                if cache_id:
-                    self.caches_by_provider[name]["shared"] = cache_id
-                    logger.info(f"Created shared cache for {name} ({len(all_images)} images)")
-
-    async def _create_per_copy_cache(self, copies_data: List[Dict[str, Any]], initial_prompt: str):
-        """Create ONE cache PER copy (individual mode)."""
-        for copy_data in copies_data:
-            copy_idx = copy_data.get('copy_index', 0)
-            images = copy_data.get('image_paths', [])
-            session_id = f"copy_{copy_idx}"
-
-            for name, provider in self.providers:
-                if self._check_caching_support(name, provider):
-                    # Try to create cache for this copy only
-                    cache_id = provider.create_cached_context(
-                        system_prompt=initial_prompt,
-                        images=images,
-                        ttl_seconds=300  # 5 min TTL (enough for verification + ultimatum)
-                    )
-                    if cache_id:
-                        self.caches_by_provider[name][session_id] = cache_id
-                        logger.info(f"Created per-copy cache for {name}/{session_id}")
-
-    async def generate_with_cache(
+    async def generate_with_prefix(
         self,
         provider_name: str,
         provider: Any,
-        prompt: str,
-        images: List[str] = None,
+        prefix_prompt: str,
+        new_prompt: str,
+        images: List[str],
         session_id: str = None
-    ) -> Optional[str]:
+    ) -> Tuple[Optional[str], Dict[str, int]]:
         """
-        Generate using cached context.
+        Generate using prefix + new prompt for implicit caching.
+
+        Structure: [PREFIX: system prompt + images] + [NEW: specific question]
 
         Args:
             provider_name: Name of the provider
             provider: Provider instance
-            prompt: The prompt to send
-            images: Optional additional images (not in cache)
-            session_id: Optional session ID for per-copy cache lookup
+            prefix_prompt: The stable prefix (system prompt)
+            new_prompt: The dynamic part (specific question)
+            images: Images to include in prefix
+            session_id: Session ID for logging
 
         Returns:
-            Response text or None if failed
+            Tuple of (response text, usage stats dict)
         """
-        # Get cache ID (try session-specific first, then shared)
-        cache_id = None
-        caches = self.caches_by_provider.get(provider_name, {})
+        # Build full prompt with prefix first, then new content
+        full_prompt = f"{prefix_prompt}\n\n{new_prompt}"
 
-        if session_id and session_id in caches:
-            cache_id = caches[session_id]
-        elif "shared" in caches:
-            cache_id = caches["shared"]
+        # Make the API call - implicit caching will work if prefix matches previous calls
+        response = await _call_provider_vision(provider, full_prompt, images)
 
-        if cache_id:
-            try:
-                return provider.generate_with_cache(cache_id, prompt, images)
-            except Exception as e:
-                logger.warning(f"generate_with_cache failed for {provider_name}: {e}")
+        # Try to extract cache usage info from response
+        cache_stats = {"cached_tokens": 0, "total_tokens": 0}
+        # Note: The response object might have usage_metadata with cached_content_token_count
+        # This depends on the provider implementation
 
-        # Fallback: regular call with all images
-        if session_id:
-            copy_idx = int(session_id.replace("copy_", ""))
-            all_images = self._images_by_copy.get(copy_idx, [])
-        else:
-            all_images = images or []
-
-        return await _call_provider_vision(provider, prompt, all_images)
+        return response, cache_stats
 
     async def generate_to_all_providers(
         self,
@@ -1883,13 +1932,13 @@ class CacheManager:
         session_id: str = None
     ) -> Tuple[Optional[str], Optional[str]]:
         """
-        Generate with both providers using cached context.
+        Generate with both providers using implicit caching.
 
         Args:
-            prompt1: Prompt for first provider
-            prompt2: Prompt for second provider
-            images: Optional additional images
-            session_id: Optional session ID for per-copy cache lookup
+            prompt1: Full prompt for first provider (includes prefix)
+            prompt2: Full prompt for second provider (includes prefix)
+            images: Images for the prefix
+            session_id: Session ID for copy lookup
 
         Returns:
             Tuple of (response1, response2)
@@ -1897,17 +1946,44 @@ class CacheManager:
         name1, provider1 = self.providers[0]
         name2, provider2 = self.providers[1]
 
-        return await asyncio.gather(
-            self.generate_with_cache(name1, provider1, prompt1, images, session_id),
-            self.generate_with_cache(name2, provider2, prompt2, images, session_id)
+        # Get images for this copy if session_id provided
+        if session_id and session_id.startswith("copy_"):
+            copy_idx = int(session_id.replace("copy_", ""))
+            images = self._images_by_copy.get(copy_idx, images or [])
+
+        # Make parallel calls - implicit caching will kick in if prefix matches
+        results = await asyncio.gather(
+            _call_provider_vision(provider1, prompt1, images),
+            _call_provider_vision(provider2, prompt2, images)
         )
+
+        # Track cache statistics (estimate based on prefix reuse)
+        # Each successful call with common prefix should benefit from caching
+        self._cache_stats["calls"] += 2  # Two providers called
+
+        # Estimate tokens: prefix length + images
+        common_prefix, _ = self._prefix_content.get(
+            int(session_id.replace("copy_", "")) if session_id and session_id.startswith("copy_") else 0,
+            ("", [])
+        )
+        if common_prefix:
+            prefix_tokens = len(common_prefix) // 4
+            image_tokens = len(images) * 258 if images else 0
+            cached_tokens = prefix_tokens + image_tokens
+            # Assume ~75% savings on cached tokens for subsequent calls
+            self._cache_stats["cached_tokens"] += cached_tokens * 2
+            self._cache_stats["total_tokens"] += cached_tokens * 2
+            self._cache_stats["estimated_savings"] += int(cached_tokens * 2 * 0.75)
+            logger.debug(f"Cache estimate for {session_id}: prefix={prefix_tokens} tokens, images={image_tokens} tokens, estimated savings={int(cached_tokens * 2 * 0.75)}")
+
+        return results[0], results[1]
 
     async def run_dual_llm_verification_with_cache(
         self,
         disagreements: List[Disagreement],
         language: str = "fr"
     ) -> Dict[str, Dict[str, Any]]:
-        """Run verification using cached context (not chat)."""
+        """Run verification phase using implicit caching."""
         if not disagreements:
             return {}
 
@@ -1923,23 +1999,29 @@ class CacheManager:
             else:
                 by_copy[d['copy_index']].append(d)
 
+        # Debug: show what's stored
+        logger.debug(f"Verification: _prefix_content keys: {list(self._prefix_content.keys())[:10]}...")
+        logger.debug(f"Verification: by_copy keys: {list(by_copy.keys())[:10]}...")
+
         for copy_idx, copy_disagreements in by_copy.items():
             session_id = f"copy_{copy_idx}"
             images = _collect_disagreement_images(copy_disagreements, copy_filter=copy_idx)
 
-            # Warn if no cache (images will cost tokens)
-            has_cache = any(
-                session_id in self.caches_by_provider.get(name, {}) or "shared" in self.caches_by_provider.get(name, {})
-                for name in [llm1_name, llm2_name]
-            )
-            if not has_cache:
-                logger.warning(f"No cache for {session_id} - images will use tokens")
+            # Get the stored common prefix for this copy
+            common_prefix, stored_images = self._prefix_content.get(copy_idx, ("", images))
+            if not common_prefix:
+                logger.warning(f"No common prefix stored for copy {copy_idx}, caching may not work")
+            else:
+                logger.debug(f"Using common prefix for copy {copy_idx}, length={len(common_prefix)}")
 
+            # Build prompts WITH the common prefix for implicit caching
             prompt1 = build_dual_llm_verification_prompt(
-                copy_disagreements, llm1_name, llm2_name, True, language
+                copy_disagreements, llm1_name, llm2_name, True, language,
+                common_prefix=common_prefix if common_prefix else None
             )
             prompt2 = build_dual_llm_verification_prompt(
-                copy_disagreements, llm2_name, llm1_name, True, language
+                copy_disagreements, llm2_name, llm1_name, True, language,
+                common_prefix=common_prefix if common_prefix else None
             )
 
             response1, response2 = await self.generate_to_all_providers(prompt1, prompt2, images, session_id)
@@ -1952,7 +2034,7 @@ class CacheManager:
                 else:
                     key = f"copy_{d['copy_index']}_{d['question_id']}"
                 results[key] = _resolve_verification_grade(d, llm1_q, llm2_q, key)
-                results[key]['used_cache'] = has_cache
+                results[key]['used_cache'] = bool(common_prefix)  # True if prefix was used
 
         return results
 
@@ -1961,7 +2043,7 @@ class CacheManager:
         persistent_disagreements: List[Dict[str, Any]],
         language: str = "fr"
     ) -> Dict[str, Dict[str, Any]]:
-        """Run ultimatum using cached context (not chat, no history)."""
+        """Run ultimatum phase using implicit caching."""
         if not persistent_disagreements:
             return {}
 
@@ -1981,18 +2063,21 @@ class CacheManager:
             session_id = f"copy_{copy_idx}"
             images = _collect_disagreement_images(copy_disagreements, copy_filter=copy_idx)
 
-            # Warn if no cache (images will cost tokens)
-            has_cache = any(
-                session_id in self.caches_by_provider.get(name, {}) or "shared" in self.caches_by_provider.get(name, {})
-                for name in [llm1_name, llm2_name]
+            # Get the stored common prefix for this copy
+            common_prefix, stored_images = self._prefix_content.get(copy_idx, ("", images))
+            if not common_prefix:
+                logger.warning(f"No common prefix stored for copy {copy_idx}, caching may not work")
+
+            # Build prompts WITH the common prefix for implicit caching
+            prompt1 = build_ultimatum_prompt(
+                copy_disagreements, llm1_name, llm2_name, language,
+                common_prefix=common_prefix if common_prefix else None
             )
-            if not has_cache:
-                logger.warning(f"No cache for {session_id} - images will use tokens")
+            prompt2 = build_ultimatum_prompt(
+                copy_disagreements, llm2_name, llm1_name, language,
+                common_prefix=common_prefix if common_prefix else None
+            )
 
-            prompt1 = build_ultimatum_prompt(copy_disagreements, llm1_name, llm2_name, language)
-            prompt2 = build_ultimatum_prompt(copy_disagreements, llm2_name, llm1_name, language)
-
-            # Independent call - no chat history (saves tokens)
             response1, response2 = await self.generate_to_all_providers(prompt1, prompt2, images, session_id)
 
             llm1_results, llm2_results = _parse_dual_responses(response1, response2, "ultimatum")
@@ -2005,36 +2090,407 @@ class CacheManager:
             for d in copy_disagreements:
                 key = f"copy_{d['copy_index']}_{d['question_id']}"
                 results[key] = _resolve_ultimatum_grade(d, llm1_results, llm2_results, key)
-                results[key]['used_cache'] = has_cache
+                results[key]['used_cache'] = bool(common_prefix)  # True if prefix was used
 
         results['_parse_status'] = {'llm1_parse_failed': llm1_parse_failed, 'llm2_parse_failed': llm2_parse_failed}
         return results
 
     def clear(self):
-        """Clear and delete all cached contexts from providers."""
-        # Delete caches from each provider
-        for provider_name, cache_dict in self.caches_by_provider.items():
-            # Find the provider instance
+        """Clear stored content and log cache statistics."""
+        self._images_by_copy.clear()
+        self._prefix_content.clear()
+
+        # Log final cache statistics
+        stats = self._cache_stats
+        if stats["calls"] > 0:
+            savings_pct = (stats["estimated_savings"] / stats["total_tokens"] * 100) if stats["total_tokens"] > 0 else 0
+            logger.info(
+                f"Cache statistics: {stats['calls']} calls, "
+                f"{stats['cached_tokens']}/{stats['total_tokens']} tokens cached "
+                f"(~{savings_pct:.0f}% savings, ~{stats['estimated_savings']} tokens saved)"
+            )
+
+
+class ExplicitCacheManager:
+    """
+    Manages explicit Gemini caching for batch grading.
+
+    Unlike implicit caching (CacheManager), explicit caching creates a
+    CachedContent resource that is shared across all verification/ultimatum
+    calls for ALL copies, not just the first one.
+
+    This solves the problem where implicit caching only works for the first
+    copy (which sends images [1, 2, ..., N]) but not subsequent copies
+    (which send different image ranges like [3, 4] or [5, 6]).
+
+    Flow:
+    1. Create cache with ALL images + barème → cache_id
+    2. Verification/Ultimatum use cache_id + specific prompt
+    3. Delete cache at the end
+
+    Cost savings: ~50% reduction in input token costs
+    """
+
+    def __init__(self, providers: List[Tuple[str, Any]]):
+        """
+        Initialize ExplicitCacheManager.
+
+        Args:
+            providers: List of (name, provider) tuples
+        """
+        self.providers = providers
+        self._cache_by_provider: Dict[str, str] = {}  # provider_name -> cache_id
+        self._all_images: List[str] = []
+        self._system_prompt: str = ""
+        self._cache_stats: Dict[str, Any] = {
+            "cache_created": False,
+            "cache_hits": 0,
+            "cache_misses": 0,
+            "cached_tokens": 0,
+        }
+
+    async def create_cache(
+        self,
+        images: List[str],
+        system_prompt: str,
+        ttl_seconds: int = 1800
+    ) -> bool:
+        """
+        Create explicit cache with all images for each provider.
+
+        Args:
+            images: List of all image paths to cache
+            system_prompt: System prompt (barème, rules, etc.)
+            ttl_seconds: Cache TTL (default: 30 minutes)
+
+        Returns:
+            True if cache was created for at least one provider
+        """
+        self._all_images = images
+        self._system_prompt = system_prompt
+
+        for name, provider in self.providers:
+            if hasattr(provider, 'create_cached_context'):
+                try:
+                    cache_id = await asyncio.to_thread(
+                        provider.create_cached_context,
+                        system_prompt=system_prompt,
+                        images=images,
+                        ttl_seconds=ttl_seconds
+                    )
+                    if cache_id:
+                        self._cache_by_provider[name] = cache_id
+                        self._cache_stats["cache_created"] = True
+                        logger.info(f"Created explicit cache for {name}: {cache_id}")
+                    else:
+                        logger.warning(f"Failed to create explicit cache for {name} (content too small?)")
+                except Exception as e:
+                    logger.warning(f"Failed to create explicit cache for {name}: {e}")
+
+        if self._cache_by_provider:
+            logger.info(
+                f"Explicit cache ready for {len(self._cache_by_provider)} providers, "
+                f"{len(images)} images, ~{len(system_prompt)//4 + len(images)*258} tokens"
+            )
+            return True
+        else:
+            logger.warning("Explicit cache creation failed for all providers")
+            return False
+
+    async def generate_with_cache(
+        self,
+        provider_name: str,
+        prompt: str,
+        images: List[str] = None
+    ) -> Optional[str]:
+        """
+        Generate using cached context.
+
+        Args:
+            provider_name: Name of the provider to use
+            prompt: User prompt (specific question)
+            images: Optional additional images (usually None since all are cached)
+
+        Returns:
+            Response text, or None if cache not available
+        """
+        cache_id = self._cache_by_provider.get(provider_name)
+        if not cache_id:
+            self._cache_stats["cache_misses"] += 1
+            logger.debug(f"No cache available for {provider_name}")
+            return None
+
+        # Find provider
+        provider = None
+        for name, p in self.providers:
+            if name == provider_name:
+                provider = p
+                break
+
+        if not provider:
+            logger.warning(f"Provider {provider_name} not found")
+            return None
+
+        try:
+            # Use generate_with_cache method
+            if hasattr(provider, 'generate_with_cache'):
+                response = await asyncio.to_thread(
+                    provider.generate_with_cache,
+                    cache_id,
+                    prompt,
+                    images
+                )
+                self._cache_stats["cache_hits"] += 1
+                return response
+            else:
+                logger.warning(f"Provider {provider_name} doesn't support generate_with_cache")
+                return None
+        except Exception as e:
+            logger.warning(f"Cache generation failed for {provider_name}: {e}")
+            self._cache_stats["cache_misses"] += 1
+            return None
+
+    async def generate_to_all_providers(
+        self,
+        prompt1: str,
+        prompt2: str,
+        images: List[str] = None
+    ) -> Tuple[Optional[str], Optional[str]]:
+        """
+        Generate with both providers using explicit cache.
+
+        Args:
+            prompt1: Prompt for first provider
+            prompt2: Prompt for second provider
+            images: Optional additional images (usually None)
+
+        Returns:
+            Tuple of (response1, response2)
+        """
+        name1, _ = self.providers[0]
+        name2, _ = self.providers[1]
+
+        results = await asyncio.gather(
+            self.generate_with_cache(name1, prompt1, images),
+            self.generate_with_cache(name2, prompt2, images)
+        )
+
+        return results[0], results[1]
+
+    async def cleanup(self):
+        """Delete all caches from Gemini servers."""
+        for name, cache_id in self._cache_by_provider.items():
+            # Find provider
             provider = None
-            for name, prov in self.providers:
-                if name == provider_name:
-                    provider = prov
+            for pname, p in self.providers:
+                if pname == name:
+                    provider = p
                     break
 
-            if provider:
-                # Delete each cache from the provider's server
-                for session_id, cache_id in cache_dict.items():
-                    if cache_id:
-                        try:
-                            provider.delete_cached_context(cache_id)
-                        except Exception as e:
-                            logger.warning(f"Failed to delete cache {cache_id}: {e}")
+            if provider and hasattr(provider, 'delete_cached_context'):
+                try:
+                    await asyncio.to_thread(provider.delete_cached_context, cache_id)
+                    logger.info(f"Deleted explicit cache for {name}: {cache_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete cache for {name}: {e} (TTL will expire)")
 
-            # Clear local dict
-            cache_dict.clear()
+        self._cache_by_provider.clear()
 
-        self._images_by_copy.clear()
+        # Log stats
+        stats = self._cache_stats
+        if stats["cache_created"]:
+            logger.info(
+                f"Explicit cache stats: {stats['cache_hits']} hits, "
+                f"{stats['cache_misses']} misses"
+            )
+
+    @property
+    def is_active(self) -> bool:
+        """Check if explicit caching is active."""
+        return len(self._cache_by_provider) > 0
+
+    async def run_dual_llm_verification_with_cache(
+        self,
+        disagreements: List[Disagreement],
+        language: str = "fr"
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Run verification phase using explicit caching.
+
+        Unlike CacheManager, this uses a SINGLE shared cache for all copies,
+        not per-copy prefixes. The cached content already contains all images
+        and the barème, so prompts only need to include the specific disagreement
+        details.
+
+        Args:
+            disagreements: List of Disagreement objects
+            language: Language for prompts
+
+        Returns:
+            Dict mapping "copy_{idx}_{qid}" -> verification results
+        """
+        if not disagreements:
+            return {}
+
+        if not self.is_active:
+            logger.warning("Explicit cache not active, cannot run verification")
+            return {}
+
+        llm1_name, provider1 = self.providers[0]
+        llm2_name, provider2 = self.providers[1]
+        results = {}
+
+        from collections import defaultdict
+        by_copy = defaultdict(list)
+        for d in disagreements:
+            if isinstance(d, Disagreement):
+                by_copy[d.copy_index].append(d)
+            else:
+                by_copy[d['copy_index']].append(d)
+
+        for copy_idx, copy_disagreements in by_copy.items():
+            # Collect images for this copy (for fallback)
+            copy_images = _collect_disagreement_images(copy_disagreements, copy_filter=copy_idx)
+
+            # Build prompts WITHOUT common prefix (it's in the cached content)
+            # The cache already has: system prompt + barème + ALL images
+            prompt1 = build_dual_llm_verification_prompt(
+                copy_disagreements, llm1_name, llm2_name, True, language,
+                common_prefix=None  # No prefix - using explicit cache
+            )
+            prompt2 = build_dual_llm_verification_prompt(
+                copy_disagreements, llm2_name, llm1_name, True, language,
+                common_prefix=None  # No prefix - using explicit cache
+            )
+
+            # Try explicit cache first
+            response1, response2 = await self.generate_to_all_providers(
+                prompt1, prompt2, images=None
+            )
+
+            # Fallback to regular API calls if cache failed
+            if response1 is None or response2 is None:
+                logger.warning(f"Explicit cache miss for copy {copy_idx}, falling back to regular API")
+                _, provider1 = self.providers[0]
+                _, provider2 = self.providers[1]
+                if response1 is None:
+                    response1 = await asyncio.to_thread(
+                        provider1.call_vision,
+                        prompt1,
+                        copy_images
+                    )
+                if response2 is None:
+                    response2 = await asyncio.to_thread(
+                        provider2.call_vision,
+                        prompt2,
+                        copy_images
+                    )
+
+            (llm1_q, _), (llm2_q, _) = _parse_dual_responses(response1, response2, "verification")
+
+            for d in copy_disagreements:
+                if isinstance(d, Disagreement):
+                    key = f"copy_{d.copy_index}_{d.question_id}"
+                else:
+                    key = f"copy_{d['copy_index']}_{d['question_id']}"
+                results[key] = _resolve_verification_grade(d, llm1_q, llm2_q, key)
+                results[key]['used_explicit_cache'] = response1 is not None and response2 is not None
+
+        return results
+
+    async def run_dual_llm_ultimatum_with_cache(
+        self,
+        persistent_disagreements: List[Dict[str, Any]],
+        language: str = "fr"
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Run ultimatum phase using explicit caching.
+
+        Args:
+            persistent_disagreements: List of disagreement dicts
+            language: Language for prompts
+
+        Returns:
+            Dict mapping "copy_{idx}_{qid}" -> ultimatum results
+        """
+        if not persistent_disagreements:
+            return {}
+
+        if not self.is_active:
+            logger.warning("Explicit cache not active, cannot run ultimatum")
+            return {}
+
+        llm1_name, _ = self.providers[0]
+        llm2_name, _ = self.providers[1]
+        results = {}
+
+        from collections import defaultdict
+        by_copy = defaultdict(list)
+        for d in persistent_disagreements:
+            by_copy[d['copy_index']].append(d)
+
+        llm1_parse_failed = False
+        llm2_parse_failed = False
+
+        for copy_idx, copy_disagreements in by_copy.items():
+            # Collect images for this copy (for fallback)
+            copy_images = _collect_disagreement_images(copy_disagreements, copy_filter=copy_idx)
+
+            # Build prompts WITHOUT common prefix (it's in the cached content)
+            prompt1 = build_ultimatum_prompt(
+                copy_disagreements, llm1_name, llm2_name, language,
+                common_prefix=None  # No prefix - using explicit cache
+            )
+            prompt2 = build_ultimatum_prompt(
+                copy_disagreements, llm2_name, llm1_name, language,
+                common_prefix=None  # No prefix - using explicit cache
+            )
+
+            # Try explicit cache first
+            response1, response2 = await self.generate_to_all_providers(
+                prompt1, prompt2, images=None
+            )
+
+            # Fallback to regular API calls if cache failed
+            if response1 is None or response2 is None:
+                logger.warning(f"Explicit cache miss for copy {copy_idx} in ultimatum, falling back to regular API")
+                _, provider1 = self.providers[0]
+                _, provider2 = self.providers[1]
+                if response1 is None:
+                    response1 = await asyncio.to_thread(
+                        provider1.call_vision,
+                        prompt1,
+                        copy_images
+                    )
+                if response2 is None:
+                    response2 = await asyncio.to_thread(
+                        provider2.call_vision,
+                        prompt2,
+                        copy_images
+                    )
+
+            llm1_results, llm2_results = _parse_dual_responses(response1, response2, "ultimatum")
+
+            if len(llm1_results) == 0 and response1:
+                llm1_parse_failed = True
+            if len(llm2_results) == 0 and response2:
+                llm2_parse_failed = True
+
+            for d in copy_disagreements:
+                key = f"copy_{d['copy_index']}_{d['question_id']}"
+                results[key] = _resolve_ultimatum_grade(d, llm1_results, llm2_results, key)
+                results[key]['used_explicit_cache'] = response1 is not None and response2 is not None
+
+        results['_parse_status'] = {'llm1_parse_failed': llm1_parse_failed, 'llm2_parse_failed': llm2_parse_failed}
+        return results
+
+    def clear(self):
+        """Clear cache (alias for cleanup for compatibility with CacheManager)."""
+        # Note: cleanup is async, but clear is sync for CacheManager compatibility
+        # Just clear the tracking dict, actual cleanup happens in async cleanup()
+        self._cache_by_provider.clear()
 
 
 # Backward compatibility alias
 ChatContinuationManager = CacheManager
+

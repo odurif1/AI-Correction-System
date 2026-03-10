@@ -131,7 +131,8 @@ class SinglePassGrader:
             # Fresh call with images
             response = self.provider.call_vision(
                 prompt=prompt,
-                image_path=image_paths if len(image_paths) > 1 else image_paths[0]
+                image_path=image_paths if len(image_paths) > 1 else image_paths[0],
+                response_format="json"
             )
 
             duration_ms = (time.time() - start_time) * 1000
@@ -397,7 +398,8 @@ class SinglePassGrader:
         try:
             response = self.provider.call_vision(
                 prompt=verification_prompt,
-                image_path=image_paths if len(image_paths) > 1 else image_paths[0]
+                image_path=image_paths if len(image_paths) > 1 else image_paths[0],
+                response_format="json"
             )
             duration_ms = (time.time() - start_time) * 1000
 

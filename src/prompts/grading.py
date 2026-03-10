@@ -106,13 +106,16 @@ IMPORTANT: Sois OBJECTIF et HONNÊTE.
 - Si tu n'es pas sûr, dis-le franchement (confidence bas)
 - Mieux vaut signaler un doute que de donner une note fausse
 
-FORMAT DE RÉPONSE (respecter exactement):
-GRADE: <note>/{max_points}
-CONFIDENCE: <0.0-1.0>
-UNCERTAINTY_TYPE: <none|unreadable|ambiguous|unexpected|incomplete|other>
-IF_UNCERTAIN: <pourquoi tu doutes>
-INTERNAL_REASONING: Note: <X/{max_points}>. <analyse technique: justification de la note, critères utilisés, éléments corrects/incorrects>
-STUDENT_FEEDBACK: <retour sobre et professionnel. Questions faciles: 1-5 mots. Questions difficiles: diagnostic + correction. Pas de félicitations. Max 25 mots.>"""
+FORMAT DE RÉPONSE (JSON):
+Réponds UNIQUEMENT avec un JSON valide respectant ce format exact:
+{
+  "grade": <note sur le barème (nombre)>,
+  "confidence": <0.0-1.0 (nombre)>,
+  "uncertainty_type": "<none|unreadable|ambiguous|unexpected|incomplete|other>",
+  "if_uncertain": "<pourquoi tu doutes, ou chaîne vide>",
+  "reasoning": "<analyse technique: justification de la note, critères utilisés>",
+  "student_feedback": "<retour sobre et professionnel. Max 25 mots.>"
+}"""
     return prompt
 
 
@@ -165,13 +168,16 @@ IMPORTANT: Be OBJECTIVE and HONEST.
 - If unsure, say so frankly (low confidence)
 - Better to signal doubt than give a wrong grade
 
-RESPONSE FORMAT (must follow exactly):
-GRADE: <score>/{max_points}
-CONFIDENCE: <0.0-1.0>
-UNCERTAINTY_TYPE: <none|unreadable|ambiguous|unexpected|incomplete|other>
-IF_UNCERTAIN: <why you are uncertain>
-INTERNAL_REASONING: Score: <X/{max_points}>. <technical analysis: justification of grade, criteria used, correct/incorrect elements>
-STUDENT_FEEDBACK: <sober professional feedback. Easy questions: 1-5 words. Difficult questions: diagnosis + correction. No congratulations. Max 25 words.>"""
+RESPONSE FORMAT (JSON):
+Respond ONLY with a valid JSON respecting this exact format:
+{
+  "grade": <score on scale (number)>,
+  "confidence": <0.0-1.0 (number)>,
+  "uncertainty_type": "<none|unreadable|ambiguous|unexpected|incomplete|other>",
+  "if_uncertain": "<why you are uncertain, or empty string>",
+  "reasoning": "<technical analysis: justification of grade, criteria used>",
+  "student_feedback": "<sober professional feedback. Max 25 words.>"
+}"""
     return prompt
 
 
@@ -235,14 +241,17 @@ DÉFINITION DE LA CERTITUDE:
 
 IMPORTANT: Sois OBJECTIF et HONNÊTE dans ta note et ton score de confiance.
 
-FORMAT DE RÉPONSE (respecter exactement):
-GRADE: <note>/{max_points}
-CONFIDENCE: <0.0-1.0>
-UNCERTAINTY_TYPE: <none|unreadable|ambiguous|unexpected|incomplete|other>
-IF_UNCERTAIN: <pourquoi tu doutes>
-STUDENT_ANSWER_READ: <texte exact écrit par l'élève, sans phrase introductive>
-INTERNAL_REASONING: Note: <X/{max_points}>. <analyse technique: justification de la note, critères utilisés, éléments corrects/incorrects>
-STUDENT_FEEDBACK: <retour sobre et professionnel. Questions faciles: 1-5 mots. Questions difficiles: diagnostic + correction. Pas de félicitations. Max 25 mots.>"""
+FORMAT DE RÉPONSE (JSON):
+Réponds UNIQUEMENT avec un JSON valide respectant ce format exact:
+{
+  "grade": <note sur le barème (nombre)>,
+  "confidence": <0.0-1.0 (nombre)>,
+  "uncertainty_type": "<none|unreadable|ambiguous|unexpected|incomplete|other>",
+  "if_uncertain": "<pourquoi tu doutes, ou chaîne vide>",
+  "student_answer_read": "<texte exact écrit par l'élève>",
+  "reasoning": "<analyse technique: justification de la note, critères utilisés>",
+  "student_feedback": "<retour sobre et professionnel. Max 25 mots.>"
+}"""
     else:
         return f"""Analyze this student copy and grade it.
 
@@ -267,14 +276,17 @@ CERTAINTY DEFINITION:
 
 IMPORTANT: Be OBJECTIVE and HONEST in your grade and confidence score.
 
-RESPONSE FORMAT (must follow exactly):
-GRADE: <score>/{max_points}
-CONFIDENCE: <0.0-1.0>
-UNCERTAINTY_TYPE: <none|unreadable|ambiguous|unexpected|incomplete|other>
-IF_UNCERTAIN: <why you are uncertain>
-STUDENT_ANSWER_READ: <exact text written by the student, no introductory phrase>
-INTERNAL_REASONING: Score: <X/{max_points}>. <technical analysis: justification of grade, criteria used, correct/incorrect elements>
-STUDENT_FEEDBACK: <sober professional feedback. Easy questions: 1-5 words. Difficult questions: diagnosis + correction. No congratulations. Max 25 words.>"""
+RESPONSE FORMAT (JSON):
+Respond ONLY with a valid JSON respecting this exact format:
+{
+  "grade": <score on scale (number)>,
+  "confidence": <0.0-1.0 (number)>,
+  "uncertainty_type": "<none|unreadable|ambiguous|unexpected|incomplete|other>",
+  "if_uncertain": "<why you are uncertain, or empty string>",
+  "student_answer_read": "<exact text written by the student>",
+  "reasoning": "<technical analysis: justification of grade, criteria used>",
+  "student_feedback": "<sober professional feedback. Max 25 words.>"
+}"""
 
 
 

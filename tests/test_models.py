@@ -17,7 +17,7 @@ def test_generate_id():
     id2 = generate_id()
 
     assert id1 != id2
-    assert len(id1) == 8
+    assert len(id1) == 36
 
 
 def test_copy_document():

@@ -187,8 +187,8 @@ class CLI:
             opts_parts.append(f"--parallel={options['parallel']}")
         if options.get('second_reading'):
             opts_parts.append("--second-reading")
-        if options.get('auto_detect_structure'):
-            opts_parts.append("--auto-detect-structure")
+        if not options.get('detect', True):
+            opts_parts.append("--no-detect")
         if options.get('skip_reading'):
             opts_parts.append("--skip-reading")
 
@@ -1745,3 +1745,96 @@ def create_live_progress_callback(
             await original_callback(event_type, data)
 
     return live_callback
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# PAGE MATCHING DISPLAY FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def display_detection_validation(comparison: Dict[str, Any]) -> None:
+    """
+    Display validation warnings for LLM detections BEFORE matching.
+
+    Shows issues like:
+    - Pages not covered by any copy
+    - Pages covered by multiple copies
+    - Non-existent pages referenced
+    - Copy count mismatch between LLMs
+
+    Args:
+        comparison: Dict from compare_llm_detections() with keys:
+            - llm1_valid, llm2_valid
+            - llm1_warnings, llm2_warnings
+            - llm1_copy_count, llm2_copy_count
+            - copy_count_mismatch, has_issues
+    """
+    if not comparison.get('has_issues'):
+        return
+
+    console.print()
+
+    if comparison.get('llm1_warnings'):
+        console.print("[yellow]⚠ Problèmes détection LLM1:[/yellow]")
+        for w in comparison['llm1_warnings']:
+            console.print(f"   {w}")
+
+    if comparison.get('llm2_warnings'):
+        console.print("[yellow]⚠ Problèmes détection LLM2:[/yellow]")
+        for w in comparison['llm2_warnings']:
+            console.print(f"   {w}")
+
+    if comparison.get('copy_count_mismatch'):
+        console.print(
+            f"[yellow]⚠ Nombre de copies différent: "
+            f"LLM1={comparison['llm1_copy_count']}, "
+            f"LLM2={comparison['llm2_copy_count']}[/yellow]"
+        )
+
+    console.print()
+
+
+def display_match_result(match_result) -> None:
+    """
+    Display the result of page-based matching between LLMs.
+
+    Shows:
+    - Matching method used (page_range or index_fallback)
+    - Number of matched pairs
+    - Unmatched copies from each LLM
+    - Ambiguous matches
+
+    Args:
+        match_result: PageMatchResult object with fields:
+            - matches: List of matched pairs
+            - llm1_unmatched, llm2_unmatched: Unmatched copies
+            - ambiguous_matches: Uncertain matches
+            - match_method: "page_range" or "index_fallback"
+    """
+    method_display = {
+        'page_range': '[green]par plages de pages[/green]',
+        'index_fallback': '[yellow]par index (fallback)[/yellow]'
+    }
+
+    console.print()
+    console.print(f"[bold]Matching {method_display.get(match_result.match_method, match_result.match_method)}[/bold]")
+    console.print(f"  ✓ Copies matchées: {len(match_result.matches)}")
+
+    if match_result.llm1_unmatched:
+        names = []
+        for c in match_result.llm1_unmatched:
+            name = getattr(c, 'student_name', None) or f"#{getattr(c, 'copy_index', '?')}"
+            names.append(name)
+        console.print(f"  ⚠ LLM1 uniquement: {len(match_result.llm1_unmatched)} ({', '.join(names)})")
+
+    if match_result.llm2_unmatched:
+        names = []
+        for c in match_result.llm2_unmatched:
+            name = getattr(c, 'student_name', None) or f"#{getattr(c, 'copy_index', '?')}"
+            names.append(name)
+        console.print(f"  ⚠ LLM2 uniquement: {len(match_result.llm2_unmatched)} ({', '.join(names)})")
+
+    if match_result.ambiguous_matches:
+        console.print(f"  [dim]⚖ Matchs ambigus: {len(match_result.ambiguous_matches)}[/dim]")
+
+    console.print()
+

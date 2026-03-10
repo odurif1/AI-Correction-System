@@ -1,5 +1,5 @@
 """
-Translation strings for PDF pre-analysis prompts.
+Translation strings for PDF detection prompts.
 
 Add new languages by creating a new dictionary with the same structure.
 """
@@ -9,7 +9,7 @@ Add new languages by creating a new dictionary with the same structure.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 TRANSLATIONS_FR = {
-    "pre_analysis": {
+    "detection": {
         "role": "Tu es un assistant d'analyse de documents PDF pour la correction scolaire.",
 
         # Mission
@@ -18,7 +18,8 @@ TRANSLATIONS_FR = {
         "detection_steps": [
             "TYPE DE DOCUMENT: S'agit-il de copies d'élèves, d'un sujet, ou d'un document sans rapport ?",
             "STRUCTURE: Un seul élève par PDF ou plusieurs élèves dans ce PDF ? ATTENTION: analyse TOUTES les pages!",
-            "SUJET: Le sujet est-il inclus dans le PDF ou séparé ?",
+            "PAGES PAR ÉLÈVE: Tous les élèves ont-ils le MÊME nombre de pages ? Si oui, combien ?",
+            "SUJET: Le sujet est-il inclus dans le PDF ou séparé ? Combien de pages pour le sujet ?",
             "ÉLÈVES: Combien d'élèves ? Pour chaque élève: nom, page de début, page de fin",
             "BARÈME: Quels sont les points attribués à chaque question ?",
             "LANGUE: Quelle est la langue principale du document ?",
@@ -92,7 +93,7 @@ TRANSLATIONS_FR = {
         "final_instruction": "Analyse TOUTES les pages du document et retourne ton analyse au format JSON.",
     },
 
-    "quick_analysis": {
+    "quick_detection": {
         "role": "Tu es un assistant d'analyse rapide de documents PDF.",
         "mission": "Détermine rapidement la structure de ce document PDF.",
         "page_count_label": "Nombre de pages",
@@ -101,8 +102,8 @@ TRANSLATIONS_FR = {
 
     # UI labels (for backend messages)
     "ui": {
-        "analysis_in_progress": "Analyse du PDF en cours...",
-        "analysis_complete": "Analyse terminée",
+        "detection_in_progress": "Détection du PDF en cours...",
+        "detection_complete": "Détection terminée",
         "blocking_issue_detected": "Problème bloquant détecté",
         "no_blocking_issues": "Aucun problème bloquant",
         "students_detected": "élèves détectés",
@@ -136,7 +137,7 @@ TRANSLATIONS_FR = {
 # ═══════════════════════════════════════════════════════════════════════════════
 
 TRANSLATIONS_EN = {
-    "pre_analysis": {
+    "detection": {
         "role": "You are a PDF document analysis assistant for school grading.",
 
         # Mission
@@ -208,7 +209,7 @@ TRANSLATIONS_EN = {
         "final_instruction": "Analyze the document and return your analysis in JSON format.",
     },
 
-    "quick_analysis": {
+    "quick_detection": {
         "role": "You are a quick PDF document analysis assistant.",
         "mission": "Quickly determine the structure of this PDF document.",
         "page_count_label": "Number of pages",
@@ -217,8 +218,8 @@ TRANSLATIONS_EN = {
 
     # UI labels (for backend messages)
     "ui": {
-        "analysis_in_progress": "Analyzing PDF...",
-        "analysis_complete": "Analysis complete",
+        "detection_in_progress": "Detecting PDF...",
+        "detection_complete": "Detection complete",
         "blocking_issue_detected": "Blocking issue detected",
         "no_blocking_issues": "No blocking issues",
         "students_detected": "students detected",

@@ -129,12 +129,17 @@ class OpenAIProvider(BaseProvider):
         content = [{"type": "text", "text": prompt}]
         content.extend(self._prepare_images(images))
 
-        response = self.client.chat.completions.create(
-            model=self.vision_model,
-            messages=[{"role": "user", "content": content}],
-            max_tokens=MAX_TOKENS,
-            temperature=TEMPERATURE
-        )
+        kwargs = {
+            "model": self.vision_model,
+            "messages": [{"role": "user", "content": content}],
+            "max_tokens": MAX_TOKENS,
+            "temperature": TEMPERATURE
+        }
+
+        if response_format == "json":
+            kwargs["response_format"] = {"type": "json_object"}
+
+        response = self.client.chat.completions.create(**kwargs)
 
         result = response.choices[0].message.content or ""
 

@@ -16,7 +16,8 @@ from tenacity import retry, stop_after_attempt, retry_if_exception_type, wait_ex
 
 from ai.base_provider import BaseProvider
 from config.settings import get_settings
-from config.constants import MAX_RETRIES
+from config.constants import MAX_RETRIES, GEMINI_MAX_OUTPUT_TOKENS
+from core.exceptions import OutputTruncatedError
 
 logger = logging.getLogger(__name__)
 
@@ -158,7 +159,9 @@ class GeminiProvider(BaseProvider):
         if self.mock_mode:
             return "Mock vision response"
 
-        content = [prompt]
+        # Build content with IMAGES FIRST for implicit caching
+        # Gemini caches common prefixes - images are stable across parallel calls
+        content = []
 
         # Handle multiple images (list of paths)
         if isinstance(image_path, list):
@@ -176,12 +179,34 @@ class GeminiProvider(BaseProvider):
             if image_data:
                 content.append(image_data)
 
+        # Add prompt AFTER images so images form the cacheable prefix
+        content.append(prompt)
+
+        config_kwargs = {"max_output_tokens": GEMINI_MAX_OUTPUT_TOKENS}
+        if response_format == "json":
+            config_kwargs["response_mime_type"] = "application/json"
+
+        config = None
+        if HAS_GENAI_TYPES:
+            from google.genai import types
+            config = types.GenerateContentConfig(**config_kwargs)
+
         response = self.client.models.generate_content(
             model=self.vision_model,
-            contents=content
+            contents=content,
+            config=config
         )
 
         result = response.text or ""
+
+        # Check for truncation
+        if hasattr(response, 'candidates') and response.candidates:
+            finish_reason = getattr(response.candidates[0], 'finish_reason', None)
+            if finish_reason == 'MAX_TOKENS':
+                raise OutputTruncatedError(
+                    f"Réponse tronquée par le modèle (finish_reason=MAX_TOKENS). "
+                    f"La sortie de {len(result)} caractères a été coupée."
+                )
 
         # Extract token usage
         prompt_tokens = None
@@ -250,12 +275,31 @@ class GeminiProvider(BaseProvider):
         else:
             content = [prompt]
 
+        config_kwargs = {"max_output_tokens": GEMINI_MAX_OUTPUT_TOKENS}
+        if response_format == "json":
+            config_kwargs["response_mime_type"] = "application/json"
+
+        config = None
+        if HAS_GENAI_TYPES:
+            from google.genai import types
+            config = types.GenerateContentConfig(**config_kwargs)
+
         response = self.client.models.generate_content(
             model=self.model,
-            contents=content
+            contents=content,
+            config=config
         )
 
         result = response.text or ""
+
+        # Check for truncation
+        if hasattr(response, 'candidates') and response.candidates:
+            finish_reason = getattr(response.candidates[0], 'finish_reason', None)
+            if finish_reason == 'MAX_TOKENS':
+                raise OutputTruncatedError(
+                    f"Réponse tronquée par le modèle (finish_reason=MAX_TOKENS). "
+                    f"La sortie de {len(result)} caractères a été coupée."
+                )
 
         # Extract token usage
         prompt_tokens = None
@@ -529,9 +573,11 @@ class GeminiProvider(BaseProvider):
         
 
         if estimated_tokens < self.MIN_CACHE_TOKENS:
-            logger.info(
+            logger.warning(
                 f"Context caching SKIPPED: Estimated {estimated_tokens} tokens "
                 f"(minimum {self.MIN_CACHE_TOKENS} required). "
+                f"Details: {num_images} images ({num_images * self.TOKENS_PER_IMAGE} tokens) + "
+                f"{len(system_prompt or '')} chars text ({len(system_prompt or '') // 4} tokens). "
                 f"Using regular API calls."
             )
             return None
@@ -711,7 +757,11 @@ class GeminiProvider(BaseProvider):
         model_lower = self.vision_model.lower()
 
         # Determine which model and pricing tier we're using
-        if "flash" in model_lower:
+        if "flash-lite" in model_lower or "flash_lite" in model_lower or "flashlite" in model_lower:
+            from config.constants import GEMINI_25_FLASH_LITE_PRICING
+            regular_price = GEMINI_25_FLASH_LITE_PRICING["input"]
+            cached_price = GEMINI_25_FLASH_LITE_PRICING["cached"]
+        elif "flash" in model_lower:
             regular_price = GEMINI_25_FLASH_PRICING["input"]
             cached_price = GEMINI_25_FLASH_PRICING["cached"]
         elif "pro" in model_lower:
@@ -753,7 +803,13 @@ class GeminiProvider(BaseProvider):
         model_lower = self.vision_model.lower()
 
         # Determine which model and pricing tier we're using
-        if "flash" in model_lower:
+        if "flash-lite" in model_lower or "flash_lite" in model_lower or "flashlite" in model_lower:
+            # Flash-Lite is the cheapest option
+            from config.constants import GEMINI_25_FLASH_LITE_PRICING
+            input_price = GEMINI_25_FLASH_LITE_PRICING["input"]
+            output_price = GEMINI_25_FLASH_LITE_PRICING["output"]
+            cached_price = GEMINI_25_FLASH_LITE_PRICING["cached"]
+        elif "flash" in model_lower:
             # Flash models have simple pricing
             input_price = GEMINI_25_FLASH_PRICING["input"]
             output_price = GEMINI_25_FLASH_PRICING["output"]
