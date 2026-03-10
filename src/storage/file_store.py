@@ -25,6 +25,7 @@ Fichiers par copie:
 import csv
 import fcntl
 import json
+import logging
 import os
 import shutil
 from pathlib import Path
@@ -34,7 +35,7 @@ from typing import Optional, Dict, Any, List
 from core.models import (
     GradingSession, GradedCopy, GradingPolicy,
     ClassAnswerMap, TeacherDecision, CopyDocument,
-    PreAnalysisResult
+    DetectionResult
 )
 from core.exceptions import SerializationError, ValidationFailedError
 from config.constants import (
@@ -42,6 +43,8 @@ from config.constants import (
     SESSION_JSON, POLICY_JSON, CLUSTERS_JSON, AUDIT_LOG,
     GRADES_CSV, FULL_REPORT_JSON
 )
+
+logger = logging.getLogger(__name__)
 
 
 class SessionStore:
@@ -102,8 +105,7 @@ class SessionStore:
         self.create()
 
         session_file = self.session_dir / SESSION_JSON
-        with open(session_file, 'w', encoding='utf-8') as f:
-            json.dump(session.model_dump(mode='json'), f, indent=2, ensure_ascii=False)
+        self._save_json(session_file, session.model_dump(mode='json'))
 
         self._log("session_saved", f"Status: {session.status}")
 
@@ -304,8 +306,7 @@ class SessionStore:
 
         # 1. audit.json - TOUTES les données
         audit_data = graded.model_dump(mode='json')
-        with open(copy_dir / "audit.json", 'w', encoding='utf-8') as f:
-            json.dump(audit_data, f, indent=2, ensure_ascii=False)
+        self._save_json(copy_dir / "audit.json", audit_data)
 
         # 2. annotation.json - Infos essentielles pour annotation
         annotation = self.load_annotation(str(copy_number or graded.copy_id)) or {}
@@ -331,8 +332,7 @@ class SessionStore:
             "feedback": graded.feedback
         }
 
-        with open(copy_dir / "annotation.json", 'w', encoding='utf-8') as f:
-            json.dump(annotation, f, indent=2, ensure_ascii=False)
+        self._save_json(copy_dir / "annotation.json", annotation)
 
     def load_graded_copy(self, copy_number: str) -> Optional[GradedCopy]:
         """
@@ -414,8 +414,7 @@ class SessionStore:
         data['cached_at'] = datetime.now().isoformat()
 
         cache_file = cache_dir / f"{cache_key}.json"
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        self._save_json(cache_file, data)
 
     def clear_cache(self) -> None:
         """Vide le cache."""
@@ -424,37 +423,71 @@ class SessionStore:
             shutil.rmtree(cache_dir)
             cache_dir.mkdir()
 
-    # ==================== DIAGNOSTIC PDF ====================
+    # ==================== DETECTION PDF ====================
 
-    def save_pre_analysis(self, result: PreAnalysisResult) -> None:
-        """Sauvegarde le résultat du diagnostic PDF."""
+    def save_detection(self, result: DetectionResult) -> None:
+        """Sauvegarde le résultat de la détection PDF."""
         self.create()
-        diagnostic_file = self.session_dir / "diagnostic.json"
-        with open(diagnostic_file, 'w', encoding='utf-8') as f:
-            json.dump(result.model_dump(mode='json'), f, indent=2, ensure_ascii=False)
-        self._log("diagnostic_saved", f"Analysis ID: {result.analysis_id}")
+        detection_file = self.session_dir / "detection.json"
+        self._save_json(detection_file, result.model_dump(mode='json'))
+        self._log("detection_saved", f"Detection ID: {result.detection_id}")
 
-    def load_pre_analysis(self) -> Optional[PreAnalysisResult]:
-        """Charge le résultat du diagnostic PDF."""
-        diagnostic_file = self.session_dir / "diagnostic.json"
+    def load_detection(self) -> Optional[DetectionResult]:
+        """Charge le résultat de la détection PDF."""
+        detection_file = self.session_dir / "detection.json"
 
-        if not diagnostic_file.exists():
+        if not detection_file.exists():
+            # Fallback to old diagnostic.json for migration
+            old_file = self.session_dir / "diagnostic.json"
+            if old_file.exists():
+                return self._migrate_from_diagnostic(old_file)
             return None
 
         try:
-            with open(diagnostic_file, 'r', encoding='utf-8') as f:
+            with open(detection_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         except json.JSONDecodeError as e:
-            raise SerializationError(f"Invalid JSON in diagnostic file: {e}")
+            raise SerializationError(f"Invalid JSON in detection file: {e}")
 
         # Convert datetime strings
-        if 'analyzed_at' in data and isinstance(data['analyzed_at'], str):
-            data['analyzed_at'] = datetime.fromisoformat(data['analyzed_at'])
+        if 'detected_at' in data and isinstance(data['detected_at'], str):
+            data['detected_at'] = datetime.fromisoformat(data['detected_at'])
 
         try:
-            return PreAnalysisResult(**data)
+            return DetectionResult(**data)
         except Exception as e:
-            raise ValidationFailedError(f"PreAnalysisResult validation failed: {e}", {"file": str(diagnostic_file)})
+            raise ValidationFailedError(f"DetectionResult validation failed: {e}", {"file": str(detection_file)})
+
+    def _migrate_from_diagnostic(self, old_file: Path) -> Optional[DetectionResult]:
+        """Migrate from old diagnostic.json format to new detection.json."""
+        try:
+            with open(old_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+
+            # Convert old field names to new ones
+            if 'analysis_id' in data:
+                data['detection_id'] = data.pop('analysis_id')
+            if 'analysis_duration_ms' in data:
+                data['detection_duration_ms'] = data.pop('analysis_duration_ms')
+            if 'analyzed_at' in data:
+                data['detected_at'] = data.pop('analyzed_at')
+            if 'cached' in data:
+                del data['cached']  # Remove deprecated field
+            if 'mode' not in data:
+                data['mode'] = 'interactive'
+
+            result = DetectionResult(**data)
+
+            # Save in new format
+            self.save_detection(result)
+
+            # Remove old file
+            old_file.unlink()
+
+            return result
+        except Exception as e:
+            logger.warning(f"Failed to migrate diagnostic.json: {e}")
+            return None
 
     # ==================== JSON HELPERS ====================
 
@@ -482,9 +515,7 @@ class SessionStore:
 
         filename = filename or FULL_REPORT_JSON
         report_file = reports_dir / filename
-
-        with open(report_file, 'w', encoding='utf-8') as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
+        self._save_json(report_file, data)
 
         return report_file
 

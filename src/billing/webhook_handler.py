@@ -6,7 +6,7 @@ import stripe
 from db.database import get_db
 from db.models import User, SubscriptionTier
 from billing.stripe_client import StripeClient
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 # Price ID to tier mapping (load from env or Stripe)
@@ -48,7 +48,7 @@ async def handle_checkout_completed(db: Session, event_data: dict):
         user.subscription_tier = tier
         user.stripe_customer_id = customer_id
         user.stripe_subscription_id = subscription_id
-        user.subscription_start = datetime.utcnow()
+        user.subscription_start = datetime.now(timezone.utc)
         user.subscription_end = datetime.fromtimestamp(subscription["current_period_end"])
         db.commit()
         logger.info(f"User {user.id} upgraded to {tier}")
@@ -80,7 +80,7 @@ async def handle_subscription_deleted(db: Session, event_data: dict):
     user = db.query(User).filter_by(stripe_customer_id=customer_id).first()
     if user:
         user.subscription_tier = SubscriptionTier.FREE
-        user.subscription_end = datetime.utcnow()
+        user.subscription_end = datetime.now(timezone.utc)
         user.stripe_subscription_id = None
         db.commit()
         logger.info(f"User {user.id} subscription canceled, downgraded to Free")

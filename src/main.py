@@ -37,6 +37,12 @@ from utils.sorting import natural_sort_key
 from config.settings import get_settings
 from config.constants import DEFAULT_PARALLEL_COPIES
 from interaction.cli import CLI
+from interaction.cli_correct import (
+    ProgressHandler,
+    create_disagreement_callback,
+    create_name_disagreement_callback,
+    create_reading_disagreement_callback
+)
 
 
 def check_api_key() -> bool:
@@ -86,253 +92,6 @@ def validate_pdf_path(path_str: str) -> tuple[bool, str]:
     return True, ""
 
 
-def create_workflow_callbacks(
-    cli: CLI,
-    language: str,
-    auto_mode: bool
-) -> WorkflowCallbacks:
-    """
-    Create workflow callbacks that integrate with CLI.
-
-    Args:
-        cli: CLI instance for user interaction
-        language: Language for prompts
-        auto_mode: Whether to auto-resolve disagreements
-
-    Returns:
-        WorkflowCallbacks instance
-    """
-    async def on_disagreement(
-        question_id: str,
-        question_text: str,
-        llm1_name: str,
-        llm1_result: dict,
-        llm2_name: str,
-        llm2_result: dict,
-        max_points: float
-    ) -> tuple[float, str]:
-        """Handle grading disagreement."""
-        grade1 = llm1_result.get('grade', 0) or 0
-        grade2 = llm2_result.get('grade', 0) or 0
-        average_grade = (grade1 + grade2) / 2
-
-        if auto_mode:
-            cli.console.print(
-                f"    [yellow]⚠ {llm1_name}: {grade1} vs "
-                f"{llm2_name}: {grade2} → moyenne: {average_grade:.2f}[/yellow]"
-            )
-            return average_grade, "merge"
-
-        try:
-            llm1_result['max_points'] = max_points
-            llm2_result['max_points'] = max_points
-            return cli.show_disagreement(
-                question_id=question_id or "Question",
-                question_text=question_text,
-                llm1_name=llm1_name,
-                llm1_result=llm1_result,
-                llm2_name=llm2_name,
-                llm2_result=llm2_result,
-                language=language
-            )
-        except (EOFError, KeyboardInterrupt):
-            cli.console.print(f"    [dim]Utilisation de la moyenne: {average_grade:.2f}[/dim]")
-            return average_grade, "merge"
-
-    async def on_name_disagreement(llm1_result: dict, llm2_result: dict) -> str:
-        """Handle name disagreement."""
-        if auto_mode:
-            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
-                return llm1_result.get('name') or "Inconnu"
-            return llm2_result.get('name') or "Inconnu"
-
-        try:
-            return cli.show_name_disagreement(
-                llm1_result=llm1_result,
-                llm2_result=llm2_result,
-                language=language
-            )
-        except (EOFError, KeyboardInterrupt):
-            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
-                return llm1_result.get('name') or "Inconnu"
-            return llm2_result.get('name') or "Inconnu"
-
-    async def on_reading_disagreement(
-        llm1_result: dict,
-        llm2_result: dict,
-        question_text: str,
-        image_path
-    ) -> str:
-        """Handle reading disagreement."""
-        if auto_mode:
-            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
-                return llm1_result.get('reading', '')
-            return llm2_result.get('reading', '')
-
-        try:
-            return cli.show_reading_disagreement(
-                llm1_result=llm1_result,
-                llm2_result=llm2_result,
-                question_text=question_text,
-                image_path=image_path,
-                language=language
-            )
-        except (EOFError, KeyboardInterrupt):
-            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
-                return llm1_result.get('reading', '')
-            return llm2_result.get('reading', '')
-
-    return WorkflowCallbacks(
-        on_disagreement=on_disagreement,
-        on_name_disagreement=on_name_disagreement,
-        on_reading_disagreement=on_reading_disagreement
-    )
-
-
-# ==============================================================================
-# Helper functions for command_correct
-# ==============================================================================
-
-def create_disagreement_callback(
-    cli: CLI,
-    state: CorrectionState,
-    orchestrator,
-    jurisprudence: Dict
-):
-    """
-    Create disagreement callback for grading conflicts.
-
-    Args:
-        cli: CLI instance
-        state: CorrectionState for language/mode
-        orchestrator: GradingSessionOrchestrator
-        jurisprudence: Mutable dict for storing decisions
-    """
-    async def callback(
-        question_id: str,
-        question_text: str,
-        llm1_name: str,
-        llm1_result: dict,
-        llm2_name: str,
-        llm2_result: dict,
-        max_points: float
-    ) -> tuple:
-        grade1 = llm1_result.get('grade', 0) or 0
-        grade2 = llm2_result.get('grade', 0) or 0
-        average_grade = (grade1 + grade2) / 2
-
-        # Check jurisprudence
-        if question_id in jurisprudence:
-            past = jurisprudence[question_id]
-            cli.console.print(f"    [dim]📜 Jurisprudence: décision passée = {past['decision']:.1f}/{max_points}[/dim]")
-
-        # Auto mode: use average
-        if state.auto_mode:
-            cli.console.print(f"    [yellow]⚠ {llm1_name}: {grade1} vs {llm2_name}: {grade2} → moyenne: {average_grade:.2f}[/yellow]")
-            jurisprudence[question_id] = {
-                'question_text': question_text,
-                'decision': average_grade,
-                'llm1_grade': grade1,
-                'llm2_grade': grade2,
-                'max_points': max_points,
-                'auto': True
-            }
-            if hasattr(orchestrator.ai, 'set_jurisprudence'):
-                orchestrator.ai.set_jurisprudence(jurisprudence)
-            return average_grade, "merge"
-
-        # Interactive mode
-        llm1_result['max_points'] = max_points
-        llm2_result['max_points'] = max_points
-        try:
-            chosen_grade, feedback_source = cli.show_disagreement(
-                question_id=question_id or "Question",
-                question_text=question_text,
-                llm1_name=llm1_name,
-                llm1_result=llm1_result,
-                llm2_name=llm2_name,
-                llm2_result=llm2_result,
-                language=state.language
-            )
-            jurisprudence[question_id] = {
-                'question_text': question_text,
-                'decision': chosen_grade,
-                'llm1_grade': grade1,
-                'llm2_grade': grade2,
-                'max_points': max_points,
-                'auto': False,
-                'feedback_source': feedback_source
-            }
-            if hasattr(orchestrator.ai, 'set_jurisprudence'):
-                orchestrator.ai.set_jurisprudence(jurisprudence)
-            return chosen_grade, feedback_source
-        except (EOFError, KeyboardInterrupt):
-            cli.console.print(f"    [dim]Utilisation de la moyenne: {average_grade:.2f}[/dim]")
-            jurisprudence[question_id] = {
-                'question_text': question_text,
-                'decision': average_grade,
-                'llm1_grade': grade1,
-                'llm2_grade': grade2,
-                'max_points': max_points,
-                'auto': True
-            }
-            if hasattr(orchestrator.ai, 'set_jurisprudence'):
-                orchestrator.ai.set_jurisprudence(jurisprudence)
-            return average_grade, "merge"
-
-    return callback
-
-
-def create_name_disagreement_callback(cli: CLI, state: CorrectionState):
-    """Create callback for name detection conflicts."""
-    async def callback(llm1_result: Dict, llm2_result: Dict) -> str:
-        if state.auto_mode:
-            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
-                return llm1_result.get('name') or "Inconnu"
-            return llm2_result.get('name') or "Inconnu"
-
-        try:
-            return cli.show_name_disagreement(
-                llm1_result=llm1_result,
-                llm2_result=llm2_result,
-                language=state.language
-            )
-        except (EOFError, KeyboardInterrupt):
-            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
-                return llm1_result.get('name') or "Inconnu"
-            return llm2_result.get('name') or "Inconnu"
-
-    return callback
-
-
-def create_reading_disagreement_callback(cli: CLI, state: CorrectionState):
-    """Create callback for reading (transcription) conflicts."""
-    async def callback(
-        llm1_result: Dict,
-        llm2_result: Dict,
-        question_text: str,
-        image_path
-    ) -> str:
-        if state.auto_mode:
-            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
-                return llm1_result.get('reading', '')
-            return llm2_result.get('reading', '')
-
-        try:
-            return cli.show_reading_disagreement(
-                llm1_result=llm1_result,
-                llm2_result=llm2_result,
-                question_text=question_text,
-                image_path=image_path,
-                language=state.language
-            )
-        except (EOFError, KeyboardInterrupt):
-            if llm1_result.get('confidence', 0) >= llm2_result.get('confidence', 0):
-                return llm1_result.get('reading', '')
-            return llm2_result.get('reading', '')
-
-    return callback
-
 
 async def command_correct(args):
     """Run correction on PDF files with interactive workflow."""
@@ -369,11 +128,10 @@ async def command_correct(args):
 
     # Validate mode/option combinations
     if args.grading_method == "individual":
-        if not args.pages_per_copy and not args.auto_detect_structure:
+        if not args.pages_per_copy:
             cli.show_error(
-                "Mode 'individual' nécessite soit --pages-per-copy (--ppc) soit --auto-detect-structure.\n"
-                "  --ppc N                 : Découpe mécanique en copies de N pages\n"
-                "  --auto-detect-structure : Détection AI de la structure (cross-vérification en mode dual)"
+                "Mode 'individual' nécessite --pages-per-copy (--ppc).\n"
+                "  --ppc N : Découpe mécanique en copies de N pages"
             )
             return 1
 
@@ -405,7 +163,6 @@ async def command_correct(args):
         parallel=args.parallel,
         grading_mode=args.grading_method,
         batch_verify=args.batch_verify,
-        auto_detect_structure=args.auto_detect_structure,
         use_chat_continuation=args.chat_continuation,
         workflow_state=state  # Pass the workflow state with auto_mode
     )
@@ -457,7 +214,7 @@ async def command_correct(args):
             'annotate': args.annotate,
             'parallel': args.parallel,
             'second_reading': args.second_reading,
-            'auto_detect_structure': args.auto_detect_structure,
+            'detect': args.detect,
             'skip_reading': args.skip_reading,
             'chat_continuation': args.chat_continuation
         }
@@ -558,28 +315,83 @@ async def command_correct(args):
     # ============================================================
     detected_scale = analysis.get('scale', {})
 
-    # If no scale detected yet, try to detect it via pre-analysis
-    if not detected_scale and pdf_paths and args.pre_analysis:
+    # If no scale detected yet, try to detect it
+    if not detected_scale and pdf_paths and args.detect:
         cli.console.print(f"\n[bold cyan]🔍 Détection de la structure...[/bold cyan]")
 
         try:
-            from analysis.pre_analysis import PreAnalyzer
-            pre_analyzer = PreAnalyzer(
+            from analysis.detection import Detector
+            detector = Detector(
                 user_id=user_id if hasattr(args, 'user_id') else 'default',
                 session_id=orchestrator.session_id,
                 language=language,
                 provider=orchestrator.ai  # Use orchestrator's provider for token tracking
             )
 
-            # Analyze first PDF for barème detection
-            pre_result = pre_analyzer.analyze(pdf_paths[0])
-            if pre_result and pre_result.grading_scale:
-                detected_scale = pre_result.grading_scale
-                cli.console.print(f"[green]✓ Barème détecté automatiquement[/green]")
+            # Detect first PDF for barème detection
+            detection_result = detector.detect(pdf_paths[0])
+            if detection_result:
+                # Save detection for reuse by batch_grader
+                orchestrator.store.save_detection(detection_result)
+                # Display exam name if detected
+                if detection_result.exam_name:
+                    cli.console.print(f"[bold cyan]📝 Examen: {detection_result.exam_name}[/bold cyan]")
+
+                # Display document structure info
+                cli.console.print(f"\n[bold cyan]📋 Structure détectée:[/bold cyan]")
+
+                # Document type
+                doc_type_map = {
+                    "student_copies": "Copies d'élèves",
+                    "subject_only": "Sujet uniquement",
+                    "random_document": "Document non reconnu",
+                    "unclear": "Non déterminé"
+                }
+                doc_type = str(detection_result.document_type).replace("DocumentType.", "")
+                doc_type_fr = doc_type_map.get(doc_type, doc_type)
+                cli.console.print(f"  Type: [bold]{doc_type_fr}[/bold] (conf: {detection_result.confidence_document_type:.0%})")
+
+                # Structure
+                struct_map = {
+                    "one_pdf_one_student": "1 élève par PDF",
+                    "one_pdf_all_students": "Tous les élèves dans 1 PDF",
+                    "ambiguous": "Structure ambiguë"
+                }
+                struct = str(detection_result.structure).replace("PDFStructure.", "")
+                struct_fr = struct_map.get(struct, struct)
+                cli.console.print(f"  Structure: [bold]{struct_fr}[/bold]")
+
+                # Pages info
+                cli.console.print(f"  Pages totales: [bold]{detection_result.page_count}[/bold]")
+
+                # Pages per student (if consistent)
+                if detection_result.consistent_pages_per_student and detection_result.pages_per_student:
+                    cli.console.print(f"  Pages/élève: [bold]{detection_result.pages_per_student}[/bold] [green](cohérent)[/green]")
+
+                    # Calculate expected students
+                    subject_pages = detection_result.subject_page_count or 0
+                    student_pages = detection_result.page_count - subject_pages
+                    expected_students = student_pages // detection_result.pages_per_student
+                    cli.console.print(f"  Élèves estimés: [bold]{expected_students}[/bold] ({student_pages} pages / {detection_result.pages_per_student} pp)")
+                elif detection_result.pages_per_student:
+                    cli.console.print(f"  Pages/élève: [bold]{detection_result.pages_per_student}[/bold] [yellow](variable)[/yellow]")
+
+                # Subject integration
+                if detection_result.subject_page_count and detection_result.subject_page_count > 0:
+                    cli.console.print(f"  Pages sujet: [bold]{detection_result.subject_page_count}[/bold]")
+
+                # Students detected directly
+                if detection_result.students:
+                    cli.console.print(f"  Élèves détectés par LLM: [bold]{len(detection_result.students)}[/bold]")
+
+                # Grading scale
+                if detection_result.grading_scale:
+                    detected_scale = detection_result.grading_scale
+                    cli.console.print(f"[green]✓ Barème détecté automatiquement[/green]")
         except Exception as e:
             cli.console.print(f"[dim]Détection automatique non disponible: {e}[/dim]")
-    elif not detected_scale and pdf_paths and not args.pre_analysis:
-        cli.console.print(f"[dim]Pré-analyse désactivée. Saisie manuelle du barème requise.[/dim]")
+    elif not detected_scale and pdf_paths and not args.detect:
+        cli.console.print(f"[dim]Détection automatique désactivée. Saisie manuelle du barème requise.[/dim]")
 
     # Display detected scale and ask for confirmation
     if detected_scale:
@@ -669,429 +481,39 @@ async def command_correct(args):
     current_copy_questions = {}
 
     # Progress callback for real-time display
-    async def progress_callback(event_type: str, data: dict):
-        nonlocal prev_tokens, _current_sub_phase
-
-        if event_type == 'copy_start':
-            copy_idx = data['copy_index']
-            total = data['total_copies']
-            name = data.get('student_name') or '???'
-            llm_status['results'] = {}
-            current_copy_questions.clear()  # Reset for new copy
-            # Update live display instead of printing (handled by LiveProgressDisplay)
-
-        elif event_type == 'question_start':
-            q_id = data['question_id']
-            q_idx = data['question_index']
-            total_q = data['total_questions']
-            llm_status['results'] = {}  # Reset for new question
-
-        elif event_type == 'llm_parallel_start':
-            # Skip - too repetitive
-            pass
-
-        elif event_type == 'llm_complete':
-            provider_index = data.get('provider_index', 0)
-            provider = data.get('provider', '???')
-            grade = data.get('grade')
-            all_done = data.get('all_completed', False)
-
-            # Store result by index for ordered display
-            llm_status['results'][provider_index] = {'provider': provider, 'grade': grade}
-
-            # Only display when ALL results are in (to maintain order)
-            if all_done and len(llm_status['results']) == llm_status['total']:
-                # Display in order (index 0, then index 1)
-                first = True
-                for idx in sorted(llm_status['results'].keys()):
-                    r = llm_status['results'][idx]
-                    if first:
-                        prefix = " ▪ "
-                        first = False
-                    else:
-                        prefix = " ┃ "
-                    if r['grade'] is not None:
-                        console.print(f"{prefix}[cyan]{r['provider']}:[/cyan] [bold]{r['grade']:.1f}[/bold]", end="")
-                    else:
-                        console.print(f"{prefix}[red]{r['provider']}: erreur[/red]", end="")
-                console.print("")  # New line after both complete
-
-        elif event_type == 'llm_error':
-            provider = data.get('provider', '???')
-            error = data.get('error', 'Unknown error')
-            console.print(f"    [red]✗ {provider}: {error}[/red]")
-
-        elif event_type == 'question_done':
-            q_id = data['question_id']
-            grade = data['grade']
-            max_pts = data['max_points']
-            agreement = data.get('agreement', True)
-            final_method = data.get('final_method', 'consensus')
-
-            # Color coding based on decision method
-            # Green: consensus initial (accord immédiat)
-            # Yellow: decision prise au cross verification
-            # Orange: decision prise à l'ultimatum
-            # Red: désaccord persistant (average ou user_choice)
-            if final_method == 'consensus' or final_method == 'single_llm':
-                color = "green"
-                icon = "✓"
-            elif final_method == 'verification_consensus':
-                color = "yellow"
-                icon = "✓"
-            elif final_method == 'ultimatum_consensus':
-                color = "dark_orange"
-                icon = "✓"
-            else:  # average, user_choice, merge
-                color = "red"
-                icon = "⚠"
-
-            # Store for sorted display at copy_done
-            current_copy_questions[q_id] = {
-                'grade': grade,
-                'max_pts': max_pts,
-                'color': color,
-                'icon': icon,
-                'note': ''
-            }
-
-        elif event_type == 'copy_done':
-            copy_idx = data.get('copy_index', '')
-            student_name = data.get('student_name', '???')
-            score = data['total_score']
-            max_s = data['max_score']
-            pct = (score / max_s * 100) if max_s > 0 else 0
-            conf = data.get('confidence', 0.5) or 0.5
-            final_questions = data.get('final_questions', {})
-            feedback = data.get('feedback', '')
-
-            # In batch mode, use final_questions from the event
-            # In individual mode, use current_copy_questions populated by question_done
-            questions_to_display = final_questions if final_questions else current_copy_questions
-
-            # Header for this copy
-            console.print(f"\n  [bold cyan]── Copie {copy_idx}: {student_name} ──[/bold cyan]")
-
-            # Display questions in compact format
-            grades_str = "  "
-            for qid in sorted(questions_to_display.keys(), key=natural_sort_key):
-                q = questions_to_display[qid]
-                grade = q.get('grade', 0)
-                max_pts = q.get('max_points', q.get('max_pts', 1))
-                # Show decimals for max_points if needed
-                if max_pts == int(max_pts):
-                    grades_str += f"{qid}: [bold]{grade:.0f}/{int(max_pts)}[/bold]  "
-                else:
-                    grades_str += f"{qid}: [bold]{grade:.0f}/{max_pts}[/bold]  "
-            console.print(grades_str)
-
-            # Calculate tokens used for this copy
-            token_usage = data.get('token_usage')
-            tokens_str = ""
-            if token_usage:
-                current_total = token_usage.get('total_tokens', 0)
-                tokens_this_copy = current_total - prev_tokens['total']
-                prev_tokens['total'] = current_total
-                if tokens_this_copy > 0:
-                    tokens_str = f" [dim]│ {tokens_this_copy:,} tokens[/dim]"
-
-            if pct >= 50:
-                color = "green"
-            else:
-                color = "red"
-
-            console.print(f"  [bold {color}]Total: {score:.1f}/{max_s} ({pct:.0f}%)[/bold {color}] [dim]conf: {conf:.0%}[/dim]{tokens_str}")
-
-            # Display feedback/appreciation
-            if feedback:
-                console.print(f"  [italic dim]{feedback[:150]}{'...' if len(feedback) > 150 else ''}[/italic dim]")
-
-        elif event_type == 'feedback_start':
-            console.print(f"  [dim]Génération de l'appréciation...[/dim]", end="")
-
-        elif event_type == 'feedback_done':
-            feedback = data.get('feedback', '')
-            if feedback:
-                console.print(f" [green]✓[/green]")
-                console.print(f"  [italic]{feedback}[/italic]")
-            else:
-                console.print(" [green]✓[/green]")
-
-        # ===== CONVERSATION MODE EVENTS =====
-        elif event_type == 'single_pass_start':
-            # Skip verbose output - live display shows progress
-            pass
-
-        elif event_type == 'single_pass_complete':
-            providers = data.get('providers', [])
-            single_pass = data.get('single_pass', {})
-
-            # Get all question IDs sorted naturally
-            all_qids = set()
-            for provider in providers:
-                result = single_pass.get(provider, {})
-                questions = result.get('questions', {})
-                all_qids.update(questions.keys())
-            sorted_qids = sorted(all_qids, key=natural_sort_key)
-
-            # Build a readable table
-            table = Table(show_header=True, header_style="bold dim", show_lines=False, box=None, padding=(0, 2))
-            table.add_column("Question", style="bold", width=10)
-            for idx, provider in enumerate(providers):
-                # Cleaner provider name with index to distinguish
-                if "gemini" in provider.lower():
-                    if "3" in provider:
-                        short_name = "Gemini 3"
-                    elif "2.5" in provider or "flash" in provider.lower():
-                        short_name = "Gemini 2.5"
-                    else:
-                        short_name = f"Gemini {idx+1}"
-                elif "openai" in provider.lower() or "gpt" in provider.lower():
-                    short_name = "GPT-4o" if "4o" in provider.lower() else "GPT"
-                else:
-                    short_name = f"LLM{idx+1}"
-                table.add_column(short_name, justify="center", width=12)
-
-            for qid in sorted_qids:
-                row = [qid]
-                for provider in providers:
-                    result = single_pass.get(provider, {})
-                    questions = result.get('questions', {})
-                    q_data = questions.get(qid, {})
-                    grade = q_data.get('grade', 0)
-                    row.append(f"{grade:.1f}")  # Just the grade, no /max_pts (it's always /1 or /2, redundant)
-                table.add_row(*row)
-
-            console.print(table)
-
-        elif event_type == 'analysis_complete':
-            agreed = data.get('agreed', 0)
-            flagged = data.get('flagged', 0)
-            total = data.get('total', 0)
-            flagged_questions = data.get('flagged_questions', [])
-
-            if flagged == 0:
-                console.print(f"  [green]✓ Analyse: {agreed}/{total} questions en accord[/green]")
-            else:
-                console.print(f"  [yellow]📊 Analyse: {agreed}/{total} accord, {flagged} désaccord(s)[/yellow]")
-                for fq in flagged_questions:
-                    qid = fq.get('question_id')
-                    reason = fq.get('reason', '')
-                    llm1_grade = fq.get('llm1', {}).get('grade', 0)
-                    llm2_grade = fq.get('llm2', {}).get('grade', 0)
-                    llm1_reading = fq.get('llm1', {}).get('reading', '')[:30]
-                    llm2_reading = fq.get('llm2', {}).get('reading', '')[:30]
-
-                    # Show appropriate info based on disagreement type
-                    if 'Lectures' in reason or 'lecture' in reason:
-                        # Reading disagreement - show readings
-                        console.print(f"    [yellow]⚠ {qid}:[/yellow] {reason}")
-                        console.print(f"        [dim]{llm1_reading}...[/dim] vs [dim]{llm2_reading}...[/dim]")
-                    else:
-                        # Grade disagreement - show grades
-                        console.print(f"    [yellow]⚠ {qid}:[/yellow] {reason} ({llm1_grade:.1f} vs {llm2_grade:.1f})")
-
-        elif event_type == 'verification_start':
-            # Switch to VERIFICATION phase for token tracking
-            record_phase_tokens(_current_sub_phase, event_type)  # Record any pending GRADING tokens
-            _current_sub_phase = WorkflowPhase.VERIFICATION
-
-            qid = data.get('question_id')
-            reason = data.get('reason', '')
-            console.print(f"  [dim]🔄 Vérification {qid}...[/dim]")
-
-        elif event_type == 'batch_comparison_ready':
-            # Display structured comparison results for dual LLM batch mode
-            providers = data.get('providers', ['LLM1', 'LLM2'])
-            copies = data.get('copies', [])
-
-            # Store for later display after verification/ultimatum
-            llm_status['comparison_data'] = data
-
-            # Helper to get short provider name
-            def get_short_name(provider_str: str, idx: int) -> str:
-                # Extract model name from "LLM1: model-name" format
-                model = provider_str.replace('LLM1: ', '').replace('LLM2: ', '')
-                # Create short readable name
-                if 'gemini' in model.lower():
-                    if 'flash' in model.lower():
-                        return 'Gemini Flash'
-                    elif 'pro' in model.lower():
-                        return 'Gemini Pro'
-                    return 'Gemini'
-                elif 'gpt' in model.lower() or 'openai' in model.lower():
-                    if '4o' in model.lower():
-                        return 'GPT-4o'
-                    elif '4' in model:
-                        return 'GPT-4'
-                    return 'GPT'
-                elif 'claude' in model.lower():
-                    if 'opus' in model.lower():
-                        return 'Claude Opus'
-                    elif 'sonnet' in model.lower():
-                        return 'Claude Sonnet'
-                    return 'Claude'
-                # Fallback to LLM1/LLM2
-                return f'LLM{idx+1}'
-
-            p1_short = get_short_name(providers[0], 0)
-            p2_short = get_short_name(providers[1], 1) if len(providers) > 1 else ''
-
-            for copy_info in copies:
-                copy_idx = copy_info.get('copy_index', '')
-                student_name = copy_info.get('student_name') or '???'
-                questions = copy_info.get('questions', {})
-
-                # Header for this copy
-                console.print(f"\n[bold cyan]═══ Copie {copy_idx}: {student_name} ═══[/bold cyan]")
-
-                # Table header with cleaner format
-                console.print(f"   {'Q':<4} │ {p1_short:<12} │ {p2_short:<12} │ {'Status'}")
-                console.print(f"   {'─'*4}─┼─{'─'*12}─┼─{'─'*12}─┼─{'─'*12}")
-
-                # Sort questions naturally
-                for qid in sorted(questions.keys(), key=natural_sort_key):
-                    q = questions[qid]
-                    llm1_grade = q.get('llm1_grade')
-                    llm2_grade = q.get('llm2_grade')
-                    # Use frozen max_points (same for both LLMs)
-                    max_pts = q.get('max_points')
-                    if max_pts is None:
-                        raise ValueError(f"max_points manquant pour {qid} - le barème figé doit être défini")
-                    agreement = q.get('agreement', True)
-
-                    # Format grades (show decimals for max_points if needed: 1.5 not 2)
-                    def format_grade(g, max_pts):
-                        if g is None:
-                            return "erreur"
-                        # Show max_points with decimals only if not a whole number
-                        if max_pts == int(max_pts):
-                            return f"{g:.1f}/{int(max_pts)}"
-                        else:
-                            return f"{g:.1f}/{max_pts}"
-
-                    g1_str = format_grade(llm1_grade, max_pts)
-                    g2_str = format_grade(llm2_grade, max_pts)
-
-                    # Status
-                    if agreement:
-                        status = "[green]✓ accord[/green]"
-                    else:
-                        status = "[yellow]⚠ désaccord[/yellow]"
-
-                    console.print(f"   {qid:<4} │ {g1_str:<12} │ {g2_str:<12} │ {status}")
-
-                console.print("")
-
-        elif event_type == 'batch_verification_start':
-            # Switch to VERIFICATION phase for batch verification
-            record_phase_tokens(_current_sub_phase, event_type)  # Record any pending GRADING tokens
-            _current_sub_phase = WorkflowPhase.VERIFICATION
-            console.print(f"\n  [dim]🔄 Vérification des désaccords...[/dim]")
-
-        elif event_type == 'batch_verification_done':
-            # Record VERIFICATION tokens and switch back to GRADING
-            record_phase_tokens(WorkflowPhase.VERIFICATION, event_type)
-            _current_sub_phase = WorkflowPhase.GRADING
-
-            # Display verification results
-            # Show which cases are truly resolved vs going to ultimatum
-            questions = data.get('questions', [])
-            if questions:
-                # Cases that are truly resolved (not going to ultimatum)
-                resolved_cases = [q for q in questions if not q.get('goes_to_ultimatum', False)]
-                # Cases going to ultimatum
-                ultimatum_cases = [q for q in questions if q.get('goes_to_ultimatum', False)]
-
-                if resolved_cases:
-                    console.print(f"\n  [bold]📋 Vérification - Consensus atteint:[/bold]")
-                    for q in resolved_cases:
-                        qid = q.get('question_id')
-                        copy_idx = q.get('copy_index', '')
-                        final = q.get('final_grade', 0)
-                        # Show copy index if available
-                        if copy_idx:
-                            console.print(f"    Copie {copy_idx} {qid}: [green]{final:.1f}[/green] (consensus)")
-                        else:
-                            console.print(f"    {qid}: [green]{final:.1f}[/green] (consensus)")
-
-                if ultimatum_cases:
-                    console.print(f"\n  [dim]📋 Vérification - Cas nécessitant l'ultimatum ({len(ultimatum_cases)}):[/dim]")
-                    for q in ultimatum_cases:
-                        qid = q.get('question_id')
-                        copy_idx = q.get('copy_index', '')
-                        reasons = q.get('ultimatum_reasons', [])
-                        reason_str = f" ({', '.join(reasons)})" if reasons else ""
-                        # Show copy index if available
-                        if copy_idx:
-                            console.print(f"    [dim]Copie {copy_idx} {qid} → ultimatum{reason_str}[/dim]")
-                        else:
-                            console.print(f"    [dim]{qid} → ultimatum{reason_str}[/dim]")
-
-        elif event_type == 'batch_ultimatum_start':
-            # Switch to ULTIMATUM phase for ultimatum tokens
-            record_phase_tokens(_current_sub_phase, event_type)  # Record any pending tokens
-            _current_sub_phase = WorkflowPhase.ULTIMATUM
-            console.print(f"\n  [dim]⚖️ Ultimatum (désaccords persistants)...[/dim]")
-
-        elif event_type == 'batch_ultimatum_done':
-            # Record ultimatum tokens and switch back to GRADING
-            record_phase_tokens(WorkflowPhase.ULTIMATUM, event_type)
-            _current_sub_phase = WorkflowPhase.GRADING
-
-            # Display ultimatum results
-            questions = data.get('questions', [])
-            if questions:
-                console.print(f"\n  [bold]📋 Résultats de l'ultimatum:[/bold]")
-                for q in questions:
-                    qid = q.get('question_id')
-                    copy_idx = q.get('copy_index', '')
-                    final = q.get('final_grade', 0)
-                    method = q.get('method', 'unknown')
-                    # Show copy index if available
-                    if copy_idx:
-                        console.print(f"    Copie {copy_idx} {qid}: [dark_orange]{final:.1f}[/dark_orange] ({method})")
-                    else:
-                        console.print(f"    {qid}: [dark_orange]{final:.1f}[/dark_orange] ({method})")
-
-        elif event_type == 'ultimatum_parse_warning':
-            # Alert user about parsing failure
-            warning = data.get('warning', 'Ultimatum parsing failed')
-            console.print(f"\n  [bold red]⚠️ {warning}[/bold red]")
-            console.print(f"  [dim]Les décisions finales peuvent être imprécises[/dim]")
-
-        elif event_type == 'verification_done':
-            # Record VERIFICATION tokens and switch back to GRADING
-            record_phase_tokens(WorkflowPhase.VERIFICATION, event_type)
-            _current_sub_phase = WorkflowPhase.GRADING
-
-        elif event_type == 'ultimatum_start':
-            # Switch to ULTIMATUM phase for ultimatum tokens
-            record_phase_tokens(_current_sub_phase, event_type)  # Record any pending tokens
-            _current_sub_phase = WorkflowPhase.ULTIMATUM
-
-        elif event_type == 'ultimatum_done':
-            # Record ultimatum tokens and switch back to GRADING
-            record_phase_tokens(WorkflowPhase.ULTIMATUM, event_type)
-            _current_sub_phase = WorkflowPhase.GRADING
+    progress_handler = ProgressHandler(cli, state, record_phase_tokens)
+    
+    # Need to update the _current_sub_phase to match what progress_handler tracked 
+    # to avoid syntax errors with missing variables down the line
+    
+    # Run grading with progress updates
 
     # Run grading with progress updates
     try:
-        graded = await orchestrator.grade_all(progress_callback=progress_callback)
+        graded = await orchestrator.grade_all(progress_callback=progress_handler)
     except Exception as e:
-        # Handle StudentNameMismatchError specifically
-        from core.exceptions import StudentNameMismatchError
+        # Handle specific errors with user-friendly messages
+        from core.exceptions import StudentNameMismatchError, DualLLMFailureError, OutputTruncatedError
+        if isinstance(e, OutputTruncatedError):
+            console.print(f"\n[bold red]✗ Réponse tronquée: le modèle n'a pas pu générer la totalité de la réponse.[/bold red]")
+            console.print("[yellow]Le nombre de copies est trop élevé pour un seul appel.[/yellow]")
+            console.print("[dim]Conseil: Utilisez --pages-per-copy N pour découper le PDF en copies individuelles.[/dim]")
+            return 1
         if isinstance(e, StudentNameMismatchError):
             console.print(f"\n[red]{e.message}[/red]")
             console.print("\n[yellow]Arrêt de la correction. Résolvez le problème avec une des options suivantes:[/yellow]")
             console.print("  1. [cyan]--pages-per-copy N[/cyan]      Découpe mécanique du PDF en copies de N pages")
-            console.print("  2. [cyan]--auto-detect-structure[/cyan] Pré-analyse la structure avant correction")
-            console.print("  3. [cyan]--auto-confirm[/cyan]          Continue malgré le problème (non recommandé)")
+            console.print("  2. [cyan]--auto-confirm[/cyan]          Continue malgré le problème (non recommandé)")
+            return 1
+        if isinstance(e, DualLLMFailureError):
+            console.print(f"\n[bold red]✗ Erreur: {e.message}[/bold red]")
+            console.print("\n[yellow]Le mode double LLM nécessite que les deux fournisseurs soient opérationnels.[/yellow]")
+            console.print("[dim]Conseil: Vérifiez vos clés API dans le fichier .env ou utilisez un mode single LLM.[/dim]")
             return 1
         raise
 
     # Record any remaining tokens for the current sub-phase
-    record_phase_tokens(_current_sub_phase, "grading_complete")
+    record_phase_tokens(progress_handler.get_current_sub_phase(), "grading_complete")
 
     # Check for name disagreements in dual LLM mode (max_points disagreements no longer exist - barème is frozen)
     if graded and is_comparison_mode:
@@ -1123,7 +545,7 @@ async def command_correct(args):
                 console.print(f"  Copie {nd['copy_index']}: LLM1=\"{nd['llm1_name']}\", LLM2=\"{nd['llm2_name']}\" → résolu à \"{nd['resolved_name']}\"")
             if len(name_disagreements) > 3:
                 console.print(f"  ... et {len(name_disagreements) - 3} autre(s)")
-            console.print("[dim]Conseil: Utilisez --pages-per-copy ou --auto-detect-structure pour une meilleure détection[/dim]")
+            console.print("[dim]Conseil: Utilisez --pages-per-copy pour une meilleure détection des noms[/dim]")
 
         # (Re)calculate max_score for all graded copies using frozen scale
         total_max = orchestrator.get_total_max_points()
@@ -1136,13 +558,10 @@ async def command_correct(args):
     # ============================================================
     state = state.with_phase(WorkflowPhase.VERIFICATION)
 
-    # Cross-verify names and barème if detected during grading (not pre-detected)
-    if args.auto_detect_structure:
-        cli.console.print("[dim]Structure pré-détectée, vérification noms/barème skipée[/dim]")
-    else:
-        verification_results = await orchestrator.verify_detected_parameters()
-        if verification_results.get('names_disagreed', 0) > 0:
-            cli.console.print(f"[yellow]⚠ {verification_results['names_disagreed']} désaccord(s) sur les noms[/yellow]")
+    # Cross-verify names and barème if detected during grading
+    verification_results = await orchestrator.verify_detected_parameters()
+    if verification_results.get('names_disagreed', 0) > 0:
+        cli.console.print(f"[yellow]⚠ {verification_results['names_disagreed']} désaccord(s) sur les noms[/yellow]")
 
     # Review doubts (low confidence grades)
     if not args.auto_confirm:
@@ -1326,28 +745,24 @@ async def command_correct(args):
                 cached = usage.get('cached', 0)
                 total_cached += cached
 
-                # Show cached tokens if present
+                # Show cached tokens if present (simpler display)
                 if cached > 0:
-                    # Calculate effective tokens (total - cached = actual paid tokens)
-                    effective = usage['total'] - cached
-                    cli.console.print(f"  {label}: {usage['total']:,} tokens ({cached:,} cached → {effective:,} effective)")
+                    cli.console.print(f"  {label}: {usage['total']:,} tokens ({cached:,} cached)")
                 else:
                     cli.console.print(f"  {label}: {usage['total']:,} tokens")
 
         # Total
         cli.console.print(f"  [bold]Total: {token_summary['total']:,}[/bold] tokens")
         if total_cached > 0:
-            effective_total = token_summary['total'] - total_cached
-            cli.console.print(f"  Cached: {total_cached:,} → [green]Effective: {effective_total:,}[/green]")
+            cli.console.print(f"  [green]✓ Cache hits: {total_cached:,} tokens[/green]")
         cli.console.print(f"  (Prompt: {token_summary['total_prompt']:,} | Completion: {token_summary['total_completion']:,})")
 
-        # Show by provider if available
+        # Show by provider with cost info
         if hasattr(orchestrator.ai, 'get_token_usage'):
             provider_usage = orchestrator.ai.get_token_usage()
             if 'by_provider' in provider_usage:
-                cli.console.print(f"\n  [dim]Par provider:[/dim]")
+                cli.console.print(f"\n  [dim]Par LLM:[/dim]")
                 for provider_name, usage in provider_usage['by_provider'].items():
-                    # Use markup=False to avoid Rich interpreting brackets
                     cached = usage.get('cached_tokens', 0)
                     total = usage.get('total_tokens', 0)
                     calls = usage.get('calls', 0)
@@ -1355,6 +770,19 @@ async def command_correct(args):
                         cli.console.print(f"  [{provider_name}] {total:,} tokens ({calls} calls, {cached:,} cached)", markup=False)
                     else:
                         cli.console.print(f"  [{provider_name}] {total:,} tokens ({calls} calls)", markup=False)
+
+        # Show estimated cost if available
+        if hasattr(orchestrator.ai, 'get_estimated_cost'):
+            try:
+                cost_info = orchestrator.ai.get_estimated_cost()
+                if cost_info and cost_info.get('estimated_cost_usd') is not None:
+                    total_cost = cost_info['estimated_cost_usd']
+                    cached_savings = cost_info.get('cached_savings_usd', 0) or 0
+                    cli.console.print(f"\n  💰 [bold]Coût estimé: ${total_cost:.4f}[/bold]")
+                    if cached_savings > 0:
+                        cli.console.print(f"     [green]✓ Économie cache: ${cached_savings:.4f}[/green]")
+            except Exception:
+                pass  # Cost calculation may not be available for all providers
 
     return 0
 
@@ -1658,34 +1086,29 @@ Note on --second-reading:
         help="Mode de vérification: 'per-question' (1 appel/désaccord), 'per-copy' (1 appel/copie), 'grouped' (1 appel tout)"
     )
     correct_parser.add_argument(
-        "--auto-detect-structure",
-        action="store_true",
-        help="Analyse le PDF entier en pré-phase pour détecter la structure (copies, pages, noms, barème) avec les 2 LLMs. Cross-vérification automatique des désaccords."
-    )
-    correct_parser.add_argument(
         "--chat-continuation",
         action="store_true",
         default=True,
-        help="Active le context caching pour la vérification et l'ultimatum. Les images sont mises en cache (~10x moins cher) au lieu d'être renvoyées à plein tarif. Disponible uniquement avec Gemini. (défaut: activé)"
+        help="Active l'implicit caching pour la vérification et l'ultimatum. Gemini met automatiquement en cache le préfixe commun (prompt + images) pour ~75%% d'économie. Minimum 1024 tokens (Flash) ou 2048 tokens (Pro). (défaut: activé)"
     )
     correct_parser.add_argument(
         "--no-chat-continuation",
         action="store_false",
         dest="chat_continuation",
-        help="Désactive le context caching pour la vérification et l'ultimatum."
+        help="Désactive l'implicit caching pour la vérification et l'ultimatum."
     )
     correct_parser.add_argument(
-        "--pre-analysis",
+        "--detect",
         action="store_true",
         default=True,
-        dest="pre_analysis",
-        help="Active la pré-analyse pour détecter automatiquement le barème. (défaut: activé)"
+        dest="detect",
+        help="Active la détection automatique du barème. (défaut: activé)"
     )
     correct_parser.add_argument(
-        "--no-pre-analysis",
+        "--no-detect",
         action="store_false",
-        dest="pre_analysis",
-        help="Désactive la pré-analyse automatique du barème."
+        dest="detect",
+        help="Désactive la détection automatique du barème."
     )
     correct_parser.add_argument(
         "--debug",

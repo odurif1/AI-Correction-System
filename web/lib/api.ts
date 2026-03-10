@@ -27,6 +27,20 @@ class ApiError extends Error {
   }
 }
 
+// Event dispatched when authentication fails (401)
+function dispatchAuthExpired() {
+  if (typeof window !== 'undefined') {
+    // Clear invalid token immediately
+    localStorage.removeItem("token");
+    localStorage.removeItem("user");
+
+    // Dispatch custom event that AuthProvider listens to
+    window.dispatchEvent(new CustomEvent('auth:expired', {
+      detail: { message: 'Session expirée, veuillez vous reconnecter' }
+    }));
+  }
+}
+
 class ApiClient {
   private baseUrl: string;
 
@@ -51,6 +65,10 @@ class ApiClient {
     });
 
     if (!response.ok) {
+      // Handle 401 Unauthorized - token expired or invalid
+      if (response.status === 401) {
+        dispatchAuthExpired();
+      }
       const error = await response.json().catch(() => ({ detail: "Unknown error" }));
       throw new ApiError(error.detail || `HTTP ${response.status}`, response.status);
     }
@@ -125,6 +143,10 @@ class ApiClient {
             reject(new ApiError("Invalid response format", xhr.status));
           }
         } else {
+          // Handle 401 Unauthorized
+          if (xhr.status === 401) {
+            dispatchAuthExpired();
+          }
           try {
             const error = JSON.parse(xhr.responseText);
             reject(new ApiError(error.detail || `Upload failed: ${xhr.status}`, xhr.status));

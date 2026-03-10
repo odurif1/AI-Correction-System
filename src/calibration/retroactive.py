@@ -11,7 +11,7 @@ from datetime import datetime
 
 from core.models import (
     GradingSession, GradedCopy, TeacherDecision, SimilarCopies,
-    CopyDocument, UncertaintyType
+    CopyDocument, UncertaintyType, InconsistencyReport, TeacherAdjustment
 )
 from ai import create_ai_provider
 from analysis.clustering import EmbeddingClustering
@@ -226,7 +226,6 @@ class RetroactiveApplier:
                 graded.total_score = (graded.total_score or 0) + (new_grade - old_grade)
 
                 # Track adjustment
-                from core.models import TeacherAdjustment
                 graded.adjustments.append(TeacherAdjustment(
                     question_id=decision.question_id,
                     original_score=old_grade,
@@ -235,15 +234,70 @@ class RetroactiveApplier:
                 ))
 
                 # Save
-                session_store.update_copy(graded)
+                session_store.save_graded_copy(graded, graded.copy_id)
                 updated_count += 1
 
         # For pending copies, add to policy so they're graded correctly
         if similar.pending and decision.extracted_rule:
             self.session.policy.teacher_decisions.append(decision.extracted_rule)
-            session_store.save_policy(self.session.session_id, self.session.policy)
+            session_store.save_policy(self.session.policy)
 
         return updated_count
+
+    async def apply_corrections(
+        self,
+        reports: List["InconsistencyReport"],
+        session_store: SessionStore
+    ) -> Dict[str, int]:
+        """
+        Apply corrections for detected inconsistencies.
+
+        Args:
+            reports: List of inconsistency reports from ConsistencyDetector
+            session_store: Storage for saving updates
+
+        Returns:
+            Dict with {question_id: count_updated}
+        """
+        results = {}
+
+        for report in reports:
+            question_id = report.question_id
+            suggested_grade = report.suggested_grade
+
+            if suggested_grade is None:
+                continue
+
+            updated_count = 0
+            for copy_id in report.copy_ids:
+                graded = next(
+                    (g for g in self.session.graded_copies if g.copy_id == copy_id),
+                    None
+                )
+
+                if graded and question_id in graded.grades:
+                    old_grade = graded.grades[question_id] or 0
+                    graded.grades[question_id] = suggested_grade
+
+                    # Update total
+                    if graded.total_score is not None:
+                        graded.total_score += (suggested_grade - old_grade)
+
+                    # Track adjustment
+                    from core.models import TeacherAdjustment
+                    graded.adjustments.append(TeacherAdjustment(
+                        question_id=question_id,
+                        original_score=old_grade,
+                        new_score=suggested_grade,
+                        reason=f"Calibration: {report.reasoning}"
+                    ))
+
+                    session_store.save_graded_copy(graded, graded.copy_id)
+                    updated_count += 1
+
+            results[question_id] = results.get(question_id, 0) + updated_count
+
+        return results
 
     async def extract_and_apply(
         self,

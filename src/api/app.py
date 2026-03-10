@@ -22,27 +22,8 @@ import os
 import time
 
 # Rate limiting
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
-
-
-def get_user_id(request: Request) -> str:
-    """
-    Extract user ID from JWT token, fallback to IP.
-
-    For authenticated requests, rate limit per user.
-    For unauthenticated requests (e.g., login), rate limit per IP.
-    """
-    # Try to get user from request state (set by auth middleware)
-    if hasattr(request.state, 'user_id'):
-        return f"user:{request.state.user_id}"
-    # Fallback to IP for unauthenticated requests
-    return f"ip:{get_remote_address(request)}"
-
-
-# Create limiter at module level for use in decorators
-limiter = Limiter(key_func=get_user_id)
+from api.rate_limiter import limiter
 
 # Maximum file size for uploads (50 MB)
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
@@ -316,6 +297,21 @@ def create_app() -> FastAPI:
     active_sessions: Dict[str, GradingSessionOrchestrator] = {}
     session_progress: Dict[str, Dict[str, Any]] = {}
 
+    # Max sessions kept in memory before cleanup of completed ones
+    MAX_ACTIVE_SESSIONS = 100
+
+    def _cleanup_completed_sessions():
+        """Remove completed/error sessions from memory to prevent leaks."""
+        if len(active_sessions) <= MAX_ACTIVE_SESSIONS:
+            return
+        to_remove = [
+            sid for sid, orch in active_sessions.items()
+            if orch.session.status in (SessionStatus.COMPLETE, SessionStatus.ERROR)
+        ]
+        for sid in to_remove:
+            active_sessions.pop(sid, None)
+            session_progress.pop(sid, None)
+
     # ============================================================================
     # WebSocket Endpoint
     # ============================================================================
@@ -412,6 +408,7 @@ def create_app() -> FastAPI:
         orchestrator._save_sync()
 
         session_id = orchestrator.session_id
+        _cleanup_completed_sessions()
         active_sessions[session_id] = orchestrator
         session_progress[session_id] = {
             "status": "created",
@@ -480,6 +477,7 @@ def create_app() -> FastAPI:
             # Create orchestrator for existing session
             orchestrator = GradingSessionOrchestrator(
                 session_id=session_id,
+                user_id=user_id,
                 workflow_state=API_WORKFLOW_STATE
             )
             active_sessions[session_id] = orchestrator

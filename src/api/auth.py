@@ -1,6 +1,6 @@
 """Authentication API routes for La Corrigeuse."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from db import get_db, User, SubscriptionTier
 from config.settings import get_settings
 from utils.validators import validate_password
+from api.rate_limiter import limiter
 
 # Configuration
 ALGORITHM = "HS256"
@@ -80,24 +81,30 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 def create_access_token(user_id: str) -> str:
     """Create a JWT access token."""
     settings = get_settings()
-    expire = datetime.utcnow() + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
+    expire = datetime.now(timezone.utc) + timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS)
     payload = {
         "sub": user_id,
         "exp": expire,
-        "iat": datetime.utcnow(),
+        "iat": datetime.now(timezone.utc),
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=ALGORITHM)
 
 
 def decode_token(token: str) -> Optional[dict]:
     """Decode and validate a JWT token."""
+    from loguru import logger
     try:
         settings = get_settings()
         payload = jwt.decode(token, settings.jwt_secret, algorithms=[ALGORITHM])
         return payload
-    except jwt.ExpiredSignatureError:
+    except jwt.ExpiredSignatureError as e:
+        logger.warning(f"Token expired: {e}")
         return None
-    except jwt.InvalidTokenError:
+    except jwt.InvalidTokenError as e:
+        logger.warning(f"Invalid token: {e.__class__.__name__}: {e}")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected token decode error: {e.__class__.__name__}: {e}")
         return None
 
 
@@ -116,7 +123,10 @@ async def get_current_user(
     db: Session = Depends(get_db)
 ) -> User:
     """Get the current authenticated user."""
+    from loguru import logger
+
     if credentials is None:
+        logger.warning("Auth failed: No credentials provided")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Non authentifié",
@@ -124,9 +134,12 @@ async def get_current_user(
         )
 
     token = credentials.credentials
+    logger.debug(f"Auth: Token received (first 20 chars): {token[:20]}...")
+
     payload = decode_token(token)
 
     if payload is None:
+        logger.warning("Auth failed: Token decode returned None (expired or invalid)")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token invalide ou expiré",
@@ -135,6 +148,7 @@ async def get_current_user(
 
     user_id = payload.get("sub")
     if user_id is None:
+        logger.warning(f"Auth failed: No 'sub' in payload. Payload keys: {list(payload.keys())}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token invalide",
@@ -143,11 +157,14 @@ async def get_current_user(
 
     user = db.query(User).filter(User.id == user_id).first()
     if user is None:
+        logger.warning(f"Auth failed: User not found in DB. user_id={user_id}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Utilisateur non trouvé",
             headers={"WWW-Authenticate": "Bearer"},
         )
+
+    logger.debug(f"Auth success: user_id={user_id}, email={user.email}")
 
     # Set Sentry user context
     from middleware.error_handler import set_user_context
@@ -186,7 +203,9 @@ async def get_admin_user(
 
 # Routes
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
 async def register(
+    request: Request,
     user_data: UserRegister,
     db: Session = Depends(get_db)
 ):
@@ -224,9 +243,7 @@ async def register(
 
 
 @router.post("/login", response_model=Token)
-# TODO: Rate limiting temporarily disabled due to circular import issue
-# The limiter is defined in app.py but we can't import it here without causing circular imports.
-# Proper fix: Create a separate rate_limiter.py module that both files can import.
+@limiter.limit("10/minute")
 async def login(
     request: Request,
     credentials: UserLogin,
@@ -269,8 +286,10 @@ async def logout():
 
 
 @router.post("/forgot-password")
+@limiter.limit("3/minute")
 async def forgot_password(
-    request: ForgotPasswordRequest,
+    request: Request,
+    body: ForgotPasswordRequest,
     db: Session = Depends(get_db)
 ):
     """
@@ -282,7 +301,7 @@ async def forgot_password(
     from utils.email import EmailService
 
     # Find user
-    user = db.query(User).filter(User.email == request.email).first()
+    user = db.query(User).filter(User.email == body.email).first()
     if not user:
         # Don't reveal if email exists (security best practice)
         return {"message": "Si l'email existe, un lien de réinitialisation a été envoyé."}
@@ -290,7 +309,7 @@ async def forgot_password(
     # Generate and store token
     token = generate_reset_token()
     token_hash = hash_token(token)
-    expires_at = datetime.utcnow() + timedelta(minutes=30)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
 
     from db import PasswordResetToken
     reset_token = PasswordResetToken(
@@ -304,7 +323,7 @@ async def forgot_password(
     db.query(PasswordResetToken).filter(
         PasswordResetToken.user_id == user.id,
         PasswordResetToken.used == False,
-        PasswordResetToken.expires_at < datetime.utcnow()
+        PasswordResetToken.expires_at < datetime.now(timezone.utc)
     ).delete()
     db.commit()
 
@@ -338,7 +357,7 @@ async def reset_password(
     reset_token = db.query(PasswordResetToken).filter(
         PasswordResetToken.token_hash == token_hash,
         PasswordResetToken.used == False,
-        PasswordResetToken.expires_at > datetime.utcnow()
+        PasswordResetToken.expires_at > datetime.now(timezone.utc)
     ).first()
 
     if not reset_token:

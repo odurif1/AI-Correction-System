@@ -1,6 +1,6 @@
 """Database models for La Corrigeuse."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, String, DateTime, Integer, Boolean, ForeignKey, Enum as SQLEnum, UniqueConstraint
 from sqlalchemy.orm import relationship
 from db.database import Base
@@ -25,8 +25,8 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     password_hash = Column(String, nullable=False)
     name = Column(String, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
 
     # Subscription
     subscription_tier = Column(
@@ -43,8 +43,8 @@ class User(Base):
 
     # Usage tracking (in tokens)
     tokens_used_this_month = Column(Integer, default=0)
-    usage_month = Column(Integer, default=lambda: datetime.utcnow().month)
-    usage_year = Column(Integer, default=lambda: datetime.utcnow().year)
+    usage_month = Column(Integer, default=lambda: datetime.now(timezone.utc).month)
+    usage_year = Column(Integer, default=lambda: datetime.now(timezone.utc).year)
 
     def get_monthly_token_limit(self) -> int:
         """Get the monthly token limit for the user's tier."""
@@ -90,7 +90,7 @@ class User(Base):
         if self.subscription_tier == SubscriptionTier.FREE:
             return
 
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         if now.month != self.usage_month or now.year != self.usage_year:
             self.usage_month = now.month
             self.usage_year = now.year
@@ -133,7 +133,7 @@ class PasswordResetToken(Base):
     user_id = Column(String, ForeignKey("users.id"), nullable=False)
     token_hash = Column(String, nullable=False, unique=True, index=True)  # Hashed token
     expires_at = Column(DateTime, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     used = Column(Boolean, default=False)
 
 
@@ -151,7 +151,7 @@ class UsageRecord(Base):
     cached_tokens = Column(Integer, default=0)
     total_tokens = Column(Integer, nullable=False)
 
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
     # Relationships
     user = relationship("User", backref="usage_records")

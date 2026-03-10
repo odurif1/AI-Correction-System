@@ -87,6 +87,9 @@ class Settings(BaseSettings):
     enable_prompt_caching: bool = True
     cache_ttl_seconds: int = 300  # 5 minutes default
 
+    # Explicit Gemini caching for batch grading (solves multi-copy cache miss)
+    use_explicit_cache: bool = True
+
     # Validators
     @field_validator('jwt_secret')
     @classmethod

@@ -153,7 +153,6 @@ def format_name_mismatch_message(result: NameMatchResult, language: str = "fr") 
         lines.append("\n" + "-" * 50)
         lines.append("SOLUTIONS SUGGÉRÉES:")
         lines.append("  1. Utilisez --pages-per-copy N pour un découpage mécanique")
-        lines.append("  2. Utilisez --auto-detect-structure pour pré-analyser")
         lines.append("=" * 50)
 
     else:
@@ -177,7 +176,6 @@ def format_name_mismatch_message(result: NameMatchResult, language: str = "fr") 
         lines.append("\n" + "-" * 50)
         lines.append("SUGGESTED SOLUTIONS:")
         lines.append("  1. Use --pages-per-copy N for mechanical splitting")
-        lines.append("  2. Use --auto-detect-structure for pre-analysis")
         lines.append("=" * 50)
 
     return "\n".join(lines)

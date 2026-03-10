@@ -55,6 +55,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setLoading(false);
   }, []);
 
+  // Listen for auth:expired events from API client (401 errors)
+  useEffect(() => {
+    const handleAuthExpired = (event: CustomEvent<{ message: string }>) => {
+      // Clear state
+      setToken(null);
+      setUser(null);
+
+      // Redirect to login with message
+      const currentPath = pathname || '/dashboard';
+      router.push(`/auth/login?expired=true&redirect=${encodeURIComponent(currentPath)}`);
+    };
+
+    window.addEventListener('auth:expired', handleAuthExpired as EventListener);
+    return () => {
+      window.removeEventListener('auth:expired', handleAuthExpired as EventListener);
+    };
+  }, [router, pathname]);
+
   // Check authentication on route change
   useEffect(() => {
     if (loading) return;
@@ -71,7 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (!token) return;
 
     try {
-      const response = await fetch(`${API_BASE}/api/me`, {
+      const response = await fetch(`${API_BASE}/api/auth/me`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },

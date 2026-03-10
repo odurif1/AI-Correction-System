@@ -39,6 +39,7 @@ class SessionDetailResponse(SessionResponse):
     copies: List[Dict[str, Any]] = Field(default_factory=list)
     graded_copies: List[Dict[str, Any]] = Field(default_factory=list)
     question_weights: Dict[str, float] = Field(default_factory=dict)
+    question_names: Dict[str, str] = Field(default_factory=dict)
     cost_breakdown: Optional["CostBreakdown"] = None
 
 
@@ -367,3 +368,34 @@ class UpdateGradeResponse(BaseModel):
     old_total: float
     new_total: float
     max_score: float
+
+
+class UpdateQuestionWeightRequest(BaseModel):
+    """Request to update the max points for a question."""
+    question_id: str = Field(..., description="Question identifier (e.g., 'Q1', '2')")
+    new_weight: float = Field(..., ge=0, description="New max points for this question")
+
+
+class UpdateQuestionWeightResponse(BaseModel):
+    """Response after updating a question weight."""
+    success: bool
+    question_id: str
+    old_weight: float
+    new_weight: float
+    old_max_score: float
+    new_max_score: float
+    updated_copies: int
+
+
+class UpdateQuestionNameRequest(BaseModel):
+    """Request to update the display name for a question."""
+    question_id: str = Field(..., description="Question identifier (e.g., 'Q1', '2')")
+    new_name: str = Field(..., min_length=1, max_length=50, description="New display name for this question")
+
+
+class UpdateQuestionNameResponse(BaseModel):
+    """Response after updating a question name."""
+    success: bool
+    question_id: str
+    old_name: Optional[str]
+    new_name: str

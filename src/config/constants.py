@@ -19,6 +19,7 @@ GEMINI_MODEL_EMBEDDING: Final[str] = "text-embedding-004"
 GEMINI_DEFAULT_MODEL: Final[str] = GEMINI_MODEL_FLASH  # Use flash for testing
 GEMINI_DEFAULT_VISION_MODEL: Final[str] = GEMINI_MODEL_FLASH
 GEMINI_EMBEDDING_DIM: Final[int] = 768  # Dimension for text-embedding-004
+GEMINI_MAX_OUTPUT_TOKENS: Final[int] = 65536  # Max output for Gemini 2.5 Flash/Lite
 
 # Confidence Thresholds
 CONFIDENCE_THRESHOLD_AUTO: Final[float] = 0.85
