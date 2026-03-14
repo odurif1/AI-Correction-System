@@ -10,8 +10,6 @@ Required for a working backend:
 
 ```env
 AI_CORRECTION_AI_PROVIDER=<gemini|openai|glm|openrouter>
-AI_CORRECTION_JWT_SECRET=<long-random-secret>
-
 # Match the provider above
 AI_CORRECTION_GEMINI_API_KEY=
 # or AI_CORRECTION_OPENAI_API_KEY=
@@ -26,7 +24,6 @@ Recommended: start from `.env.example`.
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `AI_CORRECTION_AI_PROVIDER` | Yes | Primary provider: `gemini`, `openai`, `glm`, or `openrouter` |
-| `AI_CORRECTION_JWT_SECRET` | Yes | JWT signing secret for API authentication |
 | `AI_CORRECTION_DATA_DIR` | No | Local storage directory, default `data` |
 
 ## Provider API keys
@@ -106,7 +103,6 @@ If `AI_CORRECTION_ANNOTATION_MODEL` is not set, annotated PDFs and overlays are 
 
 ```env
 AI_CORRECTION_AI_PROVIDER=gemini
-AI_CORRECTION_JWT_SECRET=<long-random-secret>
 AI_CORRECTION_GEMINI_API_KEY=<api-key>
 
 # Optional

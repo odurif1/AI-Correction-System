@@ -8,7 +8,7 @@ This document describes the REST API endpoints for the AI Correction System.
 http://localhost:8000
 ```
 
-## Authentication
+## Access control
 
 All API endpoints (except `/health`) require an API key when `AI_CORRECTION_API_KEY` is set in the environment.
 
@@ -16,7 +16,7 @@ All API endpoints (except `/health`) require an API key when `AI_CORRECTION_API_
 X-API-Key: your-api-key
 ```
 
-If no API key is configured, the API operates in development mode without authentication.
+If no API key is configured, the API operates without additional access control.
 
 ## Endpoints
 

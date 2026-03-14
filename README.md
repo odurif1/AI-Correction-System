@@ -65,9 +65,9 @@ Deux modèles peuvent analyser une même copie indépendamment :
 
 ### 🔒 API multi-utilisateur
 
-- Comptes utilisateurs individuels
-- Données isolées par utilisateur
-- Authentification JWT
+- Protection optionnelle par clé API
+- Sessions de correction persistées côté backend
+- Backend utilisable sans couche frontend
 
 ---
 
@@ -166,7 +166,7 @@ python -m src.main correct --debug devoir.pdf
 ┌─────────────────────────────────────────────────────────────────┐
 │                        BACKEND (FastAPI)                         │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
-│  │   Auth JWT  │  │  SQLite DB  │  │    WebSocket Progress   │  │
+│  │ API Endpoints│  │  SQLite DB  │  │    WebSocket Progress   │  │
 │  └─────────────┘  └─────────────┘  └─────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────┘
                               │
@@ -209,8 +209,6 @@ project/
 # Setup minimal
 AI_CORRECTION_AI_PROVIDER=<provider>
 AI_CORRECTION_<PROVIDER>_API_KEY=<api-key>
-AI_CORRECTION_JWT_SECRET=<long-random-secret>
-
 # Modèles optionnels
 # AI_CORRECTION_<PROVIDER>_MODEL=<configured-model>
 # AI_CORRECTION_<PROVIDER>_VISION_MODEL=<configured-vision-model>
@@ -292,15 +290,6 @@ Une fois le diagnostic confirmé (Phase 1), **le barème est figé** et ne peut 
 
 ## 🔌 API REST
 
-### Authentification
-
-```http
-POST /api/auth/register
-POST /api/auth/login
-POST /api/auth/logout
-GET  /api/auth/me
-```
-
 ### Sessions
 
 ```http
@@ -349,7 +338,6 @@ ruff check src/
 
 ```bash
 # Variables d'environnement production
-export AI_CORRECTION_JWT_SECRET="production-secret-key"
 export AI_CORRECTION_CORS_ORIGINS='["https://app.example.com"]'
 ```
 
@@ -357,7 +345,7 @@ export AI_CORRECTION_CORS_ORIGINS='["https://app.example.com"]'
 
 ## 🛡️ Sécurité
 
-- ✅ Authentification JWT avec expiration
+- ✅ Clé API optionnelle pour restreindre l’accès
 - ✅ Mots de passe hachés (bcrypt)
 - ✅ Isolation des données par utilisateur
 - ✅ Protection contre path traversal

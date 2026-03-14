@@ -5,7 +5,7 @@ All configuration comes from environment variables or .env file.
 """
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from pydantic import Field, field_validator, model_validator, ValidationError
+from pydantic import field_validator, model_validator, ValidationError
 from typing import Optional
 from functools import lru_cache
 
@@ -19,9 +19,6 @@ class Settings(BaseSettings):
         env_prefix="AI_CORRECTION_",
         case_sensitive=False
     )
-
-    # Security (required)
-    jwt_secret: str = Field(..., min_length=32)
 
     # AI Provider (required)
     ai_provider: str  # "gemini", "openai", "glm", "openrouter"
@@ -90,15 +87,6 @@ class Settings(BaseSettings):
     use_explicit_cache: bool = True
 
     # Validators
-    @field_validator('jwt_secret')
-    @classmethod
-    def reject_default_values(cls, v: str) -> str:
-        """Reject default/weak JWT secrets."""
-        forbidden = ['your-secret-key-change-in-production', 'secret', 'test', 'password', 'change-me', 'default-secret']
-        if v.lower() in forbidden:
-            raise ValueError("JWT_SECRET cannot be a default value. Generate with: openssl rand -base64 32")
-        return v
-
     @field_validator('ai_provider')
     @classmethod
     def validate_ai_provider(cls, v: str) -> str:

@@ -70,7 +70,7 @@ from api.schemas import (
 )
 
 # Import auth module
-from api.auth import router as auth_router, get_current_user, get_admin_user, decode_token
+from api.auth import PUBLIC_USER_ID, get_current_user, get_admin_user
 from db import SessionLocal, User
 
 # Import token deduction service
@@ -135,45 +135,12 @@ def get_api_key(api_key: str = Security(api_key_header)) -> str:
     return api_key
 
 
-def extract_websocket_token(websocket: WebSocket) -> Optional[str]:
-    """Extract a bearer token from the WebSocket query string or headers."""
-    token = websocket.query_params.get("token")
-    if token:
-        return token
-
-    auth_header = websocket.headers.get("authorization", "")
-    if auth_header.lower().startswith("bearer "):
-        return auth_header.split(" ", 1)[1].strip()
-
-    return None
-
-
-def verify_websocket_session_access(session_id: str, token: Optional[str]) -> Optional[str]:
-    """Validate WebSocket access and return the authorized user_id."""
-    if not token:
-        return None
-
-    payload = decode_token(token)
-    if not payload:
-        return None
-
-    user_id = payload.get("sub")
-    if not user_id:
-        return None
-
-    db = SessionLocal()
-    try:
-        user = db.query(User).filter(User.id == user_id).first()
-        if not user:
-            return None
-    finally:
-        db.close()
-
-    store = SessionStore(session_id, user_id=user_id)
+def verify_websocket_session_access(session_id: str) -> Optional[str]:
+    """Validate WebSocket access within the shared public workspace."""
+    store = SessionStore(session_id, user_id=PUBLIC_USER_ID)
     if not store.exists():
         return None
-
-    return user_id
+    return PUBLIC_USER_ID
 
 
 def serialize_progress_for_client(progress: Dict[str, Any]) -> Dict[str, Any]:
@@ -873,7 +840,7 @@ def create_app() -> FastAPI:
         """Fail fast if critical security settings are invalid."""
         try:
             settings = get_settings()
-            # This will raise ValidationError if JWT_SECRET or API keys are invalid
+            # This will raise ValidationError if the provider configuration is invalid
             stdlib_logger.info(f"Security configuration validated. Provider: {settings.ai_provider}")
         except ValidationError as e:
             stdlib_logger.error(f"Configuration error: {e}")
@@ -899,9 +866,6 @@ def create_app() -> FastAPI:
         from db import init_db
         init_db()
         stdlib_logger.info("Database initialized")
-
-    # Include auth router
-    app.include_router(auth_router, prefix="/api")
 
     # Include health check router
     app.include_router(health_router, tags=["health"])
@@ -946,8 +910,7 @@ def create_app() -> FastAPI:
         - session_error: When session-level error occurs (error)
         - progress_sync: Current progress state (status, copies_uploaded, copies_graded, grading_mode)
         """
-        token = extract_websocket_token(websocket)
-        user_id = verify_websocket_session_access(session_id, token)
+        user_id = verify_websocket_session_access(session_id)
         if not user_id:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return

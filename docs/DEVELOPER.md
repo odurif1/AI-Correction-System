@@ -37,7 +37,6 @@ Create a `.env` file with:
 ```env
 # Minimal setup
 AI_CORRECTION_AI_PROVIDER=<provider>
-AI_CORRECTION_JWT_SECRET=<long-random-secret>
 AI_CORRECTION_<PROVIDER>_API_KEY=<api-key>
 
 # Optional models

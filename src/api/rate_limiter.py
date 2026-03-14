@@ -1,8 +1,7 @@
 """
 Rate limiter module for the API.
 
-Extracted from app.py to avoid circular imports when auth.py
-needs to apply rate limits on login/register endpoints.
+Extracted from app.py to keep limiter wiring isolated.
 """
 
 from fastapi import Request
@@ -12,7 +11,7 @@ from slowapi.util import get_remote_address
 
 def get_user_id(request: Request) -> str:
     """
-    Extract user ID from JWT token, fallback to IP.
+    Extract user ID from request state, fallback to IP.
     Used as the rate limit key function.
     """
     # Try to get user_id from request state (set by middleware)
