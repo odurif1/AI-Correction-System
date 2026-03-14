@@ -1,43 +1,49 @@
 # AI Correction System
 
-Backend open source pour l’audit et l’expérimentation d’un pipeline de correction assistée par IA sur copies PDF.
+Code fonctionnel pour corriger des copies PDF avec des modèles d’IA, produire un audit exploitable et générer des PDF annotés.
 
-## Objet
+## Ce que fait le projet
 
-Le dépôt se concentre sur la logique métier de correction:
-- détection de structure des documents PDF
-- préparation de session de correction
+Le projet prend des copies PDF et exécute un pipeline complet de correction:
+
+1. détection de la structure du document
+2. préparation du barème et de la session
+3. correction par un ou deux modèles
+4. détection et résolution des désaccords
+5. export des résultats
+6. annotation PDF
+
+Le résultat n’est pas seulement une note:
+- lecture structurée des réponses
+- décisions de correction traçables
+- exports CSV / JSON
+- PDF annoté sur la copie
+- PDF overlay pour surimpression
+
+## Capacités principales
+
 - correction mono ou dual-LLM
-- résolution de désaccords
-- calibration entre copies
-- exports et annotation PDF
+- détection automatique de structure sur PDF
+- audit détaillé des décisions de correction
+- calibration et contrôle de cohérence entre copies
+- annotation PDF avec placement des feedbacks
+- API et CLI pour piloter le pipeline
 
-Le dépôt public ne contient pas de frontend, de billing, ni de packaging de déploiement.
-
-## Pipeline métier
-
-1. Ingestion de PDFs
-2. Détection du type de document et de la structure
-3. Préparation de la session et du barème
-4. Correction par un ou deux modèles
-5. Audit et résolution des désaccords
-6. Exports CSV / JSON / PDF annoté / overlay
-
-## Structure
+## Structure utile
 
 ```text
 src/
-├── api/            # API FastAPI minimale pour exposer le pipeline
 ├── ai/             # Providers et orchestration LLM
 ├── analysis/       # Détection et analyse des documents
-├── core/           # Modèles métier, session, grading
+├── api/            # Endpoints pour piloter le pipeline
+├── core/           # Session, grading, modèles métier
 ├── db/             # Persistance SQLite
-├── export/         # Analytics et annotation PDF
+├── export/         # Exports et annotation PDF
 ├── prompts/        # Prompts
 ├── storage/        # Stockage des sessions et artefacts
 └── vision/         # Lecture PDF / extraction page par page
 
-tests/              # Tests ciblés sur le métier
+tests/              # Tests ciblés
 docs/               # Documentation technique
 ```
 
@@ -64,19 +70,19 @@ AI_CORRECTION_GEMINI_API_KEY=
 # ou AI_CORRECTION_OPENROUTER_API_KEY=
 ```
 
-Lancement API:
+API:
 
 ```bash
 python src/main.py api --port 8000
 ```
 
-Exécution CLI:
+CLI:
 
 ```bash
 python -m src.main correct <pdfs...>
 ```
 
-## Points d’intérêt pour l’audit
+## Fichiers à lire en priorité
 
 - [src/analysis/detection.py](src/analysis/detection.py)
 - [src/core/session.py](src/core/session.py)
