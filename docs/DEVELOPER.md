@@ -80,7 +80,7 @@ src/
 │   ├── pdf_annotator.py  # PDF annotation
 │   ├── annotation_service.py  # Coordinate detection
 │   └── analytics.py      # Data export
-├── grading/              # Grading logic
+├── core/grading/         # Grading logic
 │   └── grader.py         # Intelligent grader
 ├── interaction/          # User interaction
 │   └── cli.py            # CLI interface

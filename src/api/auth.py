@@ -51,9 +51,9 @@ class UserResponse(BaseModel):
     email: str
     name: Optional[str]
     subscription_tier: str
-    copies_used_this_month: int
-    monthly_limit: int
-    remaining_copies: int
+    tokens_used_this_month: int
+    monthly_token_limit: int
+    remaining_tokens: int
 
 
 # Helper functions
@@ -274,7 +274,7 @@ async def get_me(
         email=current_user.email,
         name=current_user.name,
         subscription_tier=current_user.subscription_tier.value,
-        copies_used_this_month=current_user.copies_used_this_month,
-        monthly_limit=current_user.get_monthly_limit(),
-        remaining_copies=current_user.remaining_copies,
+        tokens_used_this_month=current_user.tokens_used_this_month,
+        monthly_token_limit=current_user.get_monthly_token_limit(),
+        remaining_tokens=current_user.remaining_tokens,
     )
