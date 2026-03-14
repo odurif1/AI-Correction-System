@@ -1,7 +1,7 @@
 <h1 align="center">AI Correction System</h1>
 
 <p align="center">
-  <strong>Correction automatique de copies par IA pour les professeurs de collège et lycée</strong>
+  <strong>Backend open source de correction assistée par IA pour copies PDF</strong>
 </p>
 
 <p align="center">
@@ -14,24 +14,21 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT">
-  <img src="https://img.shields.io/badge/status-production%20ready-brightgreen.svg" alt="Production Ready">
 </p>
 
 ---
 
 ## 🎯 Présentation
 
-**Cette application automatise une partie du travail de correction tout en laissant la décision finale au correcteur.**
+**Ce dépôt contient un backend Python pour analyser des copies PDF, orchestrer une correction assistée par LLM, produire des exports et générer des annotations PDF.**
 
-Le correcteur, c'est vous. L'IA sert d'assistant de correction.
-
-Gagnez 90% de temps sur la correction de vos copies. Deux IA analysent chaque copie indépendamment avec une précision de 95%. Les désaccords sont automatiquement détectés pour vous permettre de trancher.
+Le correcteur reste responsable de la validation finale. Les modèles servent d’assistants de lecture, de notation et de structuration.
 
 ### Pour qui ?
 
-- **Professeurs de collège et lycée** en France
-- **Correcteurs** préparant le bac, le brevet, ou des examens
-- **Établissements** cherchant à optimiser leurs corrections
+- **Développeurs** qui veulent auditer ou étendre un pipeline de correction
+- **Équipes produit ou recherche** travaillant sur l’évaluation de copies PDF
+- **Utilisateurs avancés** qui préfèrent un backend scriptable à une interface fermée
 
 ### Comment ça marche ?
 
@@ -52,25 +49,19 @@ Gagnez 90% de temps sur la correction de vos copies. Deux IA analysent chaque co
 
 ## ✨ Fonctionnalités
 
-### 🤖 Double Validation IA
+### 🤖 Correction mono ou dual-LLM
 
-Deux modèles d'IA différents analysent chaque copie indépendamment :
-- **Gemini** (Google) + **GPT-4** (OpenAI)
-- Détection automatique des désaccords
-- Interface de résolution intuitive
+Deux modèles peuvent analyser une même copie indépendamment :
+- configuration mono ou dual-LLM
+- détection automatique des désaccords
+- audit structuré des décisions
 
-### 📊 Analytics en temps réel
+### 📊 Exports et audit
 
-- Distribution des notes
-- Statistiques par question
-- Détection des réponses atypiques
-- Score moyen, écart-type, médiane
-
-### 📤 Exports complets
-
-- **CSV** : Tableau des notes importable dans Excel/Pronote
-- **JSON** : Données complètes avec audit
-- **PDF annotés** : Copies avec corrections et feedback
+- **CSV** : notes et synthèses tabulaires
+- **JSON** : audit détaillé de la session
+- **PDF annotés** : rendu annoté et overlay de surimpression
+- **Analytics** : agrégats de session et statistiques par question
 
 ### 🔒 API multi-utilisateur
 
@@ -193,49 +184,19 @@ python -m src.main correct --debug devoir.pdf
 
 ```
 project/
-├── 📁 src/                         # Backend Python
-│   ├── 📁 api/                     # API REST
-│   │   ├── app.py                  # Application FastAPI
-│   │   ├── auth.py                 # Routes d'authentification
-│   │   ├── schemas.py              # Modèles Pydantic
-│   │   └── websocket.py            # WebSocket manager
-│   │
-│   ├── 📁 db/                      # Base de données
-│   │   ├── database.py             # Connexion SQLite
-│   │   └── models.py               # Modèles SQLAlchemy
-│   │
-│   ├── 📁 ai/                      # Providers LLM
-│   │   ├── gemini_provider.py      # Google Gemini
-│   │   ├── openai_provider.py      # OpenAI
-│   │   ├── comparison_provider.py  # Dual LLM
-│   │   └── batch_grader.py         # Correction batch
-│   │
-│   ├── 📁 analysis/                # Diagnostic PDF
-│   │   ├── pre_analysis.py         # Analyseur de documents
-│   │   ├── pre_analysis_prompts.py # Prompts de diagnostic
-│   │   └── pre_analysis_translations.py  # Traductions FR/EN
-│   │
-│   ├── 📁 core/                    # Cœur métier
-│   │   ├── models.py               # Modèles Pydantic
-│   │   ├── session.py              # Orchestrateur
-│   │   └── workflow.py             # Workflow de correction
-│   │
-│   ├── 📁 storage/                 # Stockage
-│   │   └── file_store.py           # Gestion fichiers
-│   │
-│   ├── 📁 export/                  # Export
-│   │   ├── analytics.py            # Rapports
-│   │   └── pdf_annotator.py        # Annotation PDF
-│   │
-│   └── 📁 prompts/                 # Prompts IA
-│       ├── grading.py              # Prompts de correction
-│       └── batch.py                # Prompts batch
-│
-├── 📁 data/                        # Données utilisateur
-│   └── {user_id}/                  # Isolation par utilisateur
-│       └── {session_id}/           # Sessions de correction
-│
-└── 📄 .env                         # Configuration
+├── src/
+│   ├── api/                        # FastAPI, auth, websocket, schémas
+│   ├── ai/                         # Providers et orchestration LLM
+│   ├── analysis/                   # Détection et analyse de documents
+│   ├── core/                       # Modèles métier, session, grading
+│   ├── db/                         # Persistance SQLite et modèles SQLAlchemy
+│   ├── export/                     # Exports analytics et annotation PDF
+│   ├── prompts/                    # Prompts et traductions associées
+│   ├── storage/                    # Stockage des sessions et fichiers
+│   └── vision/                     # Lecture PDF / extraction page par page
+├── tests/                          # Tests unitaires et d’intégration ciblés
+├── docs/                           # Documentation technique
+└── .env.example                    # Exemple de configuration
 ```
 
 ---
@@ -391,25 +352,6 @@ ruff check src/
 export AI_CORRECTION_JWT_SECRET="production-secret-key"
 export AI_CORRECTION_CORS_ORIGINS='["https://app.example.com"]'
 ```
-
----
-
-## 📊 Performance
-
-### Temps de correction
-
-| Copies | Temps estimé | Appels API |
-|--------|--------------|------------|
-| 10 | ~2 min | 2-4 |
-| 50 | ~5 min | 2-4 |
-| 100 | ~10 min | 2-4 |
-
-### Économies réalisées
-
-| Scénario | Sans l'outil | Avec l'outil |
-|----------|-------------------|-------------------|
-| 100 copies | ~10h | ~15 min |
-| Bac blanc (120 copies) | ~12h | ~20 min |
 
 ---
 
