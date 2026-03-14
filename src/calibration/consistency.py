@@ -12,7 +12,7 @@ from core.models import (
     GradingSession, GradedCopy, InconsistencyReport,
     ClassAnswerMap
 )
-from grading.uncertainty import ConsistencyChecker
+from core.grading.uncertainty import ConsistencyChecker
 
 
 class ConsistencyDetector:

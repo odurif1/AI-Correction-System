@@ -430,7 +430,7 @@ class RetroactiveBatch:
             suggested_grade = inc.get("suggested_grade")
 
             if suggested_grade is None:
-                from grading.uncertainty import ConsistencyChecker
+                from core.grading.uncertainty import ConsistencyChecker
                 checker = ConsistencyChecker()
                 suggested_grade = checker.suggest_unified_grade(inc)
 

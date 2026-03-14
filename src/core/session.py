@@ -23,7 +23,7 @@ from ai.provider_factory import create_comparison_provider
 from audit.builder import build_audit_from_llm_comparison
 from config.settings import get_settings
 from analysis.cross_copy import CrossCopyAnalyzer
-from grading.grader import IntelligentGrader
+from core.grading.grader import IntelligentGrader
 from calibration.retroactive import RetroactiveApplier
 from calibration.consistency import ConsistencyDetector
 from storage.session_store import SessionStore

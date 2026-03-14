@@ -1,12 +1,11 @@
 """
-Compatibility exports for legacy imports.
+Grading helpers kept close to the core orchestration layer.
 """
 
-from core.grading import (
-    ClassFeedbackSummary,
+from core.grading.feedback import FeedbackGenerator, ClassFeedbackSummary
+from core.grading.grader import IntelligentGrader
+from core.grading.uncertainty import (
     ConsistencyChecker,
-    FeedbackGenerator,
-    IntelligentGrader,
     UncertaintyCalculator,
     UncertaintySource,
 )
