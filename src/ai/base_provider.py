@@ -273,11 +273,15 @@ class BaseProvider(ABC):
     def get_token_usage(self) -> Dict[str, int]:
         """Get total token usage from all calls (O(1))."""
         cached = getattr(self, '_total_cached_tokens', 0)
+        billable_prompt = max(0, self._total_prompt_tokens - cached)
+        billable_total = billable_prompt + self._total_completion_tokens
         return {
             "prompt_tokens": self._total_prompt_tokens,
             "completion_tokens": self._total_completion_tokens,
             "cached_tokens": cached,
             "total_tokens": self._total_prompt_tokens + self._total_completion_tokens,
+            "billable_prompt_tokens": billable_prompt,
+            "billable_total_tokens": billable_total,
             "calls": len(self.call_history)
         }
 

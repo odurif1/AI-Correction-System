@@ -1,8 +1,4 @@
-<p align="center">
-  <img src="web/public/favicon.svg" alt="La Corrigeuse Logo" width="80" height="80">
-</p>
-
-<h1 align="center">La Corrigeuse</h1>
+<h1 align="center">AI Correction System</h1>
 
 <p align="center">
   <strong>Correction automatique de copies par IA pour les professeurs de collège et lycée</strong>
@@ -11,25 +7,23 @@
 <p align="center">
   <a href="#fonctionnalités">Fonctionnalités</a> •
   <a href="#démarrage-rapide">Démarrage</a> •
-  <a href="#tarifs">Tarifs</a> •
   <a href="#documentation">Documentation</a> •
   <a href="#licence">Licence</a>
 </p>
 
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+">
-  <img src="https://img.shields.io/badge/next.js-16-black.svg" alt="Next.js 16">
   <img src="https://img.shields.io/badge/license-MIT-green.svg" alt="License MIT">
   <img src="https://img.shields.io/badge/status-production%20ready-brightgreen.svg" alt="Production Ready">
 </p>
 
 ---
 
-## 🎯 La Corrigeuse en quelques mots
+## 🎯 Présentation
 
-**La Corrigeuse, c'est l'outil qui exécute les corrections indiquées par le correcteur sur les épreuves.**
+**Cette application automatise une partie du travail de correction tout en laissant la décision finale au correcteur.**
 
-Le correcteur, c'est vous. La Corrigeuse, c'est l'IA qui travaille pour vous.
+Le correcteur, c'est vous. L'IA sert d'assistant de correction.
 
 Gagnez 90% de temps sur la correction de vos copies. Deux IA analysent chaque copie indépendamment avec une précision de 95%. Les désaccords sont automatiquement détectés pour vous permettre de trancher.
 
@@ -78,17 +72,11 @@ Deux modèles d'IA différents analysent chaque copie indépendamment :
 - **JSON** : Données complètes avec audit
 - **PDF annotés** : Copies avec corrections et feedback
 
-### 🔒 Multi-tenant & Sécurisé
+### 🔒 API multi-utilisateur
 
 - Comptes utilisateurs individuels
 - Données isolées par utilisateur
-- Stockage en France
-
-### 🇫🇷 100% Français
-
-- Interface en français
-- Support en français
-- Hébergement en France
+- Authentification JWT
 
 ---
 
@@ -97,43 +85,33 @@ Deux modèles d'IA différents analysent chaque copie indépendamment :
 ### Prérequis
 
 - Python 3.10+
-- Node.js 18+
 - Clés API Gemini et/ou OpenAI
 
 ### Installation
 
 ```bash
 # Cloner le repository
-git clone https://github.com/votre-org/lacorrigeuse.git
-cd lacorrigeuse
+git clone https://github.com/<organization>/<repository>.git
+cd <repository>
 
 # Backend Python
 pip install -r requirements.txt
 cp .env.example .env
 # Éditer .env avec vos clés API
-
-# Frontend Next.js
-cd web
-npm install
 ```
 
 ### Lancement
 
 ```bash
-# Terminal 1 : Backend API
+# Backend API
 python src/main.py api --port 8000
-
-# Terminal 2 : Frontend
-cd web && npm run dev
 ```
-
-Accédez à **http://localhost:3000**
 
 ---
 
 ## 💻 Interface CLI
 
-La Corrigeuse peut également être utilisée en ligne de commande pour une correction rapide.
+L'application peut également être utilisée en ligne de commande pour une correction rapide.
 
 ### Commande de base
 
@@ -189,46 +167,11 @@ python -m src.main correct --debug devoir.pdf
 
 ---
 
-## 💰 Tarifs
-
-| Plan | Prix | Copies/mois | Caractéristiques |
-|------|------|-------------|------------------|
-| **Découverte** | Gratuit | 20 | 1 LLM, Export CSV/JSON |
-| **Scolaire** | 9€/mois | 150 | Double IA, Analytics, PDF annotés |
-| **Établissement** | 49€/mois | 1000 | Support prioritaire, Formation |
-
-### Comparatif des plans
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        COMPARATIF DES PLANS                          │
-├────────────────────┬──────────────┬──────────────┬─────────────────┤
-│     Fonctionnalité │  Découverte  │   Scolaire   │  Établissement  │
-├────────────────────┼──────────────┼──────────────┼─────────────────┤
-│ Copies/mois        │      20      │     150      │      1000       │
-│ Double validation  │      ❌       │      ✅       │       ✅        │
-│ Analytics          │      ❌       │      ✅       │       ✅        │
-│ PDF annotés        │      ❌       │      ✅       │       ✅        │
-│ Support prioritaire│      ❌       │      ❌       │       ✅        │
-│ Formation incluse  │      ❌       │      ❌       │       ✅        │
-└────────────────────┴──────────────┴──────────────┴─────────────────┘
-```
-
----
-
 ## 🏗️ Architecture
 
 ### Stack Technique
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        FRONTEND (Next.js 16)                     │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
-│  │   React 19  │  │  Tailwind   │  │  shadcn/ui Components   │  │
-│  └─────────────┘  └─────────────┘  └─────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
 ┌─────────────────────────────────────────────────────────────────┐
 │                        BACKEND (FastAPI)                         │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐  │
@@ -240,8 +183,8 @@ python -m src.main correct --debug devoir.pdf
 ┌─────────────────────────────────────────────────────────────────┐
 │                          AI PROVIDERS                            │
 │  ┌─────────────────────┐          ┌─────────────────────┐       │
-│  │   Google Gemini     │          │     OpenAI GPT-4    │       │
-│  │   gemini-2.5-flash  │          │       gpt-4o        │       │
+│  │ Provider 1          │          │ Provider 2          │       │
+│  │ configured model    │          │ configured model    │       │
 │  └─────────────────────┘          └─────────────────────┘       │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -249,25 +192,7 @@ python -m src.main correct --debug devoir.pdf
 ### Structure du Code
 
 ```
-lacorrigeuse/
-├── 📁 web/                          # Frontend Next.js
-│   ├── 📁 app/                      # Pages (App Router)
-│   │   ├── 📁 auth/                 # Authentification
-│   │   │   ├── 📁 login/           # Page de connexion
-│   │   │   └── 📁 register/        # Page d'inscription
-│   │   ├── 📁 dashboard/           # Tableau de bord
-│   │   ├── 📁 sessions/            # Sessions de correction
-│   │   ├── 📁 pricing/             # Page des tarifs
-│   │   └── 📁 settings/            # Paramètres LLM
-│   ├── 📁 components/              # Composants React
-│   │   ├── 📁 layout/              # Header, Footer
-│   │   ├── 📁 grading/             # Composants de correction
-│   │   └── 📁 ui/                  # shadcn/ui
-│   └── 📁 lib/                     # Utilitaires
-│       ├── api.ts                  # Client API
-│       ├── auth-context.tsx        # Contexte d'auth
-│       └── i18n.tsx                # Internationalisation
-│
+project/
 ├── 📁 src/                         # Backend Python
 │   ├── 📁 api/                     # API REST
 │   │   ├── app.py                  # Application FastAPI
@@ -320,31 +245,27 @@ lacorrigeuse/
 ### Variables d'environnement
 
 ```bash
-# ═══════════════════════════════════════════════════════════════
-# API Keys (au moins une requise)
-# ═══════════════════════════════════════════════════════════════
-AI_CORRECTION_GEMINI_API_KEY=your_gemini_key
-AI_CORRECTION_OPENAI_API_KEY=your_openai_key
+# Setup minimal
+AI_CORRECTION_AI_PROVIDER=<provider>
+AI_CORRECTION_<PROVIDER>_API_KEY=<api-key>
+AI_CORRECTION_JWT_SECRET=<long-random-secret>
 
-# ═══════════════════════════════════════════════════════════════
-# Mode Comparaison (Double LLM)
-# ═══════════════════════════════════════════════════════════════
+# Modèles optionnels
+# AI_CORRECTION_<PROVIDER>_MODEL=<configured-model>
+# AI_CORRECTION_<PROVIDER>_VISION_MODEL=<configured-vision-model>
+
+# Double LLM optionnel
 AI_CORRECTION_COMPARISON_MODE=true
-AI_CORRECTION_LLM1_PROVIDER=gemini
-AI_CORRECTION_LLM1_MODEL=gemini-2.5-flash
-AI_CORRECTION_LLM2_PROVIDER=openai
-AI_CORRECTION_LLM2_MODEL=gpt-4o
+# AI_CORRECTION_LLM1_PROVIDER=<provider-1>
+# AI_CORRECTION_LLM1_MODEL=<model-1>
+# AI_CORRECTION_LLM2_PROVIDER=<provider-2>
+# AI_CORRECTION_LLM2_MODEL=<model-2>
 
-# ═══════════════════════════════════════════════════════════════
-# Authentification
-# ═══════════════════════════════════════════════════════════════
-AI_CORRECTION_JWT_SECRET=your-super-secret-key-change-in-production
-
-# ═══════════════════════════════════════════════════════════════
-# CORS (pour le développement)
-# ═══════════════════════════════════════════════════════════════
-AI_CORRECTION_CORS_ORIGINS=["http://localhost:3000"]
+# Observabilité optionnelle
+# AI_CORRECTION_SENTRY_DSN=
 ```
+
+Consultez aussi `.env.example` pour le template complet à jour.
 
 ---
 
@@ -434,15 +355,7 @@ POST   /api/sessions/{id}/grade             # Lancer la correction
 
 ### WebSocket
 
-```javascript
-// Connexion au WebSocket pour le suivi en temps réel
-const ws = new WebSocket('ws://localhost:8000/api/sessions/{id}/ws');
-
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  // data.type: 'copy_start', 'question_done', 'copy_done', 'session_complete'
-};
-```
+Utilisez l'endpoint `/api/sessions/{id}/ws` pour le suivi temps réel.
 
 ---
 
@@ -474,12 +387,9 @@ ruff check src/
 ### Déploiement
 
 ```bash
-# Build du frontend
-cd web && npm run build
-
 # Variables d'environnement production
 export AI_CORRECTION_JWT_SECRET="production-secret-key"
-export AI_CORRECTION_CORS_ORIGINS='["https://lacorrigeuse.fr"]'
+export AI_CORRECTION_CORS_ORIGINS='["https://app.example.com"]'
 ```
 
 ---
@@ -496,7 +406,7 @@ export AI_CORRECTION_CORS_ORIGINS='["https://lacorrigeuse.fr"]'
 
 ### Économies réalisées
 
-| Scénario | Sans La Corrigeuse | Avec La Corrigeuse |
+| Scénario | Sans l'outil | Avec l'outil |
 |----------|-------------------|-------------------|
 | 100 copies | ~10h | ~15 min |
 | Bac blanc (120 copies) | ~12h | ~20 min |
@@ -527,27 +437,13 @@ export AI_CORRECTION_CORS_ORIGINS='["https://lacorrigeuse.fr"]'
 Les contributions sont les bienvenues !
 
 1. Fork le projet
-2. Créer une branche (`git checkout -b feature/amelioration`)
+2. Créer une branche (`git switch -c feature/amelioration`)
 3. Commit (`git commit -m 'Ajout d'une fonctionnalité'`)
 4. Push (`git push origin feature/amelioration`)
 5. Ouvrir une Pull Request
-
----
-
-## 📧 Contact
-
-- **Site web** : [lacorrigeuse.fr](https://lacorrigeuse.fr)
-- **Email** : contact@lacorrigeuse.fr
-- **Support** : support@lacorrigeuse.fr
-
----
 
 ## 📄 Licence
 
 MIT License - voir [LICENSE](LICENSE)
 
 ---
-
-<p align="center">
-  <strong>Fait avec ❤️ pour les professeurs de France</strong>
-</p>

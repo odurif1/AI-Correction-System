@@ -597,69 +597,55 @@ async def command_correct(args):
     annotated_files = []
     overlay_files = []
     if args.annotate:
-        # Check if annotation model is configured
         annotation_model = get_settings().annotation_model
-        if not annotation_model:
-            cli.console.print(f"\n[yellow]⚠ Annotation skip: AI_CORRECTION_ANNOTATION_MODEL non configuré[/yellow]")
+        state = state.with_phase(WorkflowPhase.ANNOTATION)
+        cli.console.print(f"\n[bold cyan]📄 Annotation des copies...[/bold cyan]")
+
+        if annotation_model:
+            cli.console.print(
+                f"[dim]Placement intelligent activé via AI_CORRECTION_ANNOTATION_MODEL={annotation_model}[/dim]"
+            )
         else:
-            state = state.with_phase(WorkflowPhase.ANNOTATION)
-            cli.console.print(f"\n[bold cyan]📄 Annotation des copies...[/bold cyan]")
+            cli.console.print(
+                "[yellow]⚠ AI_CORRECTION_ANNOTATION_MODEL non configuré: "
+                "fallback heuristique pour générer les PDF annotés et overlays[/yellow]"
+            )
 
-            from export.pdf_annotator import PDFAnnotator
+        from export.annotation_pipeline import AnnotationExportService
 
-            # Create output directories
-            annotated_dir = Path(args.output) / orchestrator.session_id / "annotated"
-            overlay_dir = Path(args.output) / orchestrator.session_id / "overlays"
-            annotated_dir.mkdir(parents=True, exist_ok=True)
-            overlay_dir.mkdir(parents=True, exist_ok=True)
+        annotation_output_dir = Path(args.output) / orchestrator.session_id
+        annotation_service = AnnotationExportService(session=orchestrator.session)
 
-            annotator = PDFAnnotator(session=orchestrator.session)
+        for i, (copy, graded_copy) in enumerate(zip(orchestrator.session.copies, graded), 1):
+            student_name = copy.student_name or f"copie_{i}"
 
-            for i, (copy, graded_copy) in enumerate(zip(orchestrator.session.copies, graded), 1):
-                student_name = copy.student_name or f"copie_{i}"
-                safe_name = student_name.replace(" ", "_").replace("/", "-")
+            try:
+                cli.console.print(f"  [dim]{student_name}...[/dim]", end="")
 
-                # Annotated copy (full PDF with annotations)
-                annotated_path = annotated_dir / f"{safe_name}_annotated.pdf"
-                # Overlay (just annotations, transparent background)
-                overlay_path = overlay_dir / f"{safe_name}_overlay.pdf"
+                artifact = annotation_service.export_copy_artifacts(
+                    copy=copy,
+                    graded=graded_copy,
+                    output_dir=str(annotation_output_dir),
+                    smart_placement=True,
+                    language=language,
+                    filename_stem=student_name,
+                )
+                annotated_files.append(artifact.annotated_pdf)
+                overlay_files.append(artifact.overlay_pdf)
 
-                try:
-                    cli.console.print(f"  [dim]{student_name}...[/dim]", end="")
+                cli.console.print(f" [green]✓[/green]")
+            except Exception as e:
+                cli.console.print(f" [red]✗ {e}[/red]")
 
-                    # Generate annotated copy
-                    annotator.annotate_copy(
-                        copy=copy,
-                        graded=graded_copy,
-                        output_path=str(annotated_path),
-                        smart_placement=True,
-                        language=language
-                    )
-                    annotated_files.append(str(annotated_path))
+        if annotated_files:
+            cli.console.print(f"[green]✓ {len(annotated_files)} copie(s) annotée(s)[/green]")
+            exports['annotated_pdfs'] = str(annotation_output_dir / "annotated")
+        if overlay_files:
+            cli.console.print(f"[green]✓ {len(overlay_files)} overlay(s) généré(s)[/green]")
+            exports['annotation_overlays'] = str(annotation_output_dir / "overlays")
 
-                    # Generate overlay
-                    annotator.create_annotation_overlay(
-                        copy=copy,
-                        graded=graded_copy,
-                        output_path=str(overlay_path),
-                        smart_placement=True,
-                        language=language
-                    )
-                    overlay_files.append(str(overlay_path))
-
-                    cli.console.print(f" [green]✓[/green]")
-                except Exception as e:
-                    cli.console.print(f" [red]✗ {e}[/red]")
-
-            if annotated_files:
-                cli.console.print(f"[green]✓ {len(annotated_files)} copie(s) annotée(s)[/green]")
-                exports['annotated_pdfs'] = str(annotated_dir)
-            if overlay_files:
-                cli.console.print(f"[green]✓ {len(overlay_files)} overlay(s) généré(s)[/green]")
-                exports['annotation_overlays'] = str(overlay_dir)
-
-            # Record ANNOTATION phase tokens
-            record_phase_tokens(WorkflowPhase.ANNOTATION)
+        # Record ANNOTATION phase tokens
+        record_phase_tokens(WorkflowPhase.ANNOTATION)
 
     # Mark complete
     from core.models import SessionStatus
@@ -743,19 +729,29 @@ async def command_correct(args):
                 usage = token_summary['by_phase'][phase_name]
                 label = phase_labels.get(phase_name, phase_name)
                 cached = usage.get('cached', 0)
+                billable = max(0, usage['total'] - cached)
                 total_cached += cached
 
-                # Show cached tokens if present (simpler display)
                 if cached > 0:
-                    cli.console.print(f"  {label}: {usage['total']:,} tokens ({cached:,} cached)")
+                    cli.console.print(
+                        f"  {label}: {usage['total']:,} bruts "
+                        f"({cached:,} cache, {billable:,} facturables)"
+                    )
                 else:
-                    cli.console.print(f"  {label}: {usage['total']:,} tokens")
+                    cli.console.print(f"  {label}: {usage['total']:,} facturables")
 
         # Total
-        cli.console.print(f"  [bold]Total: {token_summary['total']:,}[/bold] tokens")
+        cli.console.print(f"  [bold]Total brut: {token_summary['total']:,}[/bold] tokens")
         if total_cached > 0:
             cli.console.print(f"  [green]✓ Cache hits: {total_cached:,} tokens[/green]")
-        cli.console.print(f"  (Prompt: {token_summary['total_prompt']:,} | Completion: {token_summary['total_completion']:,})")
+        cli.console.print(
+            f"  [bold]Total facturable: {token_summary['total_billable']:,}[/bold] tokens"
+        )
+        cli.console.print(
+            f"  (Prompt brut: {token_summary['total_prompt']:,} | "
+            f"Prompt facturable: {token_summary['total_billable_prompt']:,} | "
+            f"Completion: {token_summary['total_completion']:,})"
+        )
 
         # Show by provider with cost info
         if hasattr(orchestrator.ai, 'get_token_usage'):
@@ -765,11 +761,19 @@ async def command_correct(args):
                 for provider_name, usage in provider_usage['by_provider'].items():
                     cached = usage.get('cached_tokens', 0)
                     total = usage.get('total_tokens', 0)
+                    billable_total = usage.get('billable_total_tokens', max(0, total - cached))
                     calls = usage.get('calls', 0)
                     if cached > 0:
-                        cli.console.print(f"  [{provider_name}] {total:,} tokens ({calls} calls, {cached:,} cached)", markup=False)
+                        cli.console.print(
+                            f"  [{provider_name}] {total:,} bruts "
+                            f"({calls} calls, {cached:,} cache, {billable_total:,} facturables)",
+                            markup=False
+                        )
                     else:
-                        cli.console.print(f"  [{provider_name}] {total:,} tokens ({calls} calls)", markup=False)
+                        cli.console.print(
+                            f"  [{provider_name}] {billable_total:,} facturables ({calls} calls)",
+                            markup=False
+                        )
 
         # Show estimated cost if available
         if hasattr(orchestrator.ai, 'get_estimated_cost'):

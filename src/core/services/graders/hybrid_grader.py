@@ -5,7 +5,7 @@ from typing import List
 
 from core.models import CopyDocument, GradedCopy, SessionStatus
 from core.services.graders.base import BaseGrader, GradingContext
-from audit.builder import build_audit_from_llm_comparison
+from audit.builder import build_audit_from_llm_comparison, extract_final_question_outputs
 from config.settings import get_settings
 from utils.sorting import question_sort_key
 
@@ -203,6 +203,28 @@ class HybridGrader(BaseGrader):
                     grading_scale=ctx.grading_scale
                 )
             )
+
+            if graded.grading_audit:
+                final_outputs = extract_final_question_outputs(graded.grading_audit)
+                graded.confidence_by_question = {
+                    q_id: data["confidence"]
+                    for q_id, data in final_outputs.items()
+                    if data["confidence"] is not None
+                }
+                graded.reasoning = {
+                    q_id: data["reasoning"]
+                    for q_id, data in final_outputs.items()
+                    if data["reasoning"]
+                }
+                graded.student_feedback = {
+                    q_id: data["feedback"]
+                    for q_id, data in final_outputs.items()
+                    if data["feedback"]
+                }
+                if graded.confidence_by_question:
+                    graded.confidence = (
+                        sum(c for c in graded.confidence_by_question.values()) / len(graded.confidence_by_question)
+                    )
 
             if student_name:
                 original_copy.student_name = student_name

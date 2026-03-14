@@ -35,9 +35,9 @@ class DetectionService:
         await self._load_copies_phase()
 
         from core.models import SessionStatus, ClassAnswerMap
-        self.session.transition_to(SessionStatus.DIAGNOSTIC)
         self.session.class_map = ClassAnswerMap()
-        self.session.transition_to(SessionStatus.CORRECTION)
+        if self.session.status == SessionStatus.DIAGNOSTIC:
+            self.session.transition_to(SessionStatus.CORRECTION)
 
         detected_questions = {}
         detected_language = 'fr'
@@ -59,11 +59,9 @@ class DetectionService:
         else:
             questions_detected_during_grading = False
 
-        detected_scale = {q: 1.0 for q in detected_questions.keys()}
-
         return {
             'questions': detected_questions,
-            'scale': detected_scale,
+            'scale': {},
             'scale_detected': False,
             'copies_count': len(self.session.copies),
             'language': detected_language,

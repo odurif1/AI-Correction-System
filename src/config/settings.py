@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     annotation_provider: Optional[str] = None
     annotation_model: Optional[str] = None
 
+    # Review context enrichment (optional - uses heuristic fallback if unset)
+    review_context_provider: Optional[str] = None
+    review_context_model: Optional[str] = None
+
     # Storage
     data_dir: str = "data"
 
@@ -76,12 +80,7 @@ class Settings(BaseSettings):
     sentry_traces_sample_rate: float = 0.1
 
     # CORS
-    cors_origins: list[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
-
-    # Email (password reset)
-    sendgrid_api_key: str = ""
-    sendgrid_sender: str = "noreply@lacorrigeuse.fr"
-    sendgrid_sandbox_mode: bool = False
+    cors_origins: list[str] = []
 
     # Prompt caching
     enable_prompt_caching: bool = True

@@ -150,7 +150,9 @@ class CorrectionState:
             'total_prompt': total_prompt,
             'total_completion': total_completion,
             'total_cached': total_cached,
-            'total': total_prompt + total_completion
+            'total': total_prompt + total_completion,
+            'total_billable_prompt': max(0, total_prompt - total_cached),
+            'total_billable': max(0, total_prompt - total_cached) + total_completion,
         }
 
     def with_language(self, language: str) -> 'CorrectionState':

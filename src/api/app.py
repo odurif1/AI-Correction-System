@@ -1,7 +1,7 @@
 """
-FastAPI application for La Corrigeuse.
+FastAPI application.
 
-Provides web API for grading operations with WebSocket support for real-time progress.
+Provides the public grading API with WebSocket support for real-time progress.
 """
 
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Depends, Security, Request, status
@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import time
+import unicodedata
 
 # Rate limiting
 from slowapi.errors import RateLimitExceeded
@@ -33,7 +34,15 @@ MAX_BATCH_SIZE = 50
 
 # Import workflow state before defining constant
 from core.workflow_state import CorrectionState
-from core.models import SessionStatus
+from core.models import (
+    DocumentPageClassification,
+    DocumentDecision,
+    DocumentSegment,
+    DocumentStatus,
+    DocumentType,
+    SessionDocument,
+    SessionStatus,
+)
 
 # API runs in auto-mode (no CLI interaction)
 API_WORKFLOW_STATE = CorrectionState(auto_mode=True)
@@ -42,6 +51,8 @@ API_WORKFLOW_STATE = CorrectionState(auto_mode=True)
 from config.settings import get_settings
 from pydantic import ValidationError
 from core.session import GradingSessionOrchestrator
+from core.services.document_preparation_service import DocumentPreparationService
+from core.services.review_context_service import ReviewContextService
 from storage.session_store import SessionStore
 from api.websocket import manager as ws_manager
 from api.schemas import (
@@ -54,11 +65,13 @@ from api.schemas import (
     ConfirmDetectionResponse, StudentInfoSchema, CandidateScale,
     StartGradingRequest, UpdateGradeRequest, UpdateGradeResponse, UpdateStudentNameRequest,
     UpdateSessionSubjectRequest, UpdateQuestionWeightRequest, UpdateQuestionWeightResponse,
-    UpdateQuestionNameRequest, UpdateQuestionNameResponse
+    UpdateQuestionNameRequest, UpdateQuestionNameResponse,
+    SessionDocumentResponse, UpdateSessionDocumentRequest, ConfirmSessionDocumentsResponse
 )
 
 # Import auth module
-from api.auth import router as auth_router, get_current_user, get_admin_user
+from api.auth import router as auth_router, get_current_user, get_admin_user, decode_token
+from db import SessionLocal, User
 
 # Import token deduction service
 from services.token_service import TokenDeductionService
@@ -67,8 +80,10 @@ from services.token_service import InsufficientTokensError, UserNotFoundError, D
 # Import health check router
 from api.health import router as health_router
 
-# Import subscription router
-from api.subscription import router as subscription_router
+try:
+    from api.subscription import router as subscription_router
+except ModuleNotFoundError:
+    subscription_router = None
 
 # Import metrics collector
 from utils.metrics import get_metrics_collector
@@ -82,6 +97,7 @@ from asgi_correlation_id import CorrelationIdMiddleware
 # Import structured logging
 from loguru import logger
 from config.logging_config import setup_structured_logging
+from vision.pdf_reader import PDFReader
 
 # Import stdlib logger for compatibility
 stdlib_logger = logging.getLogger(__name__)
@@ -117,6 +133,606 @@ def get_api_key(api_key: str = Security(api_key_header)) -> str:
             detail="Invalid or missing API key"
         )
     return api_key
+
+
+def extract_websocket_token(websocket: WebSocket) -> Optional[str]:
+    """Extract a bearer token from the WebSocket query string or headers."""
+    token = websocket.query_params.get("token")
+    if token:
+        return token
+
+    auth_header = websocket.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        return auth_header.split(" ", 1)[1].strip()
+
+    return None
+
+
+def verify_websocket_session_access(session_id: str, token: Optional[str]) -> Optional[str]:
+    """Validate WebSocket access and return the authorized user_id."""
+    if not token:
+        return None
+
+    payload = decode_token(token)
+    if not payload:
+        return None
+
+    user_id = payload.get("sub")
+    if not user_id:
+        return None
+
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return None
+    finally:
+        db.close()
+
+    store = SessionStore(session_id, user_id=user_id)
+    if not store.exists():
+        return None
+
+    return user_id
+
+
+def serialize_progress_for_client(progress: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip internal fields before sending progress state to the client."""
+    return {
+        "status": progress.get("status"),
+        "copies_uploaded": progress.get("copies_uploaded", 0),
+        "copies_graded": progress.get("copies_graded", 0),
+        "grading_mode": progress.get("grading_mode", "dual"),
+        "error": progress.get("error"),
+    }
+
+
+def get_session_temp_dir(session_id: str) -> Path:
+    """Return the temporary upload directory for a session."""
+    return Path("temp") / session_id
+
+
+def list_uploaded_pdfs(session_id: str) -> List[Path]:
+    """Return uploaded PDFs for a session in deterministic order."""
+    upload_dir = get_session_temp_dir(session_id)
+    if not upload_dir.exists():
+        return []
+    return sorted(upload_dir.glob("*.pdf"))
+
+
+def normalize_document_text(value: str) -> str:
+    """Normalize text for robust keyword matching."""
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    return ascii_only.lower()
+
+
+def score_document_text(text: str) -> Dict[DocumentType, float]:
+    """Score document roles from extracted PDF text."""
+    normalized = normalize_document_text(text)
+
+    grading_keywords = (
+        "bareme", "corrige", "correction", "solution", "points", "notation",
+        "criteres", "elements de correction", "reponses attendues",
+    )
+    subject_keywords = (
+        "exercice", "question", "consigne", "duree", "calculatrice",
+        "repondre", "sujet", "partie", "annexe",
+    )
+    copy_keywords = (
+        "nom", "prenom", "classe", "eleve", "copie", "reponse",
+        "je pense", "mon calcul", "ma reponse",
+    )
+
+    scores = {
+        DocumentType.STUDENT_COPIES: 0.0,
+        DocumentType.SUBJECT_ONLY: 0.0,
+        DocumentType.GRADING_SCHEME: 0.0,
+        DocumentType.RANDOM_DOCUMENT: 0.0,
+    }
+
+    for keyword in grading_keywords:
+        if keyword in normalized:
+            scores[DocumentType.GRADING_SCHEME] += 2.0
+
+    for keyword in subject_keywords:
+        if keyword in normalized:
+            scores[DocumentType.SUBJECT_ONLY] += 1.5
+
+    for keyword in copy_keywords:
+        if keyword in normalized:
+            scores[DocumentType.STUDENT_COPIES] += 1.2
+
+    if "note" in normalized and "/20" in normalized:
+        scores[DocumentType.GRADING_SCHEME] += 1.5
+    if "nom" in normalized and "prenom" in normalized:
+        scores[DocumentType.STUDENT_COPIES] += 1.5
+    if "exercice 1" in normalized or "question 1" in normalized:
+        scores[DocumentType.SUBJECT_ONLY] += 1.0
+
+    if max(scores.values()) == 0:
+        scores[DocumentType.RANDOM_DOCUMENT] = 0.5
+
+    return scores
+
+
+def extract_document_evidence(text: str) -> List[str]:
+    """Return a few human-readable cues found in the document text."""
+    normalized = normalize_document_text(text)
+    evidence: List[str] = []
+    cue_map = [
+        ("nom", "Présence de champs d'identité"),
+        ("prenom", "Présence de champs d'identité"),
+        ("classe", "Référence à une classe"),
+        ("exercice", "Présence d'exercices"),
+        ("question", "Présence de questions"),
+        ("consigne", "Présence de consignes"),
+        ("bareme", "Référence explicite à un barème"),
+        ("corrige", "Référence à une correction"),
+        ("solution", "Référence à des solutions"),
+        ("points", "Référence à des points/notes"),
+    ]
+
+    for keyword, label in cue_map:
+        if keyword in normalized and label not in evidence:
+            evidence.append(label)
+        if len(evidence) >= 4:
+            break
+
+    return evidence
+
+
+def classify_text_snippet(text: str) -> tuple[DocumentType, float, List[str], Optional[str]]:
+    """Classify a single text snippet, typically one page."""
+    scores = score_document_text(text)
+    evidence = extract_document_evidence(text)
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    best_type, best_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    excerpt = text[:180].strip() or None
+
+    if best_score <= 0:
+        return DocumentType.UNCLEAR, 0.1, evidence, excerpt
+    if best_score - second_score < 1.0:
+        return DocumentType.UNCLEAR, min(0.45, max(0.2, best_score / 10)), evidence, excerpt
+    return best_type, min(0.95, 0.35 + best_score / 10), evidence, excerpt
+
+
+def build_document_segments(page_classifications: List[DocumentPageClassification]) -> List[DocumentSegment]:
+    """Merge consecutive pages with the same detected type into segments."""
+    if not page_classifications:
+        return []
+
+    segments: List[DocumentSegment] = []
+    current_start = page_classifications[0].page_number
+    current_end = current_start
+    current_type = page_classifications[0].detected_type
+    confidences = [page_classifications[0].confidence]
+
+    for page in page_classifications[1:]:
+        if page.detected_type == current_type and page.page_number == current_end + 1:
+            current_end = page.page_number
+            confidences.append(page.confidence)
+            continue
+
+        segments.append(DocumentSegment(
+            start_page=current_start,
+            end_page=current_end,
+            detected_type=current_type,
+            confidence=sum(confidences) / len(confidences),
+            page_count=current_end - current_start + 1,
+        ))
+        current_start = page.page_number
+        current_end = page.page_number
+        current_type = page.detected_type
+        confidences = [page.confidence]
+
+    segments.append(DocumentSegment(
+        start_page=current_start,
+        end_page=current_end,
+        detected_type=current_type,
+        confidence=sum(confidences) / len(confidences),
+        page_count=current_end - current_start + 1,
+    ))
+    return segments
+
+
+def classify_document_pages(
+    pdf_path: str,
+) -> tuple[int, List[DocumentPageClassification], List[DocumentSegment], str, Dict[str, float]]:
+    """Classify each page of a PDF and aggregate contiguous segments."""
+    page_count = 0
+    page_classifications: List[DocumentPageClassification] = []
+    excerpt_parts: List[str] = []
+    pages_with_text = 0
+    total_text_chars = 0
+
+    with PDFReader(pdf_path) as reader:
+        page_count = reader.get_page_count()
+        for page_num in range(page_count):
+            page_text = reader.extract_text(page_num).strip()
+            if page_text:
+                pages_with_text += 1
+                total_text_chars += len(page_text)
+            detected_type, confidence, evidence, excerpt = classify_text_snippet(page_text)
+            if excerpt and len(excerpt_parts) < 3:
+                excerpt_parts.append(excerpt)
+            page_classifications.append(
+                DocumentPageClassification(
+                    page_number=page_num + 1,
+                    detected_type=detected_type,
+                    confidence=confidence,
+                    evidence=evidence,
+                    text_excerpt=excerpt,
+                )
+            )
+
+    segments = build_document_segments(page_classifications)
+    combined_excerpt = "\n".join(excerpt_parts[:3]).strip()
+    text_stats = {
+        "pages_with_text": float(pages_with_text),
+        "page_coverage": (pages_with_text / page_count) if page_count else 0.0,
+        "total_text_chars": float(total_text_chars),
+        "avg_chars_per_page": (total_text_chars / page_count) if page_count else 0.0,
+    }
+    return page_count, page_classifications, segments, combined_excerpt, text_stats
+
+
+def score_document_filename(filename: str) -> Dict[DocumentType, float]:
+    """Score document roles from the uploaded filename."""
+    name = normalize_document_text(filename)
+
+    grading_keywords = ("bar", "bareme", "corrige", "solution")
+    subject_keywords = ("sujet", "enonce", "consigne", "instructions")
+    copy_keywords = ("copie", "copies", "eleve", "student", "students", "devoir")
+
+    has_grading = any(keyword in name for keyword in grading_keywords)
+    has_subject = any(keyword in name for keyword in subject_keywords)
+    has_copy = any(keyword in name for keyword in copy_keywords)
+
+    scores = {
+        DocumentType.STUDENT_COPIES: 1.2 if has_copy else 0.0,
+        DocumentType.SUBJECT_ONLY: 1.3 if has_subject else 0.0,
+        DocumentType.GRADING_SCHEME: 1.4 if has_grading else 0.0,
+        DocumentType.RANDOM_DOCUMENT: 0.0,
+    }
+
+    return scores
+
+
+def detect_document_type_from_pdf(
+    pdf_path: str,
+    filename: str,
+) -> tuple[
+    DocumentType,
+    float,
+    List[str],
+    int,
+    Optional[str],
+    List[str],
+    List[DocumentPageClassification],
+    List[DocumentSegment],
+]:
+    """Classify an uploaded PDF from both filename and extracted text."""
+    issues: List[str] = []
+    evidence: List[str] = []
+    page_count = 0
+    extracted_text = ""
+    page_classifications: List[DocumentPageClassification] = []
+    segments: List[DocumentSegment] = []
+    text_stats = {
+        "pages_with_text": 0.0,
+        "page_coverage": 0.0,
+        "total_text_chars": 0.0,
+        "avg_chars_per_page": 0.0,
+    }
+
+    filename_scores = score_document_filename(filename)
+    content_scores = {
+        DocumentType.STUDENT_COPIES: 0.0,
+        DocumentType.SUBJECT_ONLY: 0.0,
+        DocumentType.GRADING_SCHEME: 0.0,
+        DocumentType.RANDOM_DOCUMENT: 0.0,
+    }
+
+    try:
+        page_count, page_classifications, segments, extracted_text, text_stats = classify_document_pages(pdf_path)
+    except Exception as exc:
+        issues.append(f"Lecture du PDF incomplète: {exc}")
+
+    weak_text_signal = (
+        page_count > 0
+        and (
+            text_stats["page_coverage"] < 0.5
+            or text_stats["avg_chars_per_page"] < 40
+        )
+    )
+
+    if extracted_text:
+        content_scores = score_document_text(extracted_text)
+        evidence = extract_document_evidence(extracted_text)
+        if not evidence:
+            evidence = list(
+                dict.fromkeys(
+                    item
+                    for page in page_classifications
+                    for item in page.evidence
+                )
+            )[:4]
+        if weak_text_signal:
+            issues.append("Extraction textuelle partielle: la qualification doit être confirmée sur document scanné.")
+    else:
+        issues.append("Le contenu de ce PDF est difficile à lire sans IA.")
+
+    dominant_page_types = {
+        page.detected_type
+        for page in page_classifications
+        if page.detected_type not in (DocumentType.UNCLEAR, DocumentType.RANDOM_DOCUMENT)
+    }
+    if len(dominant_page_types) > 1:
+        issues.append("Classification ambiguë: document mixte détecté avec plusieurs rôles selon les pages.")
+        excerpt = extracted_text[:220].strip() or None
+        return (
+            DocumentType.UNCLEAR,
+            0.35,
+            issues,
+            page_count,
+            excerpt,
+            evidence,
+            page_classifications,
+            segments,
+        )
+
+    content_weight = 1.5 if weak_text_signal else 2.5
+    combined_scores = {
+        doc_type: (content_scores.get(doc_type, 0.0) * content_weight) + filename_scores.get(doc_type, 0.0)
+        for doc_type in (
+            DocumentType.STUDENT_COPIES,
+            DocumentType.SUBJECT_ONLY,
+            DocumentType.GRADING_SCHEME,
+            DocumentType.RANDOM_DOCUMENT,
+        )
+    }
+
+    ranked = sorted(combined_scores.items(), key=lambda item: item[1], reverse=True)
+    best_type, best_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    filename_only_signal = (
+        not extracted_text
+        and not dominant_page_types
+        and filename_scores.get(best_type, 0.0) > 0
+    )
+
+    if best_score <= 0:
+        issues.append("Type de document non déterminé automatiquement.")
+        return DocumentType.UNCLEAR, 0.1, issues, page_count, None, evidence, page_classifications, segments
+
+    if best_score - second_score < 1.0:
+        issues.append("Classification ambiguë: plusieurs rôles possibles après analyse du contenu.")
+        excerpt = extracted_text[:220].strip() or None
+        return (
+            DocumentType.UNCLEAR,
+            min(0.45, max(0.2, best_score / 10)),
+            issues,
+            page_count,
+            excerpt,
+            evidence,
+            page_classifications,
+            segments,
+        )
+
+    confidence = min(0.95, 0.35 + best_score / 10)
+    if filename_only_signal:
+        issues.append("Classification basée principalement sur le nom du fichier: confirmation manuelle recommandée.")
+        confidence = min(confidence, 0.3)
+    elif weak_text_signal:
+        confidence = min(confidence, 0.55)
+    excerpt = extracted_text[:220].strip() or None
+    return best_type, confidence, issues, page_count, excerpt, evidence, page_classifications, segments
+
+
+def serialize_session_document(document: SessionDocument) -> SessionDocumentResponse:
+    """Convert an internal document model to API response schema."""
+    return SessionDocumentResponse(
+        document_id=document.id,
+        filename=document.filename,
+        storage_path=document.storage_path,
+        page_count=document.page_count,
+        status=document.status.value,
+        detected_type=document.detected_type.value,
+        confidence=document.confidence,
+        issues=document.issues,
+        evidence=document.evidence,
+        text_excerpt=document.text_excerpt,
+        page_classifications=[item.model_dump(mode="json") for item in document.page_classifications],
+        segments=[item.model_dump(mode="json") for item in document.segments],
+        user_decision=document.user_decision.value,
+        usable=document.usable,
+    )
+
+
+def get_disagreement_answer_excerpt(
+    question_audit: Any,
+    copy: Optional[Any],
+) -> tuple[Optional[str], Optional[str]]:
+    """Return a central excerpt only when the system has a legitimate final reading."""
+    resolution = getattr(question_audit, "resolution", None)
+    if resolution and resolution.reading_consensus and resolution.final_reading:
+        return resolution.final_reading.strip(), "lecture_finale_consensuelle"
+
+    return None, None
+
+
+def build_disagreement_response(
+    session: Any,
+    graded: Any,
+    copy: Optional[Any],
+    copy_index: int,
+    question_id: str,
+    question_audit: Any,
+    provider1: Optional[Any],
+    provider2: Optional[Any],
+    llm1_result: Any,
+    llm2_result: Any,
+    resolved: bool,
+) -> DisagreementResponse:
+    """Build a professor-facing disagreement with the minimum useful context."""
+    answer_excerpt, answer_excerpt_source = get_disagreement_answer_excerpt(
+        question_audit,
+        copy,
+    )
+    grade_gap = abs(getattr(llm1_result, "grade", 0) - getattr(llm2_result, "grade", 0))
+    reading_similarity = getattr(question_audit.resolution, "initial_reading_similarity", None)
+    has_reading_disagreement = (
+        question_audit.resolution.reading_consensus is False
+        or (reading_similarity is not None and reading_similarity < 0.8)
+    )
+    has_grade_disagreement = grade_gap > 0.5 or question_audit.resolution.agreement is False
+    if has_grade_disagreement and has_reading_disagreement:
+        disagreement_type = "grade+reading"
+    elif has_reading_disagreement:
+        disagreement_type = "reading"
+    else:
+        disagreement_type = "grade"
+
+    pdf_question_text = review_context_service.extract_question_text_from_pdf(
+        copy.pdf_path if copy else None,
+        question_hint=session.policy.question_names.get(question_id) or question_id,
+    )
+    question_text_candidates = []
+    if isinstance(pdf_question_text, str) and pdf_question_text.strip():
+        question_text_candidates.append(pdf_question_text.strip())
+    for candidate in (
+        getattr(llm1_result, "question_text", None),
+        getattr(llm2_result, "question_text", None),
+    ):
+        if isinstance(candidate, str):
+            normalized = candidate.strip()
+            if normalized:
+                question_text_candidates.append(normalized)
+
+    question_text = max(question_text_candidates, key=len) if question_text_candidates else None
+    review_context = review_context_service.build_context(
+        question_text=question_text,
+        llm_reasonings=[
+            getattr(llm1_result, "reasoning", "") or "",
+            getattr(llm2_result, "reasoning", "") or "",
+        ],
+    )
+
+    return DisagreementResponse(
+        copy_id=graded.copy_id,
+        copy_index=copy_index,
+        student_name=copy.student_name if copy else None,
+        question_id=question_id,
+        question_label=session.policy.question_names.get(question_id) or question_id,
+        question_text=question_text,
+        review_context=review_context,
+        disagreement_type=disagreement_type,
+        answer_excerpt=answer_excerpt,
+        answer_excerpt_source=answer_excerpt_source,
+        start_page=copy.start_page if copy else None,
+        end_page=copy.end_page if copy else None,
+        max_points=question_audit.resolution.final_max_points,
+        llm1={
+            "provider": provider1.model if provider1 else "unknown",
+            "model": provider1.model if provider1 else "unknown",
+            "grade": llm1_result.grade,
+            "confidence": llm1_result.confidence,
+            "reasoning": llm1_result.reasoning,
+            "reading": llm1_result.reading,
+        },
+        llm2={
+            "provider": provider2.model if provider2 else "unknown",
+            "model": provider2.model if provider2 else "unknown",
+            "grade": llm2_result.grade,
+            "confidence": llm2_result.confidence,
+            "reasoning": llm2_result.reasoning,
+            "reading": llm2_result.reading,
+        },
+        resolved=resolved,
+    )
+
+
+document_preparation_service = DocumentPreparationService()
+review_context_service = ReviewContextService()
+
+
+def get_session_copy_documents(session) -> List[SessionDocument]:
+    """Return documents that should be used as student copies for the session."""
+    confirmed = document_preparation_service.get_copy_documents(session)
+    if confirmed:
+        return confirmed
+
+    classified = [
+        doc for doc in session.documents
+        if doc.detected_type == DocumentType.STUDENT_COPIES
+        and doc.user_decision != DocumentDecision.EXCLUDE
+    ]
+    return classified
+
+
+def estimate_session_token_budget(session) -> int:
+    """Estimate token usage for a grading run using the session's copy pages."""
+    estimated_tokens_per_page = 10_000  # Conservative sizing for session-level budgeting
+    copy_documents = get_session_copy_documents(session) if session else []
+    total_pages = sum(max(1, doc.page_count or 0) for doc in copy_documents)
+
+    if total_pages == 0 and session:
+        copies = getattr(session, "copies", []) or []
+        total_pages = sum(max(1, getattr(copy, "page_count", 0) or 0) for copy in copies)
+
+    if total_pages == 0 and session:
+        total_pages = max(1, getattr(session, "copies_count", 0) or 0)
+
+    return total_pages * estimated_tokens_per_page
+
+
+def estimate_pages_from_tokens(token_count: int) -> int:
+    """Convert internal token capacity to a user-facing page estimate."""
+    estimated_tokens_per_page = 10_000
+    if token_count <= 0:
+        return 0
+    return max(1, round(token_count / estimated_tokens_per_page))
+
+
+def format_capacity_error(required_tokens: int, remaining_tokens: int, action: str) -> str:
+    """Return a user-facing capacity message without exposing token jargon."""
+    required_pages = estimate_pages_from_tokens(required_tokens)
+    remaining_pages = estimate_pages_from_tokens(remaining_tokens)
+    return (
+        f"Capacité insuffisante pour {action}. "
+        f"Cette opération est estimée à environ {required_pages} page"
+        f"{'s' if required_pages > 1 else ''}. "
+        f"Il vous reste environ {remaining_pages} page"
+        f"{'s' if remaining_pages > 1 else ''} dans votre forfait."
+    )
+
+
+def get_session_reference_documents(session) -> List[SessionDocument]:
+    """Return confirmed reference documents for subject/barème."""
+    return document_preparation_service.get_reference_documents(session)
+
+
+def confirm_session_documents(session) -> tuple[List[str], List[str], List[str], List[str]]:
+    """Apply user decisions and validate the resulting document configuration."""
+    prepared = document_preparation_service.apply_document_decisions(session)
+    issues = [question.message for question in prepared.questions_for_user]
+    return (
+        prepared.copy_document_ids,
+        prepared.reference_document_ids,
+        prepared.excluded_document_ids,
+        issues,
+    )
+
+
+def delete_session_artifacts(store: SessionStore, session_id: str) -> bool:
+    """Delete persistent and temporary artifacts for a session."""
+    deleted = store.delete()
+    temp_dir = get_session_temp_dir(session_id)
+    if temp_dir.exists():
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    return deleted
 
 
 # ============================================================================
@@ -211,8 +827,8 @@ def create_app() -> FastAPI:
     settings = get_settings()
 
     app = FastAPI(
-        title="La Corrigeuse",
-        description="Correction automatique par IA pour les professeurs de collège et lycée",
+        title="AI Correction System",
+        description="API de correction automatique de copies par IA",
         version="1.0.0"
     )
 
@@ -290,8 +906,8 @@ def create_app() -> FastAPI:
     # Include health check router
     app.include_router(health_router, tags=["health"])
 
-    # Include subscription router
-    app.include_router(subscription_router, prefix="/api")
+    if subscription_router is not None:
+        app.include_router(subscription_router, prefix="/api")
 
     # Session storage (in-memory for active grading)
     active_sessions: Dict[str, GradingSessionOrchestrator] = {}
@@ -330,19 +946,23 @@ def create_app() -> FastAPI:
         - session_error: When session-level error occurs (error)
         - progress_sync: Current progress state (status, copies_uploaded, copies_graded, grading_mode)
         """
+        token = extract_websocket_token(websocket)
+        user_id = verify_websocket_session_access(session_id, token)
+        if not user_id:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
+
         await ws_manager.connect(websocket, session_id)
         try:
             # Send current progress state on connect (for reconnection)
             if session_id in session_progress:
                 progress = session_progress[session_id]
+                if progress.get("user_id") != user_id:
+                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                    return
                 await websocket.send_json({
                     "type": "progress_sync",
-                    "data": {
-                        "status": progress.get("status"),
-                        "copies_uploaded": progress.get("copies_uploaded", 0),
-                        "copies_graded": progress.get("copies_graded", 0),
-                        "grading_mode": progress.get("grading_mode", "dual")
-                    }
+                    "data": serialize_progress_for_client(progress)
                 })
 
             # Keep connection alive and handle client messages
@@ -354,9 +974,13 @@ def create_app() -> FastAPI:
                 # Handle client requests for current state
                 elif data == "sync":
                     if session_id in session_progress:
+                        progress = session_progress[session_id]
+                        if progress.get("user_id") != user_id:
+                            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                            return
                         await websocket.send_json({
                             "type": "progress_sync",
-                            "data": session_progress[session_id]
+                            "data": serialize_progress_for_client(progress)
                         })
         except WebSocketDisconnect:
             ws_manager.disconnect(websocket, session_id)
@@ -372,7 +996,7 @@ def create_app() -> FastAPI:
     async def root():
         """Root endpoint."""
         return {
-            "name": "La Corrigeuse",
+            "name": "AI Correction System",
             "version": "1.0.0",
             "docs": "/docs"
         }
@@ -454,44 +1078,24 @@ def create_app() -> FastAPI:
                 detail=f"Trop de fichiers. Maximum {MAX_BATCH_SIZE} PDFs par lot."
             )
 
-        # Check quota
-        db = SessionLocal()
-        try:
-            db_user = db.query(User).filter(User.id == user_id).first()
-            if db_user:
-                # Count PDF files
-                pdf_count = sum(1 for f in files if f.filename and f.filename.lower().endswith(".pdf"))
-                if not db_user.can_grade_copies(pdf_count):
-                    raise HTTPException(
-                        status_code=402,  # Payment Required
-                        detail=f"Quota dépassé. Vous avez {db_user.remaining_copies} copies restantes sur {pdf_count} demandées."
-                    )
-        finally:
-            db.close()
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
 
-        if session_id not in active_sessions:
-            # Try to load existing session
-            store = SessionStore(session_id, user_id=user_id)
-            if not store.exists():
-                raise HTTPException(status_code=404, detail="Session not found")
-            # Create orchestrator for existing session
-            orchestrator = GradingSessionOrchestrator(
-                session_id=session_id,
-                user_id=user_id,
-                workflow_state=API_WORKFLOW_STATE
-            )
-            active_sessions[session_id] = orchestrator
-
-        orchestrator = active_sessions[session_id]
+        active_sessions.pop(session_id, None)
 
         # Save uploaded files
-        upload_dir = Path(f"temp/{session_id}")
+        upload_dir = get_session_temp_dir(session_id)
+        if upload_dir.exists():
+            shutil.rmtree(upload_dir, ignore_errors=True)
         upload_dir.mkdir(parents=True, exist_ok=True)
 
         # Resolve to absolute path for validation
         upload_dir_resolved = upload_dir.resolve()
 
         pdf_paths = []
+        session_documents: List[SessionDocument] = []
         validation_results = []
 
         for file in files:
@@ -545,10 +1149,45 @@ def create_app() -> FastAPI:
                 with open(file_path, "wb") as f:
                     shutil.copyfileobj(file.file, f)
                 pdf_paths.append(str(file_path))
+                (
+                    detected_type,
+                    confidence,
+                    issues,
+                    page_count,
+                    text_excerpt,
+                    evidence,
+                    page_classifications,
+                    segments,
+                ) = detect_document_type_from_pdf(
+                    str(file_path),
+                    file.filename,
+                )
+                session_documents.append(SessionDocument(
+                    filename=file.filename,
+                    storage_path=str(file_path),
+                    page_count=page_count,
+                    detected_type=detected_type,
+                    confidence=confidence,
+                    issues=issues,
+                    evidence=evidence,
+                    text_excerpt=text_excerpt,
+                    page_classifications=page_classifications,
+                    segments=segments,
+                    status=DocumentStatus.CLASSIFIED,
+                    user_decision=DocumentDecision.PENDING,
+                    usable=False,
+                ))
                 validation_results.append({
                     "filename": file.filename,
                     "success": True,
-                    "path": str(file_path)
+                    "path": str(file_path),
+                    "detected_type": detected_type.value,
+                    "confidence": confidence,
+                    "issues": issues,
+                    "evidence": evidence,
+                    "text_excerpt": text_excerpt,
+                    "page_classifications": [item.model_dump(mode="json") for item in page_classifications],
+                    "segments": [item.model_dump(mode="json") for item in segments],
                 })
             except Exception as e:
                 validation_results.append({
@@ -557,17 +1196,132 @@ def create_app() -> FastAPI:
                     "error": str(e)
                 })
 
+        if not pdf_paths:
+            raise HTTPException(
+                status_code=400,
+                detail="Aucun PDF valide n'a été envoyé."
+            )
+
+        store.clear_processing_artifacts()
+        session.status = SessionStatus.DIAGNOSTIC
+        session.documents = session_documents
+        session.prepared_correction = None
+        session.copies = []
+        session.graded_copies = []
+        session.class_map = None
+        session.copies_processed = 0
+        store.save_session(session)
+
         # Update session progress
-        if session_id in session_progress:
-            session_progress[session_id]["copies_uploaded"] = len(pdf_paths)
-            session_progress[session_id]["status"] = "uploaded"
+        session_progress[session_id] = {
+            "status": "uploaded",
+            "copies_uploaded": len(pdf_paths),
+            "copies_graded": 0,
+            "disagreements": [],
+            "user_id": user_id,
+        }
 
         return {
             "session_id": session_id,
             "uploaded_count": len(pdf_paths),
             "paths": pdf_paths,
-            "validation_results": validation_results
+            "validation_results": validation_results,
+            "documents": [serialize_session_document(doc).model_dump() for doc in session_documents],
         }
+
+    @app.get("/api/sessions/{session_id}/documents", response_model=List[SessionDocumentResponse])
+    async def list_session_documents(session_id: str, current_user = Depends(get_current_user)):
+        """List uploaded documents and their current classification state."""
+        store = SessionStore(session_id, user_id=current_user.id)
+        session = store.load_session()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        return [serialize_session_document(doc) for doc in session.documents]
+
+    @app.patch("/api/sessions/{session_id}/documents/{document_id}", response_model=SessionDocumentResponse)
+    async def update_session_document(
+        session_id: str,
+        document_id: str,
+        request: UpdateSessionDocumentRequest,
+        current_user = Depends(get_current_user)
+    ):
+        """Update the explicit role of a session document."""
+        store = SessionStore(session_id, user_id=current_user.id)
+        session = store.load_session()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        document = next((doc for doc in session.documents if doc.id == document_id), None)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        document.user_decision = DocumentDecision(request.user_decision)
+        document.usable = document.user_decision != DocumentDecision.EXCLUDE
+        document.status = (
+            DocumentStatus.REJECTED
+            if document.user_decision == DocumentDecision.EXCLUDE
+            else DocumentStatus.CLASSIFIED
+        )
+        session.prepared_correction = None
+        store.save_session(session)
+        return serialize_session_document(document)
+
+    @app.post("/api/sessions/{session_id}/documents/confirm", response_model=ConfirmSessionDocumentsResponse)
+    async def confirm_session_documents_endpoint(
+        session_id: str,
+        current_user = Depends(get_current_user)
+    ):
+        """Confirm uploaded documents and validate the session configuration."""
+        store = SessionStore(session_id, user_id=current_user.id)
+        session = store.load_session()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        copy_ids, reference_ids, excluded_ids, issues = confirm_session_documents(session)
+        store.save_session(session)
+
+        return ConfirmSessionDocumentsResponse(
+            success=not issues,
+            copies_document_ids=copy_ids,
+            reference_document_ids=reference_ids,
+            excluded_document_ids=excluded_ids,
+            issues=issues,
+            prepared_correction=(
+                session.prepared_correction.model_dump(mode="json")
+                if session.prepared_correction
+                else None
+            ),
+        )
+
+    @app.get("/api/sessions/{session_id}/documents/{document_id}/pdf")
+    async def get_session_document_pdf(
+        session_id: str,
+        document_id: str,
+        current_user = Depends(get_current_user)
+    ):
+        """Stream an uploaded session document PDF for manual verification."""
+        store = SessionStore(session_id, user_id=current_user.id)
+        session = store.load_session()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        document = next((doc for doc in session.documents if doc.id == document_id), None)
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        pdf_path = Path(document.storage_path)
+        if not pdf_path.exists():
+            raise HTTPException(status_code=404, detail="PDF not found")
+
+        def iterfile():
+            with open(pdf_path, "rb") as f:
+                yield from f
+
+        return StreamingResponse(
+            iterfile(),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{pdf_path.name}"'},
+        )
 
     @app.post("/api/sessions/{session_id}/detect", response_model=DetectionResponse)
     async def detect_session(
@@ -591,20 +1345,28 @@ def create_app() -> FastAPI:
 
         # Check session exists
         store = SessionStore(session_id, user_id=user_id)
-        if not store.exists():
+        session = store.load_session()
+        if not session:
             raise HTTPException(status_code=404, detail="Session not found")
 
-        # Get uploaded PDF
-        upload_dir = Path(f"temp/{session_id}")
-        if not upload_dir.exists():
-            raise HTTPException(status_code=400, detail="No PDF uploaded yet")
+        if session.documents and session.prepared_correction and not session.prepared_correction.ready_to_grade:
+            blocking_messages = [question.message for question in session.prepared_correction.questions_for_user]
+            raise HTTPException(status_code=400, detail=" ".join(blocking_messages))
 
-        pdf_files = list(upload_dir.glob("*.pdf"))
-        if not pdf_files:
-            raise HTTPException(status_code=400, detail="No PDF file found")
+        copy_documents = get_session_copy_documents(session)
+        if session.documents and not copy_documents:
+            raise HTTPException(
+                status_code=400,
+                detail="Aucun document n'est actuellement utilisable comme copie élève. Confirmez les documents d'abord."
+            )
 
-        # Use the first PDF (we only support one PDF per session)
-        pdf_path = str(pdf_files[0])
+        if copy_documents:
+            pdf_path = copy_documents[0].storage_path
+        else:
+            pdf_files = list_uploaded_pdfs(session_id)
+            if not pdf_files:
+                raise HTTPException(status_code=400, detail="No PDF file found")
+            pdf_path = str(pdf_files[0])
 
         # Check tier-based limits for re-detection (force_refresh)
         if request.force_refresh:
@@ -632,7 +1394,6 @@ def create_app() -> FastAPI:
             session_progress[session_id]["status"] = "detection"
 
         # Update session file status
-        session = store.load_session()
         if session:
             session.status = SessionStatus.DIAGNOSTIC
             store.save_session(session)
@@ -647,8 +1408,39 @@ def create_app() -> FastAPI:
 
             result = detector.detect(pdf_path, mode=request.mode, force_refresh=request.force_refresh)
 
+            if len(copy_documents) > 1:
+                result.warnings.append(
+                    "Plusieurs documents de copies ont été fournis. La détection initiale utilise le premier document confirmé; la correction utilisera tout le lot confirmé."
+                )
+
             # Debug log for exam_name
             logger.info(f"Detection result exam_name: {result.exam_name}")
+
+            # Deduct actual tokens used by detection, independently from grading.
+            detection_usage_key = f"{session_id}:detection:{result.detection_id}"
+            db = SessionLocal()
+            try:
+                deduction_svc = TokenDeductionService()
+                deduction_svc.deduct_grading_usage(
+                    user_id=user_id,
+                    provider=detector.provider,
+                    session_id=detection_usage_key,
+                    db=db,
+                )
+            except InsufficientTokensError as e:
+                raise HTTPException(
+                    status_code=402,
+                    detail=format_capacity_error(
+                        e.tokens_required,
+                        e.tokens_remaining,
+                        "enregistrer cette détection",
+                    ),
+                )
+            except (UserNotFoundError, DeductionError) as e:
+                logger.error(f"Detection token deduction failed for session {session_id}: {e}")
+                raise HTTPException(status_code=500, detail="Failed to record detection token usage.")
+            finally:
+                db.close()
 
             # Store result in session for later use
             store.save_detection(result)
@@ -790,34 +1582,57 @@ def create_app() -> FastAPI:
                         if student.index == student_idx:
                             student.name = name
                             break
-                # Save updated detection with new names
-                store.save_detection(detection)
 
-        # Update session with confirmed settings
+        # Persist the adjusted detection result even if grading cannot start yet.
+        detection.grading_scale = grading_scale
+        detection.questions_detected = list(grading_scale.keys())
+        store.save_detection(detection)
+
         session = store.load_session()
-        if session:
-            # Set question weights from final grading scale
-            session.policy.question_weights = grading_scale
-            session.status = SessionStatus.CORRECTION  # Grading starts now
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
 
-            # Propagate exam_name to session.policy.subject if not already set
-            if detection.exam_name and not session.policy.subject:
-                session.policy.subject = detection.exam_name
-
-            # Store student name adjustments in session metadata for later use
-            if not session.storage_path:
-                session.storage_path = str(store.session_dir)
-
+        copy_document_ids, reference_document_ids, excluded_document_ids, document_issues = confirm_session_documents(session)
+        if document_issues:
             store.save_session(session)
+            raise HTTPException(status_code=400, detail=" ".join(document_issues))
 
-        # Update progress
+        # Persist confirmed grading settings before checking quota so the teacher never loses edits.
+        session.policy.question_weights = grading_scale
+
+        # Propagate exam_name to session.policy.subject if not already set
+        if detection.exam_name and not session.policy.subject:
+            session.policy.subject = detection.exam_name
+
+        if not session.storage_path:
+            session.storage_path = str(store.session_dir)
+
+        store.save_session(session)
+
+        user_id = current_user.id
+        copy_documents = get_session_copy_documents(session) if session else []
+        if not copy_documents:
+            raise HTTPException(status_code=400, detail="Aucun document de copies confirmé pour cette session.")
+
+        estimated_tokens = estimate_session_token_budget(session)
+        if not current_user.can_use_tokens(estimated_tokens):
+            raise HTTPException(
+                status_code=402,
+                detail=format_capacity_error(
+                    estimated_tokens,
+                    current_user.remaining_tokens,
+                    "lancer cette correction",
+                ),
+            )
+
+        # Update session with confirmed settings only once grading can actually start.
+        session.status = SessionStatus.CORRECTION
+        store.save_session(session)
+
         if session_id in session_progress:
             session_progress[session_id]["status"] = "correction"
 
         # Auto-start grading after confirmation
-        user_id = current_user.id
-
-        # Get or create orchestrator with grading configuration
         if session_id not in active_sessions:
             orchestrator = GradingSessionOrchestrator(
                 session_id=session_id,
@@ -829,15 +1644,10 @@ def create_app() -> FastAPI:
             active_sessions[session_id] = orchestrator
         else:
             orchestrator = active_sessions[session_id]
-            # Update grading configuration on existing orchestrator
             orchestrator._grading_mode = request.grading_mode
             orchestrator._batch_verify = request.batch_verify
 
-        # Get uploaded PDF paths
-        upload_dir = Path(f"temp/{session_id}")
-        if upload_dir.exists():
-            pdf_paths = [str(p) for p in upload_dir.glob("*.pdf")]
-            orchestrator.pdf_paths = pdf_paths
+        orchestrator.pdf_paths = [doc.storage_path for doc in copy_documents]
 
         # Create progress callback for WebSocket
         progress_callback = ws_manager.create_progress_callback(session_id)
@@ -1089,10 +1899,16 @@ def create_app() -> FastAPI:
             max_score=max_score,
             subject=subject,
             topic=session.policy.topic,
+            prepared_correction=(
+                session.prepared_correction.model_dump(mode="json")
+                if session.prepared_correction
+                else None
+            ),
+            documents=[serialize_session_document(doc).model_dump() for doc in session.documents],
             copies=copies,
             graded_copies=graded_copies,
             question_weights=session.policy.question_weights,
-            question_names=session.policy.question_names
+            question_names=session.policy.question_names,
         )
 
     @app.patch("/api/sessions/{session_id}/copies/{copy_id}/grades", response_model=UpdateGradeResponse)
@@ -1335,8 +2151,11 @@ def create_app() -> FastAPI:
         if session_id in session_progress:
             del session_progress[session_id]
 
-        # Delete the session directory
-        success = store.delete()
+        if hasattr(app.state, 'metrics_collector'):
+            app.state.metrics_collector.remove_active_session(session_id)
+
+        # Delete persistent and temporary session artifacts
+        success = delete_session_artifacts(store, session_id)
 
         return {"success": success}
 
@@ -1365,6 +2184,17 @@ def create_app() -> FastAPI:
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
 
+        if session.documents:
+            if session.prepared_correction and not session.prepared_correction.ready_to_grade:
+                blocking_messages = [question.message for question in session.prepared_correction.questions_for_user]
+                raise HTTPException(status_code=400, detail=" ".join(blocking_messages))
+            copy_documents = get_session_copy_documents(session)
+            if not copy_documents or any(doc.status != DocumentStatus.CONFIRMED for doc in copy_documents):
+                raise HTTPException(
+                    status_code=400,
+                    detail="Les documents de la session doivent être qualifiés et confirmés avant de lancer la correction."
+                )
+
         # Determine force_single_llm based on request
         force_single_llm = request.grading_mode == "single"
 
@@ -1391,10 +2221,24 @@ def create_app() -> FastAPI:
             session_progress[session_id]["grading_mode"] = request.grading_mode
 
         # Get uploaded PDF paths
-        upload_dir = Path(f"temp/{session_id}")
-        if upload_dir.exists():
-            pdf_paths = [str(p) for p in upload_dir.glob("*.pdf")]
-            orchestrator.pdf_paths = pdf_paths
+        copy_documents = get_session_copy_documents(session)
+        if copy_documents:
+            orchestrator.pdf_paths = [doc.storage_path for doc in copy_documents]
+        else:
+            pdf_files = list_uploaded_pdfs(session_id)
+            if pdf_files:
+                orchestrator.pdf_paths = [str(p) for p in pdf_files]
+
+        estimated_tokens = estimate_session_token_budget(session)
+        if not current_user.can_use_tokens(estimated_tokens):
+            raise HTTPException(
+                status_code=402,
+                detail=format_capacity_error(
+                    estimated_tokens,
+                    current_user.remaining_tokens,
+                    "lancer cette correction",
+                ),
+            )
 
         # Create progress callback for WebSocket
         progress_callback = ws_manager.create_progress_callback(session_id)
@@ -1595,12 +2439,23 @@ def create_app() -> FastAPI:
     async def get_analytics(session_id: str, current_user = Depends(get_current_user)):
         """Get analytics for a session."""
         user_id = current_user.id
-        orchestrator = GradingSessionOrchestrator(
-            session_id=session_id,
-            user_id=user_id,
-            workflow_state=API_WORKFLOW_STATE
-        )
-        analytics = orchestrator.get_analytics()
+        from export.analytics import AnalyticsGenerator
+
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        report = AnalyticsGenerator(session).generate()
+        analytics = {
+            "mean_score": report.mean_score,
+            "median_score": report.median_score,
+            "std_dev": report.std_dev,
+            "min_score": report.min_score,
+            "max_score": report.max_score,
+            "score_distribution": report.score_distribution,
+            "question_stats": {q: {"mean": s.get("mean", 0)} for q, s in report.question_stats.items()},
+        }
 
         return AnalyticsResponse(**analytics)
 
@@ -1699,32 +2554,51 @@ def create_app() -> FastAPI:
                         provider1 = next((p for p in audit.providers if p.id == llm_ids[0]), None)
                         provider2 = next((p for p in audit.providers if p.id == llm_ids[1]), None)
 
-                        disagreements.append(DisagreementResponse(
-                            copy_id=graded.copy_id,
-                            copy_index=copy_index,
-                            student_name=copy.student_name if copy else None,
-                            question_id=q_id,
-                            max_points=qaudit.resolution.final_max_points,
-                            llm1={
-                                "provider": provider1.model if provider1 else "unknown",
-                                "model": provider1.model if provider1 else "unknown",
-                                "grade": grade1,
-                                "confidence": llm1_result.confidence,
-                                "reasoning": llm1_result.reasoning,
-                                "reading": llm1_result.reading
-                            },
-                            llm2={
-                                "provider": provider2.model if provider2 else "unknown",
-                                "model": provider2.model if provider2 else "unknown",
-                                "grade": grade2,
-                                "confidence": llm2_result.confidence,
-                                "reasoning": llm2_result.reasoning,
-                                "reading": llm2_result.reading
-                            },
-                            resolved=qaudit.resolution.agreement or False
-                        ))
+                        disagreements.append(
+                            build_disagreement_response(
+                                session=session,
+                                graded=graded,
+                                copy=copy,
+                                copy_index=copy_index,
+                                question_id=q_id,
+                                question_audit=qaudit,
+                                provider1=provider1,
+                                provider2=provider2,
+                                llm1_result=llm1_result,
+                                llm2_result=llm2_result,
+                                resolved=qaudit.resolution.agreement or False,
+                            )
+                        )
 
         return disagreements
+
+    @app.get("/api/sessions/{session_id}/copies/{copy_id}/pdf")
+    async def get_copy_pdf(session_id: str, copy_id: str, current_user = Depends(get_current_user)):
+        """Stream the original PDF for a specific copy."""
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        copy = next((c for c in session.copies if c.id == copy_id), None)
+        if not copy or not copy.pdf_path:
+            raise HTTPException(status_code=404, detail="Copy not found")
+
+        pdf_path = Path(copy.pdf_path)
+        if not pdf_path.exists():
+            raise HTTPException(status_code=404, detail="PDF not found")
+
+        def iterfile():
+            with open(pdf_path, "rb") as f:
+                yield from f
+
+        return StreamingResponse(
+            iterfile(),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{pdf_path.name}"'},
+        )
 
     @app.post("/api/sessions/{session_id}/disagreements/{copy_id}/{question_id}/resolve")
     async def resolve_disagreement(

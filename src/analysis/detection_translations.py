@@ -34,7 +34,11 @@ TRANSLATIONS_FR = {
             "Chaque nouvelle copie commence généralement par un nom d'élève différent",
             "Si tu vois des noms différents sur des pages différentes = plusieurs élèves",
             "Structure 'one_pdf_all_students' = plusieurs élèves dans UN SEUL fichier PDF",
-            "Structure 'one_pdf_one_student' = un seul élève dans tout le PDF"
+            "Structure 'one_pdf_one_student' = un seul élève dans tout le PDF",
+            "Pour le barème, reprends les identifiants réellement visibles dans le document",
+            "Si les questions sont numérotées 1, 2, 3..., retourne Q1, Q2, Q3...",
+            "N'utilise jamais un intitulé générique seul comme 'Exercice', 'Partie' ou 'Section' comme clé de barème",
+            "Si le barème n'est pas lisible de façon fiable, retourne un grading_scale vide et ajoute un warning"
         ],
 
         # Blocking criteria
@@ -86,8 +90,8 @@ TRANSLATIONS_FR = {
         "structure_ambiguous": "Structure ambiguë",
 
         # JSON examples
-        "json_student_name": "Jean Dupont",
-        "json_other_student": "Marie Martin",
+        "json_student_name": "Eleve A",
+        "json_other_student": "Eleve B",
 
         # Final
         "final_instruction": "Analyse TOUTES les pages du document et retourne ton analyse au format JSON.",
@@ -116,10 +120,14 @@ TRANSLATIONS_FR = {
     "quality_issue_translations": {
         "Pages are not perfectly aligned": "Les pages ne sont pas parfaitement alignées",
         "Some handwriting is difficult to read": "Certaines écritures sont difficiles à lire",
+        "Handwriting difficult to read in some places.": "Écriture difficile à lire par endroits.",
+        "Handwriting is difficult to read in places.": "Écriture difficile à lire par endroits.",
+        "Handwriting is difficult to read in some places.": "Écriture difficile à lire par endroits.",
         "Hard to read handwriting": "Écriture difficile à lire",
         "Rotated or misaligned pages": "Pages tournées ou mal alignées",
         "Stains or marks on the document": "Taches ou marques sur le document",
         "Low scan quality": "Qualité de scan faible",
+        "Scan quality is low in some areas.": "La qualité du scan est faible à certains endroits.",
         "Illegible student names": "Noms d'élèves illisibles",
         "Low quality scan": "Scan de basse qualité",
         "Blurry images": "Images floues",
@@ -128,6 +136,26 @@ TRANSLATIONS_FR = {
         "Watermarks interfering": "Filigranes gênants",
         "Dark or light spots": "Taches sombres ou claires",
         "Text cut off": "Texte coupé",
+    },
+    "detection_message_translations": {
+        "Unable to reliably read the grading scale": "Impossible de lire le barème de façon fiable",
+        "No grading scale could be detected reliably": "Aucun barème n'a pu être détecté de façon fiable",
+        "No subject detected": "Aucun sujet détecté",
+        "No student copies detected": "Aucune copie d'élève détectée",
+        "Cannot determine document structure": "Impossible de déterminer la structure du document",
+        "This is not a student copy document": "Ce document ne correspond pas à des copies d'élèves",
+        "This is not student copies": "Ce document ne correspond pas à des copies d'élèves",
+        "The PDF is corrupted or unreadable": "Le PDF est corrompu ou illisible",
+        "Quality is too low to read answers": "La qualité est trop faible pour lire les réponses",
+        "The document contains only the subject, not student copies": "Le document contient uniquement le sujet, pas de copies d'élèves",
+        "The document only contains the subject, not student copies": "Le document contient uniquement le sujet, pas de copies d'élèves",
+        "The document appears to contain only the subject": "Le document semble contenir uniquement le sujet",
+        "The grading scale may be incomplete": "Le barème détecté semble incomplet",
+        "The grading scale is ambiguous": "Le barème détecté est ambigu",
+        "Document structure is ambiguous": "La structure du document est ambiguë",
+        "Multiple students may be present in the same PDF": "Plusieurs élèves semblent présents dans le même PDF",
+        "Pages may be missing": "Certaines pages semblent manquantes",
+        "The detected student names may be incomplete": "Les noms d'élèves détectés semblent incomplets",
     },
 }
 
@@ -173,6 +201,17 @@ TRANSLATIONS_EN = {
             "Stains or marks on the document",
             "Low scan quality",
             "Illegible student names"
+        ],
+
+        "critical_instructions": [
+            "Analyze ALL pages of the PDF, not just the first ones",
+            "To detect multiple students, look for NAME CHANGES between pages",
+            "Each new copy usually starts with a different student name",
+            "If you see different names on different pages, there are multiple students",
+            "For the grading scale, reuse identifiers actually visible in the document",
+            "If questions are numbered 1, 2, 3..., return Q1, Q2, Q3...",
+            "Never use a generic heading alone such as 'Exercise', 'Part', or 'Section' as a grading key",
+            "If the grading scale is not reliably readable, return an empty grading_scale and add a warning"
         ],
 
         # Response format
@@ -245,6 +284,7 @@ TRANSLATIONS_EN = {
         "Dark or light spots": "Dark or light spots",
         "Text cut off": "Text cut off",
     },
+    "detection_message_translations": {},
 }
 
 
@@ -311,3 +351,35 @@ def translate_quality_issue(issue: str, language: str = "fr") -> str:
 
     # Return original if no translation found
     return issue
+
+
+def translate_detection_message(message: str, language: str = "fr") -> str:
+    """
+    Translate a generic detection warning/blocking message to the target language.
+
+    Args:
+        message: The warning/blocking message, often in English from the LLM
+        language: Target language code
+
+    Returns:
+        Translated message when a match exists, otherwise the original message
+    """
+    if not message:
+        return message
+
+    translations = get_translations(language)
+    message_translations = translations.get("detection_message_translations", {})
+
+    if message in message_translations:
+        return message_translations[message]
+
+    message_lower = message.lower()
+    for key, value in message_translations.items():
+        if key.lower() == message_lower:
+            return value
+
+    for key, value in message_translations.items():
+        if key.lower() in message_lower or message_lower in key.lower():
+            return value
+
+    return message

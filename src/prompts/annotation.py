@@ -5,7 +5,7 @@ These prompts are used in a post-processing step after grading
 to determine optimal placement for student feedback on the PDF.
 """
 
-from typing import Dict, Any
+from typing import Dict, Any, List, Optional
 
 from utils.json_extractor import extract_json_from_response
 
@@ -96,7 +96,8 @@ Coordinates:
 
 def build_direct_annotation_prompt(
     feedback_by_question: Dict[str, str],
-    language: str = 'en'
+    language: str = 'en',
+    expected_pages_by_question: Optional[Dict[str, List[int]]] = None,
 ) -> str:
     """
     Build prompt for direct annotation placement (single-pass).
@@ -108,10 +109,15 @@ def build_direct_annotation_prompt(
         _DIRECT_ANNOTATION_PROMPT['en']
     )
 
-    feedback_list = "\n".join(
-        f"- {q_id}: \"{feedback}\""
-        for q_id, feedback in feedback_by_question.items()
-    )
+    lines = []
+    for q_id, feedback in feedback_by_question.items():
+        page_hint = ""
+        if expected_pages_by_question and expected_pages_by_question.get(q_id):
+            pages = ", ".join(str(page) for page in expected_pages_by_question[q_id])
+            page_hint = f" (pages probables: {pages})"
+        lines.append(f"- {q_id}{page_hint}: \"{feedback}\"")
+
+    feedback_list = "\n".join(lines)
 
     return base_prompt.format(feedback_list=feedback_list)
 

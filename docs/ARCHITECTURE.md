@@ -93,7 +93,7 @@ data/
 │   ├── cache/                # Analysis cache
 │   ├── copies/
 │   │   └── {copy_number}/
-│   │       ├── original.pdf
+│   │       ├── source.pdf
 │   │       ├── annotation.json
 │   │       └── audit.json
 │   ├── annotated/            # Annotated PDFs

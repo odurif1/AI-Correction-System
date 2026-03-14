@@ -1,5 +1,5 @@
 """
-Metrics collection for La Corrigeuse.
+Metrics collection helpers.
 
 Tracks request metrics (latency, errors) and business metrics
 (grading operations, token usage) via structured logging.

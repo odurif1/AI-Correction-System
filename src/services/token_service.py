@@ -144,12 +144,15 @@ class TokenDeductionService:
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
         cached_tokens = usage.get("cached_tokens", 0)
-        total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
+        total_tokens = usage.get(
+            "billable_total_tokens",
+            usage.get("total_tokens", max(0, prompt_tokens - cached_tokens) + completion_tokens)
+        )
 
         logger.debug(
             f"Token usage for session {session_id}: "
             f"prompt={prompt_tokens}, completion={completion_tokens}, "
-            f"cached={cached_tokens}, total={total_tokens}"
+            f"cached={cached_tokens}, billable_total={total_tokens}"
         )
 
         # 3. If no tokens used, return early

@@ -58,7 +58,8 @@ class PDFAnnotator:
         graded: GradedCopy,
         output_path: str = None,
         smart_placement: bool = True,
-        language: str = 'fr'
+        language: str = 'fr',
+        annotations: 'CopyAnnotations' = None,
     ) -> str:
         """
         Annotate a student's copy with grading results.
@@ -77,24 +78,20 @@ class PDFAnnotator:
         if output_path is None:
             output_path = f"{copy.id}_annotated.pdf"
 
-        # Detect annotation coordinates if smart placement enabled
-        annotations = None
-        if smart_placement and graded.student_feedback:
-            try:
-                annotations = self.coordinate_detector.detect_annotations(
-                    pdf_path=copy.pdf_path,
-                    graded_copy=graded,
-                    language=language,
-                    student_name=copy.student_name
-                )
-            except Exception as e:
-                print(f"Warning: Smart placement failed, using heuristic: {e}")
-                annotations = None
+        if annotations is None:
+            annotations = self.prepare_annotations(
+                copy=copy,
+                graded=graded,
+                smart_placement=smart_placement,
+                language=language,
+            )
 
         # Open and process with proper resource management
         doc = None
         try:
             doc = fitz.open(copy.pdf_path)
+
+            original_page_count = len(doc)
 
             # Add cover page with summary
             self._add_cover_page(doc, copy, graded)
@@ -102,12 +99,14 @@ class PDFAnnotator:
             # Annotate pages
             if annotations and annotations.placements:
                 # Use smart placement
-                self._annotate_with_smart_placement(doc, copy, graded, annotations)
+                self._annotate_with_smart_placement(
+                    doc, copy, graded, annotations, original_page_count
+                )
             else:
                 # Fall back to heuristic placement
-                for page_num in range(len(doc)):
-                    page = doc[page_num]
-                    self._annotate_page(page, page_num, copy, graded)
+                for original_page_num in range(original_page_count):
+                    page = doc[original_page_num + 1]
+                    self._annotate_page(page, original_page_num, copy, graded)
 
             # Save
             doc.save(output_path)
@@ -123,7 +122,8 @@ class PDFAnnotator:
         graded: GradedCopy,
         output_path: str = None,
         smart_placement: bool = True,
-        language: str = 'fr'
+        language: str = 'fr',
+        annotations: 'CopyAnnotations' = None,
     ) -> str:
         """
         Create a transparent overlay PDF with only annotations.
@@ -148,19 +148,13 @@ class PDFAnnotator:
         if output_path is None:
             output_path = f"{copy.id}_overlay.pdf"
 
-        # Detect annotation coordinates
-        annotations = None
-        if smart_placement and graded.student_feedback:
-            try:
-                annotations = self.coordinate_detector.detect_annotations(
-                    pdf_path=copy.pdf_path,
-                    graded_copy=graded,
-                    language=language,
-                    student_name=copy.student_name
-                )
-            except Exception as e:
-                print(f"Warning: Smart placement failed, using heuristic: {e}")
-                annotations = self._heuristic_annotations(copy, graded)
+        if annotations is None:
+            annotations = self.prepare_annotations(
+                copy=copy,
+                graded=graded,
+                smart_placement=smart_placement,
+                language=language,
+            )
 
         # Create overlay document
         overlay_doc = None
@@ -192,15 +186,6 @@ class PDFAnnotator:
                         for rect, feedback_text in boxes_by_page[page_num]:
                             self._add_feedback_annotation(page, rect, feedback_text, graded)
 
-                    # Add page label
-                    self._add_text(
-                        page,
-                        f"Page {page_num + 1} - Annotations",
-                        10, 10,
-                        size=8,
-                        color=(0.5, 0.5, 0.5)
-                    )
-
             # Save overlay
             overlay_doc.save(output_path)
         finally:
@@ -211,54 +196,41 @@ class PDFAnnotator:
 
         return output_path
 
-    def _heuristic_annotations(self, copy: CopyDocument, graded: GradedCopy) -> 'CopyAnnotations':
-        """Generate heuristic annotations when LLM fails."""
-        from export.annotation_service import CopyAnnotations, AnnotationPlacement
-
-        annotations = CopyAnnotations(
-            copy_id=copy.id,
-            student_name=copy.student_name
-        )
-
-        # Distribute feedback across pages
-        num_pages = 1
+    def prepare_annotations(
+        self,
+        copy: CopyDocument,
+        graded: GradedCopy,
+        smart_placement: bool = True,
+        language: str = 'fr',
+    ) -> 'CopyAnnotations':
+        """
+        Compute annotation placements once so multiple renderers can reuse them.
+        """
         try:
-            doc = fitz.open(copy.pdf_path)
-            try:
-                num_pages = len(doc)
-            finally:
-                doc.close()
-        except (FileNotFoundError, PermissionError, OSError) as e:
-            # PDF access failed, use default of 1 page
-            pass
-
-        questions = list(graded.student_feedback.keys())
-        questions_per_page = max(1, len(questions) // num_pages)
-
-        for i, (q_id, feedback) in enumerate(graded.student_feedback.items()):
-            page_num = min(i // max(1, questions_per_page), num_pages - 1)
-            y_position = 15.0 + (i % max(1, questions_per_page)) * 12.0
-
-            annotations.placements.append(AnnotationPlacement(
-                question_id=q_id,
-                feedback_text=feedback,
-                page_number=page_num + 1,
-                x_percent=70.0,
-                y_percent=y_position,
-                width_percent=25.0,
-                height_percent=5.0,
-                placement="right_margin",
-                confidence=0.5
-            ))
-
-        return annotations
+            return self.coordinate_detector.build_annotations(
+                pdf_path=copy.pdf_path,
+                graded_copy=graded,
+                language=language,
+                student_name=copy.student_name,
+                use_llm=smart_placement,
+            )
+        except Exception as e:
+            print(f"Warning: Annotation placement failed, retrying with heuristic placement: {e}")
+            return self.coordinate_detector.build_annotations(
+                pdf_path=copy.pdf_path,
+                graded_copy=graded,
+                language=language,
+                student_name=copy.student_name,
+                use_llm=False,
+            )
 
     def _annotate_with_smart_placement(
         self,
         doc: fitz.Document,
         copy: CopyDocument,
         graded: GradedCopy,
-        annotations: 'CopyAnnotations'
+        annotations: 'CopyAnnotations',
+        original_page_count: int,
     ):
         """
         Annotate PDF using LLM-determined coordinates.
@@ -272,10 +244,14 @@ class PDFAnnotator:
         from export.annotation_service import create_annotation_boxes
 
         # Group annotations by page
-        boxes_by_page = create_annotation_boxes(annotations, doc)
+        boxes_by_page = create_annotation_boxes(
+            annotations,
+            doc,
+            page_number_offset=1,
+        )
 
         # Add annotations to each page
-        for page_num in range(len(doc)):
+        for page_num in range(1, original_page_count + 1):
             page = doc[page_num]
 
             # Add page summary in margin
@@ -283,7 +259,7 @@ class PDFAnnotator:
             self._add_annotation_box(
                 page,
                 rect,
-                f"Page {page_num + 1}",
+                f"Page {page_num}",
                 f"Score: {graded.total_score:.1f}/{graded.max_score:.1f}"
             )
 
@@ -390,7 +366,7 @@ class PDFAnnotator:
     ):
         """Add a cover page with grading summary."""
         # Create new page at beginning
-        page = doc.new_page(width=595, height=842)  # A4 size
+        page = doc.new_page(pno=0, width=595, height=842)  # A4 size
 
         # Title
         title = f"Graded Assessment - {copy.student_name or 'Student'}"

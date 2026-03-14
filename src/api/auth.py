@@ -1,4 +1,4 @@
-"""Authentication API routes for La Corrigeuse."""
+"""Authentication API routes."""
 
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -7,8 +7,6 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 from passlib.context import CryptContext
 import jwt
-import secrets
-import hashlib
 
 from sqlalchemy.orm import Session
 from db import get_db, User, SubscriptionTier
@@ -46,15 +44,6 @@ class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: dict
-
-
-class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
-
-
-class ResetPasswordRequest(BaseModel):
-    token: str
-    new_password: str
 
 
 class UserResponse(BaseModel):
@@ -106,16 +95,6 @@ def decode_token(token: str) -> Optional[dict]:
     except Exception as e:
         logger.error(f"Unexpected token decode error: {e.__class__.__name__}: {e}")
         return None
-
-
-def generate_reset_token() -> str:
-    """Generate secure random token."""
-    return secrets.token_urlsafe(32)
-
-
-def hash_token(token: str) -> str:
-    """Hash token for storage."""
-    return hashlib.sha256(token.encode()).hexdigest()
 
 
 async def get_current_user(
@@ -283,108 +262,6 @@ async def logout():
     Server returns 200 OK to confirm logout request received.
     """
     return {"message": "Déconnexion réussie"}
-
-
-@router.post("/forgot-password")
-@limiter.limit("3/minute")
-async def forgot_password(
-    request: Request,
-    body: ForgotPasswordRequest,
-    db: Session = Depends(get_db)
-):
-    """
-    Initiate password reset via email.
-
-    Sends email with reset link if email exists in database.
-    Always returns success message to prevent email enumeration.
-    """
-    from utils.email import EmailService
-
-    # Find user
-    user = db.query(User).filter(User.email == body.email).first()
-    if not user:
-        # Don't reveal if email exists (security best practice)
-        return {"message": "Si l'email existe, un lien de réinitialisation a été envoyé."}
-
-    # Generate and store token
-    token = generate_reset_token()
-    token_hash = hash_token(token)
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=30)
-
-    from db import PasswordResetToken
-    reset_token = PasswordResetToken(
-        user_id=user.id,
-        token_hash=token_hash,
-        expires_at=expires_at
-    )
-    db.add(reset_token)
-
-    # Delete old unused tokens
-    db.query(PasswordResetToken).filter(
-        PasswordResetToken.user_id == user.id,
-        PasswordResetToken.used == False,
-        PasswordResetToken.expires_at < datetime.now(timezone.utc)
-    ).delete()
-    db.commit()
-
-    # Send email
-    reset_link = f"https://lacorrigeuse.fr/reset-password?token={token}"
-    email_service = EmailService()
-    await email_service.send_password_reset(
-        to_email=user.email,
-        reset_link=reset_link,
-        user_name=user.name
-    )
-
-    return {"message": "Si l'email existe, un lien de réinitialisation a été envoyé."}
-
-
-@router.post("/reset-password")
-async def reset_password(
-    request: ResetPasswordRequest,
-    db: Session = Depends(get_db)
-):
-    """
-    Reset password using token from email.
-
-    Validates token, updates password, marks token as used.
-    Returns JWT token for auto-login.
-    """
-    from db import PasswordResetToken
-
-    # Find valid token
-    token_hash = hash_token(request.token)
-    reset_token = db.query(PasswordResetToken).filter(
-        PasswordResetToken.token_hash == token_hash,
-        PasswordResetToken.used == False,
-        PasswordResetToken.expires_at > datetime.now(timezone.utc)
-    ).first()
-
-    if not reset_token:
-        raise HTTPException(status_code=400, detail="Lien de réinitialisation invalide ou expiré")
-
-    # Validate new password
-    from utils.validators import validate_password
-    is_valid, error_msg = validate_password(request.new_password)
-    if not is_valid:
-        raise HTTPException(status_code=400, detail=error_msg)
-
-    # Update password
-    user = db.query(User).filter(User.id == reset_token.user_id).first()
-    user.password_hash = hash_password(request.new_password)
-
-    # Mark token as used
-    reset_token.used = True
-    db.commit()
-
-    # Auto-login (return JWT token)
-    access_token = create_access_token(user.id)
-
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": user.to_dict()
-    }
 
 
 @router.get("/me", response_model=UserResponse)

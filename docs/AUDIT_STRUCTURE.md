@@ -30,8 +30,8 @@ La nouvelle structure `grading_audit` fonctionne pour tous les modes:
     "verification_mode": "grouped" | "per-copy" | "per-question" | "none",
 
     "providers": [
-      {"id": "LLM1", "model": "gemini-2.5-flash", "tokens": {"prompt": 15000, "completion": 3000}},
-      {"id": "LLM2", "model": "gpt-4o", "tokens": {"prompt": 15000, "completion": 3000}}
+      {"id": "LLM1", "model": "<configured-model-1>", "tokens": {"prompt": 15000, "completion": 3000}},
+      {"id": "LLM2", "model": "<configured-model-2>", "tokens": {"prompt": 15000, "completion": 3000}}
     ],
 
     "questions": {
@@ -109,10 +109,10 @@ La nouvelle structure `grading_audit` fonctionne pour tous les modes:
     },
 
     "student_detection": {
-      "final_name": "Jean Dupont",
+      "final_name": "Student A",
       "llm_results": {
-        "LLM1": "Jean Dupont",
-        "LLM2": "J. Dupont"
+        "LLM1": "Student A",
+        "LLM2": "S. A."
       },
       "resolution": {
         "method": "consensus",

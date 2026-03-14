@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from core.models import CopyDocument, GradedCopy, SessionStatus
 from core.services.graders.base import BaseGrader, GradingContext
-from audit.builder import build_audit_from_llm_comparison
+from audit.builder import build_audit_from_llm_comparison, extract_final_question_outputs
 from utils.sorting import question_sort_key
 
 logger = logging.getLogger(__name__)
@@ -126,17 +126,9 @@ class DualLLMGrader(BaseGrader):
                 for q_id in sorted(results_data.keys(), key=question_sort_key):
                     q_result = results_data[q_id]
                     graded.grades[q_id] = q_result.get("grade", 0)
-                    graded.student_feedback[q_id] = q_result.get("feedback", "")
-                    graded.readings[q_id] = q_result.get("reading", "")
-                    reasoning_text = q_result.get("reasoning", "")
-                    if reasoning_text:
-                        graded.reasoning[q_id] = reasoning_text
                     graded.max_points_by_question[q_id] = q_result.get("max_points", 1.0)
 
                 llm_comparison = result.get("llm_comparison", {})
-                for q_id in llm_comparison.keys():
-                    final_info = llm_comparison.get(q_id, {}).get("final", {})
-                    graded.confidence_by_question[q_id] = final_info.get("confidence", 0.5)
 
                 graded.total_score = sum(g or 0 for g in graded.grades.values())
                 graded.max_score = (
@@ -144,16 +136,7 @@ class DualLLMGrader(BaseGrader):
                     if graded.max_points_by_question
                     else sum(ctx.grading_scale.values())
                 )
-                graded.confidence = (
-                    sum(c or 0.5 for c in graded.confidence_by_question.values()) / len(graded.confidence_by_question)
-                    if graded.confidence_by_question else 0.5
-                )
-
-                all_feedbacks = [fb for fb in graded.student_feedback.values() if fb]
-                if all_feedbacks:
-                    graded.feedback = " | ".join(all_feedbacks[:3])
-                    if len(all_feedbacks) > 3:
-                        graded.feedback += "..."
+                graded.confidence = 0.5
 
                 llm_comp_data = {
                     "options": result.get("options", {}),
@@ -170,6 +153,27 @@ class DualLLMGrader(BaseGrader):
                     provider_names=provider_names,
                     grading_scale=ctx.grading_scale
                 )
+
+                final_outputs = extract_final_question_outputs(graded.grading_audit)
+                graded.confidence_by_question = {
+                    q_id: data["confidence"]
+                    for q_id, data in final_outputs.items()
+                    if data["confidence"] is not None
+                }
+                graded.reasoning = {
+                    q_id: data["reasoning"]
+                    for q_id, data in final_outputs.items()
+                    if data["reasoning"]
+                }
+                graded.student_feedback = {
+                    q_id: data["feedback"]
+                    for q_id, data in final_outputs.items()
+                    if data["feedback"]
+                }
+                if graded.confidence_by_question:
+                    graded.confidence = (
+                        sum(c for c in graded.confidence_by_question.values()) / len(graded.confidence_by_question)
+                    )
 
                 if progress_callback:
                     token_usage = None

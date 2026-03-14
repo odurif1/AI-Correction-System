@@ -201,6 +201,8 @@ class ComparisonProvider:
             "completion_tokens": total_completion,
             "cached_tokens": total_cached,
             "total_tokens": total_prompt + total_completion,
+            "billable_prompt_tokens": max(0, total_prompt - total_cached),
+            "billable_total_tokens": max(0, total_prompt - total_cached) + total_completion,
             "by_provider": provider_usage
         }
 
@@ -2999,6 +3001,7 @@ CONFIDENCE: [0.0 to 1.0]"""
                 provider_names[0]: {
                     "grade": sp_llm1_q.grade if sp_llm1_q else None,
                     "max_points": sp_llm1_q.max_points if sp_llm1_q else 1.0,
+                    "question_text": sp_llm1_q.question_text if sp_llm1_q else "",
                     "reading": sp_llm1_q.student_answer_read if sp_llm1_q else "",
                     "reasoning": sp_llm1_q.reasoning if sp_llm1_q else "",
                     "feedback": sp_llm1_q.feedback if sp_llm1_q else "",
@@ -3007,6 +3010,7 @@ CONFIDENCE: [0.0 to 1.0]"""
                 provider_names[1]: {
                     "grade": sp_llm2_q.grade if sp_llm2_q else None,
                     "max_points": sp_llm2_q.max_points if sp_llm2_q else 1.0,
+                    "question_text": sp_llm2_q.question_text if sp_llm2_q else "",
                     "reading": sp_llm2_q.student_answer_read if sp_llm2_q else "",
                     "reasoning": sp_llm2_q.reasoning if sp_llm2_q else "",
                     "feedback": sp_llm2_q.feedback if sp_llm2_q else "",
@@ -3027,6 +3031,7 @@ CONFIDENCE: [0.0 to 1.0]"""
                 "grade": final_results[qid].get("grade"),
                 "max_points": final_results[qid].get("max_points"),
                 "confidence": final_results[qid].get("confidence"),
+                "reasoning": final_results[qid].get("reasoning"),
                 "feedback": final_results[qid].get("student_feedback"),
                 "method": final_results[qid].get("method", "single_pass")
             }

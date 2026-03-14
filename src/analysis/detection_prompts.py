@@ -139,13 +139,11 @@ def _build_json_example(t: dict) -> str:
   ],
 
   "grading_scale": {{
-    "Q1": 2.0,
-    "Q2": 3.0,
-    "Q3": 2.5,
-    "Q4": 4.0
+    "QUESTION_KEY_1": 1.0,
+    "QUESTION_KEY_2": 1.0
   }},
   "confidence_grading_scale": 0.85,
-  "questions_detected": ["Q1", "Q2", "Q3", "Q4"],
+  "questions_detected": ["QUESTION_KEY_1", "QUESTION_KEY_2"],
 
   "quality_issues": [],
   "overall_quality_score": 0.9,
@@ -170,6 +168,14 @@ def _build_json_example(t: dict) -> str:
 - `blocking_issues`: {t['field_blocking_issues']}
 - `warnings`: {t['field_warnings']}
 - `exam_name`: {t['field_exam_name']}
+
+**Règles strictes pour le barème / Strict rules for grading scale**:
+- Reprends les identifiants réellement visibles dans le document, sans en inventer.
+- Si les questions sont simplement numérotées `1`, `2`, `3`, retourne `Q1`, `Q2`, `Q3`.
+- N'invente jamais une liste standard comme `Q1..Q4` si le document montre un autre découpage.
+- N'utilise pas un intitulé générique seul comme `Exercice`, `Partie` ou `Section` comme clé de barème.
+- Si tu vois un exercice global avec plusieurs sous-questions, retourne les sous-questions notées, pas le titre global.
+- Si le barème n'est pas lisible de manière fiable, retourne un objet `grading_scale` vide et ajoute un warning.
 
 **{t['document_types_title']}**:
 - `student_copies`: {t['doc_type_student_copies']}

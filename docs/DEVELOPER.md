@@ -35,24 +35,24 @@ cp .env.example .env
 Create a `.env` file with:
 
 ```env
-# Provider API Keys
-AI_CORRECTION_GEMINI_API_KEY=your-gemini-key
-AI_CORRECTION_OPENAI_API_KEY=your-openai-key
+# Minimal setup
+AI_CORRECTION_AI_PROVIDER=<provider>
+AI_CORRECTION_JWT_SECRET=<long-random-secret>
+AI_CORRECTION_<PROVIDER>_API_KEY=<api-key>
 
-# Primary Provider
-AI_CORRECTION_PROVIDER=gemini
-AI_CORRECTION_MODEL=gemini-2.5-flash
+# Optional models
+# AI_CORRECTION_<PROVIDER>_MODEL=<configured-model>
+# AI_CORRECTION_<PROVIDER>_VISION_MODEL=<configured-vision-model>
 
-# Dual LLM Mode
+# Optional dual-LLM mode
 AI_CORRECTION_COMPARISON_MODE=true
-AI_CORRECTION_LLM1_PROVIDER=gemini
-AI_CORRECTION_LLM1_MODEL=gemini-2.5-flash
-AI_CORRECTION_LLM2_PROVIDER=openai
-AI_CORRECTION_LLM2_MODEL=gpt-4o
-
-# API Authentication (optional)
-AI_CORRECTION_API_KEY=your-api-key
+# AI_CORRECTION_LLM1_PROVIDER=<provider-1>
+# AI_CORRECTION_LLM1_MODEL=<model-1>
+# AI_CORRECTION_LLM2_PROVIDER=<provider-2>
+# AI_CORRECTION_LLM2_MODEL=<model-2>
 ```
+
+Use `.env.example` as the source of truth for the full set of supported variables.
 
 ## Project Structure
 

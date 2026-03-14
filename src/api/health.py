@@ -1,5 +1,5 @@
 """
-Health check endpoint for La Corrigeuse.
+Health check endpoint.
 
 Provides system health status for load balancers and monitoring.
 """

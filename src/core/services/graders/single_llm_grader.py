@@ -4,7 +4,7 @@ from typing import List, Optional
 
 from core.models import CopyDocument, GradedCopy, SessionStatus
 from core.services.graders.base import BaseGrader, GradingContext
-from audit.builder import build_audit_from_llm_comparison
+from audit.builder import build_audit_from_llm_comparison, extract_final_question_outputs
 from utils.sorting import question_sort_key
 
 logger = logging.getLogger(__name__)
@@ -65,22 +65,14 @@ class SingleLLMGrader(BaseGrader):
                 for q_id in sorted(result.questions.keys(), key=question_sort_key):
                     q_result = result.questions[q_id]
                     graded.grades[q_id] = q_result.grade
-                    graded.confidence_by_question[q_id] = q_result.confidence
-                    graded.student_feedback[q_id] = q_result.feedback
-                    graded.readings[q_id] = q_result.student_answer_read
                     graded.max_points_by_question[q_id] = q_result.max_points
-                    if q_result.reasoning:
-                        graded.reasoning[q_id] = q_result.reasoning
 
                 if result.student_name:
                     copy.student_name = result.student_name
 
                 graded.total_score = sum(graded.grades.values())
                 graded.max_score = sum(graded.max_points_by_question.values())
-                graded.confidence = (
-                    sum(graded.confidence_by_question.values()) / len(graded.confidence_by_question)
-                    if graded.confidence_by_question else 0.5
-                )
+                graded.confidence = 0.5
 
                 # Build unified grading audit
                 provider_name = getattr(ctx.ai, 'model_name', 'single_llm')
@@ -98,6 +90,7 @@ class SingleLLMGrader(BaseGrader):
                                     provider_name: {
                                         "grade": q_result.grade,
                                         "max_points": q_result.max_points,
+                                        "question_text": q_result.question_text,
                                         "reading": q_result.student_answer_read,
                                         "reasoning": q_result.reasoning,
                                         "feedback": q_result.feedback,
@@ -106,6 +99,9 @@ class SingleLLMGrader(BaseGrader):
                                     "final": {
                                         "grade": q_result.grade,
                                         "max_points": q_result.max_points,
+                                        "confidence": q_result.confidence,
+                                        "reasoning": q_result.reasoning,
+                                        "feedback": q_result.feedback,
                                         "method": "single_llm",
                                         "agreement": None
                                     }
@@ -128,6 +124,23 @@ class SingleLLMGrader(BaseGrader):
                     provider_names=[provider_name],
                     grading_scale=ctx.grading_scale
                 )
+
+                final_outputs = extract_final_question_outputs(graded.grading_audit)
+                graded.confidence_by_question = {
+                    q_id: data["confidence"]
+                    for q_id, data in final_outputs.items()
+                    if data["confidence"] is not None
+                }
+                graded.reasoning = {
+                    q_id: data["reasoning"]
+                    for q_id, data in final_outputs.items()
+                    if data["reasoning"]
+                }
+                graded.student_feedback = {
+                    q_id: data["feedback"]
+                    for q_id, data in final_outputs.items()
+                    if data["feedback"]
+                }
 
                 # Notify per question
                 for q_id in sorted(graded.grades.keys(), key=question_sort_key):

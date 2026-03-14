@@ -231,12 +231,12 @@ Get all LLM disagreements for a session.
   {
     "copy_id": "copy_1",
     "copy_index": 1,
-    "student_name": "John Doe",
+    "student_name": "Student A",
     "question_id": "Q2",
     "max_points": 5.0,
     "llm1": {
       "provider": "gemini",
-      "model": "gemini-2.5-flash",
+      "model": "<configured-model-1>",
       "grade": 3.0,
       "confidence": 0.85,
       "reasoning": "Partial understanding shown",
@@ -244,7 +244,7 @@ Get all LLM disagreements for a session.
     },
     "llm2": {
       "provider": "openai",
-      "model": "gpt-4o",
+      "model": "<configured-model-2>",
       "grade": 4.5,
       "confidence": 0.90,
       "reasoning": "Mostly correct with minor errors",
@@ -312,7 +312,7 @@ Get analytics for a graded session.
     "Q2": {"mean": 2.0, "median": 2.0, "difficulty": 0.6}
   },
   "common_errors": ["Calculation error", "Unit conversion"],
-  "exceptional_answers": ["Student 3 showed creative approach"]
+  "exceptional_answers": ["Student A showed a creative approach"]
 }
 ```
 
@@ -346,9 +346,9 @@ Get current application settings.
   "ai_provider": "gemini",
   "comparison_mode": true,
   "llm1_provider": "gemini",
-  "llm1_model": "gemini-2.5-flash",
+  "llm1_model": "<configured-model-1>",
   "llm2_provider": "openai",
-  "llm2_model": "gpt-4o",
+  "llm2_model": "<configured-model-2>",
   "confidence_auto": 0.85,
   "confidence_flag": 0.60
 }
@@ -390,7 +390,7 @@ List available LLM providers based on configuration.
     "name": "Google Gemini",
     "type": "gemini",
     "models": [
-      {"id": "gemini-2.5-flash", "name": "gemini-2.5-flash"}
+      {"id": "<configured-model>", "name": "<configured-model>"}
     ],
     "configured": true
   },
@@ -399,7 +399,7 @@ List available LLM providers based on configuration.
     "name": "OpenAI",
     "type": "openai",
     "models": [
-      {"id": "gpt-4o", "name": "gpt-4o"}
+      {"id": "<configured-model>", "name": "<configured-model>"}
     ],
     "configured": true
   }

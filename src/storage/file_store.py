@@ -489,6 +489,24 @@ class SessionStore:
             logger.warning(f"Failed to migrate diagnostic.json: {e}")
             return None
 
+    def clear_detection(self) -> None:
+        """Remove persisted detection files for the session."""
+        for filename in ("detection.json", "diagnostic.json"):
+            file_path = self.session_dir / filename
+            if file_path.exists():
+                file_path.unlink()
+
+    def clear_processing_artifacts(self) -> None:
+        """Clear derived artifacts generated from uploaded documents."""
+        self.create()
+        self.clear_detection()
+
+        for dirname in ("copies", "cache", "annotated", "reports"):
+            dir_path = self.session_dir / dirname
+            if dir_path.exists():
+                shutil.rmtree(dir_path)
+            dir_path.mkdir(parents=True, exist_ok=True)
+
     # ==================== JSON HELPERS ====================
 
     def _save_json(self, file_path: Path, data: Dict[str, Any]) -> None:

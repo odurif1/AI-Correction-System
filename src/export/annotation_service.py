@@ -8,6 +8,9 @@ optimal coordinates for placing student feedback on PDFs.
 from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from pathlib import Path
+import math
+import re
+import unicodedata
 import fitz  # PyMuPDF
 
 from core.models import GradedCopy
@@ -40,6 +43,9 @@ class AnnotationPlacement:
     height_percent: float = 5.0  # Height as % of page height
     placement: str = "below_answer"  # Placement hint from LLM
     confidence: float = 0.0    # LLM confidence (0.0-1.0)
+    placement_source: str = "llm"  # llm | heuristic
+    page_validated: bool = False
+    page_correction_reason: Optional[str] = None
 
 
 @dataclass
@@ -125,7 +131,36 @@ class AnnotationCoordinateDetector:
         Returns:
             CopyAnnotations with all placements
         """
-        # Build feedback dict
+        return self.build_annotations(
+            pdf_path=pdf_path,
+            graded_copy=graded_copy,
+            language=language,
+            student_name=student_name,
+            use_llm=True,
+        )
+
+    def build_annotations(
+        self,
+        pdf_path: str,
+        graded_copy: GradedCopy,
+        language: str = 'fr',
+        student_name: str = None,
+        use_llm: bool = True,
+        expected_pages_by_question: Optional[Dict[str, List[int]]] = None,
+    ) -> CopyAnnotations:
+        """
+        Build annotations using either intelligent placement or heuristic fallback.
+
+        Args:
+            pdf_path: Path to the student PDF
+            graded_copy: The graded copy with feedback
+            language: Language for prompts
+            student_name: Optional student name
+            use_llm: When False, skip LLM placement and go straight to heuristic
+
+        Returns:
+            CopyAnnotations with all placements
+        """
         feedback_by_question = graded_copy.student_feedback or {}
 
         if not feedback_by_question:
@@ -134,12 +169,33 @@ class AnnotationCoordinateDetector:
                 student_name=student_name
             )
 
-        # If no provider, fall back to heuristic placement
-        if not self.provider:
-            return self._heuristic_placement(pdf_path, graded_copy, student_name)
+        if expected_pages_by_question is None:
+            expected_pages_by_question = self._infer_expected_pages_by_question(
+                pdf_path=pdf_path,
+                question_ids=list(feedback_by_question.keys()),
+            )
 
-        # Use LLM for intelligent placement
-        return self._llm_placement(pdf_path, graded_copy, feedback_by_question, language, student_name)
+        if not use_llm or not self.provider:
+            annotations = self._heuristic_placement(pdf_path, graded_copy, student_name)
+            return self._validate_annotation_pages(
+                annotations=annotations,
+                pdf_path=pdf_path,
+                expected_pages_by_question=expected_pages_by_question,
+            )
+
+        annotations = self._llm_placement(
+            pdf_path,
+            graded_copy,
+            feedback_by_question,
+            language,
+            student_name,
+            expected_pages_by_question,
+        )
+        return self._validate_annotation_pages(
+            annotations=annotations,
+            pdf_path=pdf_path,
+            expected_pages_by_question=expected_pages_by_question,
+        )
 
     def _llm_placement(
         self,
@@ -147,13 +203,18 @@ class AnnotationCoordinateDetector:
         graded_copy: GradedCopy,
         feedback_by_question: Dict[str, str],
         language: str,
-        student_name: str = None
+        student_name: str = None,
+        expected_pages_by_question: Optional[Dict[str, List[int]]] = None,
     ) -> CopyAnnotations:
         """Use LLM to determine annotation placements."""
         import os
 
         # Build prompt
-        prompt = build_direct_annotation_prompt(feedback_by_question, language)
+        prompt = build_direct_annotation_prompt(
+            feedback_by_question,
+            language,
+            expected_pages_by_question=expected_pages_by_question,
+        )
 
         # Convert PDF to temp image files for vision model
         image_paths = self._pdf_to_images(pdf_path)
@@ -217,7 +278,7 @@ class AnnotationCoordinateDetector:
 
         # Distribute questions across pages
         questions = list(graded_copy.student_feedback.keys())
-        questions_per_page = max(1, len(questions) // num_pages)
+        questions_per_page = max(1, math.ceil(len(questions) / max(1, num_pages)))
 
         for i, (q_id, feedback) in enumerate(graded_copy.student_feedback.items()):
             page_num = min(i // max(1, questions_per_page), num_pages - 1)
@@ -234,7 +295,9 @@ class AnnotationCoordinateDetector:
                 width_percent=25.0,
                 height_percent=5.0,
                 placement="right_margin",
-                confidence=0.5  # Lower confidence for heuristic
+                confidence=0.5,  # Lower confidence for heuristic
+                placement_source="heuristic",
+                page_validated=False,
             ))
 
         return annotations
@@ -304,10 +367,118 @@ class AnnotationCoordinateDetector:
                 width_percent=clamp_percent(ann_data.get("width_percent"), 25.0),
                 height_percent=clamp_percent(ann_data.get("height_percent"), 5.0),
                 placement=ann_data.get("placement", "right_margin"),
-                confidence=max(0.0, min(1.0, float(ann_data.get("confidence", 0.5))))
+                confidence=max(0.0, min(1.0, float(ann_data.get("confidence", 0.5)))),
+                placement_source="llm",
+                page_validated=False,
             ))
 
         return annotations
+
+    def _infer_expected_pages_by_question(
+        self,
+        pdf_path: str,
+        question_ids: List[str],
+    ) -> Dict[str, List[int]]:
+        """
+        Infer likely pages for each question using embedded PDF text when available.
+
+        This is a lightweight guardrail, not a source of truth.
+        """
+        if not question_ids:
+            return {}
+
+        expected_pages: Dict[str, List[int]] = {}
+
+        try:
+            with fitz.open(pdf_path) as doc:
+                if len(doc) == 1:
+                    return {question_id: [1] for question_id in question_ids}
+
+                normalized_page_texts = [
+                    self._normalize_page_text(page.get_text())
+                    for page in doc
+                ]
+        except (FileNotFoundError, PermissionError, OSError):
+            return {}
+
+        for question_id in question_ids:
+            patterns = self._build_question_page_patterns(question_id)
+            matched_pages = [
+                page_index + 1
+                for page_index, page_text in enumerate(normalized_page_texts)
+                if any(pattern.search(page_text) for pattern in patterns)
+            ]
+            if matched_pages:
+                expected_pages[question_id] = matched_pages
+
+        return expected_pages
+
+    def _validate_annotation_pages(
+        self,
+        annotations: CopyAnnotations,
+        pdf_path: str,
+        expected_pages_by_question: Optional[Dict[str, List[int]]] = None,
+    ) -> CopyAnnotations:
+        """
+        Validate and correct page numbers against lightweight page hints.
+        """
+        if not annotations.placements:
+            return annotations
+
+        expected_pages_by_question = expected_pages_by_question or {}
+
+        num_pages = 1
+        try:
+            with fitz.open(pdf_path) as doc:
+                num_pages = len(doc)
+        except (FileNotFoundError, PermissionError, OSError):
+            pass
+
+        for placement in annotations.placements:
+            placement.page_number = max(1, min(int(placement.page_number), num_pages))
+
+            expected_pages = expected_pages_by_question.get(placement.question_id) or []
+            if not expected_pages:
+                placement.page_validated = num_pages == 1
+                continue
+
+            if placement.page_number in expected_pages:
+                placement.page_validated = True
+                continue
+
+            corrected_page = min(
+                expected_pages,
+                key=lambda page: abs(page - placement.page_number),
+            )
+            placement.page_number = corrected_page
+            placement.x_percent = 70.0
+            placement.placement = "right_margin"
+            placement.page_validated = True
+            placement.page_correction_reason = "corrected_to_expected_page"
+
+        return annotations
+
+    @staticmethod
+    def _normalize_page_text(value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", value or "")
+        ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+        return ascii_text.lower()
+
+    @staticmethod
+    def _build_question_page_patterns(question_id: str) -> List[re.Pattern[str]]:
+        normalized = AnnotationCoordinateDetector._normalize_page_text(question_id)
+        digits_match = re.search(r"(\d+)", normalized)
+        if not digits_match:
+            return [re.compile(rf"\b{re.escape(normalized)}\b")]
+
+        digits = digits_match.group(1)
+        return [
+            re.compile(rf"\b{re.escape(normalized)}\b"),
+            re.compile(rf"\bquestion\s*{digits}\b"),
+            re.compile(rf"\bexercice\s*{digits}\b"),
+            re.compile(rf"\bexo\s*{digits}\b"),
+            re.compile(rf"\b{digits}[\)\.\-:]\b"),
+        ]
 
     def _pdf_to_images(self, pdf_path: str) -> List[str]:
         """
@@ -360,7 +531,8 @@ def percent_to_points(
 
 def create_annotation_boxes(
     annotations: CopyAnnotations,
-    pdf_doc: fitz.Document
+    pdf_doc: fitz.Document,
+    page_number_offset: int = 0,
 ) -> Dict[int, List[Tuple[fitz.Rect, str]]]:
     """
     Create annotation boxes for each page.
@@ -370,6 +542,9 @@ def create_annotation_boxes(
     Args:
         annotations: The annotation placements (page_number is 1-based)
         pdf_doc: The PDF document (0-based indexing)
+        page_number_offset: Offset applied after converting the 1-based page
+            number to a 0-based page index. Use `1` when the target document
+            has a prepended cover page.
 
     Returns:
         Dict mapping 0-based page_index -> list of (rect, feedback_text)
@@ -378,7 +553,7 @@ def create_annotation_boxes(
 
     for placement in annotations.placements:
         # Convert 1-based page_number to 0-based page_index
-        page_index = placement.page_number - 1
+        page_index = placement.page_number - 1 + page_number_offset
         # Ensure within bounds
         if page_index >= len(pdf_doc):
             page_index = len(pdf_doc) - 1
@@ -399,6 +574,62 @@ def create_annotation_boxes(
 
         if page_index not in boxes:
             boxes[page_index] = []
-        boxes[page_index].append((rect, placement.feedback_text))
+        adjusted_rect = _avoid_box_overlap(
+            rect=rect,
+            existing_rects=[existing_rect for existing_rect, _ in boxes[page_index]],
+            page_width=page_width,
+            page_height=page_height,
+        )
+        boxes[page_index].append((adjusted_rect, placement.feedback_text))
 
     return boxes
+
+
+def _avoid_box_overlap(
+    rect: fitz.Rect,
+    existing_rects: List[fitz.Rect],
+    page_width: float,
+    page_height: float,
+    gap: float = 4.0,
+) -> fitz.Rect:
+    """
+    Move a box vertically to avoid overlaps with existing boxes on the page.
+
+    If the requested column is saturated, the box is moved to a safe right-margin
+    column and stacked from the top.
+    """
+    if not existing_rects:
+        return rect
+
+    margin = 10.0
+    width = rect.width
+    height = rect.height
+    max_y = max(margin, page_height - height - margin)
+
+    candidate = fitz.Rect(rect)
+
+    for _ in range(50):
+        collisions = [
+            existing for existing in existing_rects
+            if candidate.intersects(existing)
+            or abs(candidate.y0 - existing.y1) < gap and not (
+                candidate.x1 <= existing.x0 or candidate.x0 >= existing.x1
+            )
+        ]
+        if not collisions:
+            return candidate
+
+        next_y = max(existing.y1 for existing in collisions) + gap
+        if next_y <= max_y:
+            candidate = fitz.Rect(candidate.x0, next_y, candidate.x0 + width, next_y + height)
+            continue
+
+        margin_x = max(margin, page_width - width - margin)
+        candidate = fitz.Rect(margin_x, margin, margin_x + width, margin + height)
+
+    return fitz.Rect(
+        candidate.x0,
+        min(candidate.y0, max_y),
+        candidate.x1,
+        min(candidate.y0, max_y) + height,
+    )

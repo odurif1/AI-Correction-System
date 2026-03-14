@@ -19,10 +19,10 @@ L'architecture utilise **deux LLMs en parallèle** avec un workflow de **cross-v
 
 | Provider | Modèles populaires | Caractéristiques |
 |----------|-------------------|------------------|
-| **Gemini** | gemini-2.5-flash, gemini-3-pro | Rapide, économique |
-| **OpenAI** | gpt-4o, gpt-4o-mini | Haute qualité |
-| **GLM** (z.ai) | glm-4-flash, glm-4.6v | Visual grounding |
-| **OpenRouter** | google/gemini-2.0-flash-exp | Accès multi-modèles |
+| **Gemini** | modèles configurés | Rapide, économique |
+| **OpenAI** | modèles configurés | Haute qualité |
+| **GLM** | modèles configurés | Visual grounding |
+| **OpenRouter** | modèles configurés | Accès multi-modèles |
 
 ## Workflow Global
 
@@ -297,10 +297,10 @@ if normalized(llm1_name) == normalized(llm2_name):
 ```bash
 # .env - Mode Dual LLM
 AI_CORRECTION_COMPARISON_MODE=true
-AI_CORRECTION_LLM1_PROVIDER=gemini
-AI_CORRECTION_LLM1_MODEL=gemini-2.5-flash
-AI_CORRECTION_LLM2_PROVIDER=openai
-AI_CORRECTION_LLM2_MODEL=gpt-4o
+AI_CORRECTION_LLM1_PROVIDER=<provider-1>
+AI_CORRECTION_LLM1_MODEL=<model-1>
+AI_CORRECTION_LLM2_PROVIDER=<provider-2>
+AI_CORRECTION_LLM2_MODEL=<model-2>
 ```
 
 ---

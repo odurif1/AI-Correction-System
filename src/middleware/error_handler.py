@@ -1,5 +1,5 @@
 """
-Error tracking and global exception handling for La Corrigeuse.
+Error tracking and global exception handling.
 
 Integrates Sentry for production error aggregation and debugging.
 """

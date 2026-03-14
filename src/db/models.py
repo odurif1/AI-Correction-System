@@ -1,7 +1,7 @@
-"""Database models for La Corrigeuse."""
+"""Database models."""
 
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Integer, Boolean, ForeignKey, Enum as SQLEnum, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, Enum as SQLEnum, UniqueConstraint
 from sqlalchemy.orm import relationship
 from db.database import Base
 import enum
@@ -36,10 +36,6 @@ class User(Base):
     )
     subscription_start = Column(DateTime, nullable=True)
     subscription_end = Column(DateTime, nullable=True)
-
-    # Stripe integration
-    stripe_customer_id = Column(String, nullable=True, index=True)
-    stripe_subscription_id = Column(String, nullable=True, index=True)
 
     # Usage tracking (in tokens)
     tokens_used_this_month = Column(Integer, default=0)
@@ -125,20 +121,8 @@ class User(Base):
         }
 
 
-class PasswordResetToken(Base):
-    """Password reset token for secure password recovery."""
-    __tablename__ = "password_reset_tokens"
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
-    user_id = Column(String, ForeignKey("users.id"), nullable=False)
-    token_hash = Column(String, nullable=False, unique=True, index=True)  # Hashed token
-    expires_at = Column(DateTime, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    used = Column(Boolean, default=False)
-
-
 class UsageRecord(Base):
-    """Token usage record for audit trail and billing reconciliation."""
+    """Token usage record for audit trail and reconciliation."""
     __tablename__ = "usage_records"
 
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))

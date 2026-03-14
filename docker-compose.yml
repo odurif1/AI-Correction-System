@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     environment:
       # Database
-      - AI_CORRECTION_DATABASE_URL=sqlite:///data/lacorrigeuse.db
+      - AI_CORRECTION_DATABASE_URL=sqlite:///data/app.db
 
       # Data directory
       - AI_CORRECTION_DATA_DIR=/app/data
@@ -19,23 +19,6 @@ services:
     networks:
       - app-network
     # No depends_on for database - using SQLite file-based storage
-
-  nginx:
-    image: nginx:alpine
-    ports:
-      - "80:80"
-      - "443:443"  # For future HTTPS support
-    volumes:
-      # Custom nginx configuration
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro,z
-
-      # Next.js static files (for serving optimized assets)
-      - ./web/public:/usr/share/nginx/html:ro,z
-    depends_on:
-      - app
-    restart: unless-stopped
-    networks:
-      - app-network
 
 networks:
   app-network:

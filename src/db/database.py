@@ -8,7 +8,7 @@ from pathlib import Path
 DATA_DIR = Path(__file__).parent.parent.parent / "data"
 DATA_DIR.mkdir(exist_ok=True)
 
-DATABASE_URL = f"sqlite:///{DATA_DIR}/lacorrigeuse.db"
+DATABASE_URL = f"sqlite:///{DATA_DIR}/app.db"
 
 engine = create_engine(
     DATABASE_URL,

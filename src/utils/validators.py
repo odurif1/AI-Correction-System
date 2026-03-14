@@ -1,4 +1,4 @@
-"""Input validators for La Corrigeuse."""
+"""Input validators."""
 
 from typing import Tuple
 from fastapi import UploadFile, HTTPException

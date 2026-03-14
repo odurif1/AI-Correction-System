@@ -5,7 +5,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from audit.builder import build_audit_from_llm_comparison
+from audit.builder import build_audit_from_llm_comparison, extract_final_question_outputs
 from config.settings import get_settings
 from core.models import CopyDocument, GradedCopy, SessionStatus
 from core.services.graders.base import BaseGrader, GradingContext
@@ -318,159 +318,208 @@ class BatchGrader(BaseGrader):
             llm1_success = llm1_result is not None and llm1_result.parse_success
             llm2_success = llm2_result is not None and llm2_result.parse_success
 
-            if not llm1_success or not llm2_success:
+            if not llm1_success and not llm2_success:
                 from core.exceptions import DualLLMFailureError
-                failed_llm = []
-                if not llm1_success:
-                    failed_llm.append(llm1_name)
-                if not llm2_success:
-                    failed_llm.append(llm2_name)
-
                 raise DualLLMFailureError(
-                    f"Échec du mode double LLM: {', '.join(failed_llm)} n'a pas retourné de résultats valides. "
+                    f"Échec du mode double LLM: {llm1_name}, {llm2_name} n'ont pas retourné de résultats valides. "
                     f"Vérifiez vos clés API et réessayez.",
                     llm1_success=llm1_success,
                     llm2_success=llm2_success
                 )
 
-            # ===== CROSS-VERIFY STUDENT NAMES =====
-            from utils.name_matching import cross_verify_student_names, format_name_mismatch_message
+            # If exactly one LLM succeeded, keep the valid result and continue in
+            # degraded single-LLM mode instead of failing the whole correction.
+            if llm1_success != llm2_success:
+                successful_name = llm1_name if llm1_success else llm2_name
+                batch_result = llm1_result if llm1_success else llm2_result
+                logger.warning(
+                    "Batch dual-LLM degraded to single provider for this run: "
+                    f"{successful_name} succeeded, "
+                    f"{llm2_name if llm1_success else llm1_name} failed"
+                )
 
-            name_result = cross_verify_student_names(
-                llm1_result.copies if llm1_result else [],
-                llm2_result.copies if llm2_result else []
-            )
-
-            llm_comparison_data = {
-                "options": {
-                    "mode": "batch",
-                    "providers": provider_names,
-                    "total_copies": total_copies
-                },
-                "name_verification": {
-                    "matches": name_result.matches,
-                    "mismatches": name_result.mismatches,
-                    "llm1_only": name_result.llm1_only,
-                    "llm2_only": name_result.llm2_only,
-                    "all_matched": name_result.all_matched
-                },
-                "llm_comparison": {}
-            }
-
-            if name_result.requires_user_action:
-                from core.exceptions import StudentNameMismatchError
-
-                msg = format_name_mismatch_message(name_result, language)
-
-                workflow_state = ctx.get_orchestrator_attr('workflow_state')
-                is_auto_mode = workflow_state.auto_mode if workflow_state else False
-
-                if is_auto_mode:
-                    print(f"\n{msg}")
-                    print("\n[WARNING] Continuing despite name mismatch (--auto-confirm mode)")
-                    llm_comparison_data["name_verification_warning"] = True
-                else:
-                    raise StudentNameMismatchError(
-                        msg,
-                        mismatches=name_result.mismatches,
-                        llm1_only=name_result.llm1_only,
-                        llm2_only=name_result.llm2_only
-                    )
-
-            # Build merged results with comparison data
-            batch_result = None
-            name_verification = llm_comparison_data.get("name_verification", {})
-            llm_comparison_data = {
-                "options": {
-                    "mode": "batch",
-                    "providers": provider_names,
-                    "total_copies": total_copies
-                },
-                "name_verification": name_verification,
-                "llm_comparison": {}
-            }
-
-            if llm1_result and llm1_result.parse_success:
-                batch_result = llm1_result
-            else:
-                batch_result = llm2_result
-
-            # For each copy, build comparison data
-            for copy_result in batch_result.copies:
-                copy_idx = copy_result.copy_index
-
-                llm1_student_name = copy_result.student_name
-                llm2_student_name = None
-                if llm2_result and llm2_result.parse_success:
-                    for c in llm2_result.copies:
-                        if c.copy_index == copy_idx:
-                            llm2_student_name = c.student_name
-                            break
-
-                llm_comparison_data["llm_comparison"][f"copy_{copy_idx}"] = {
-                    "student_name": copy_result.student_name,
-                    "student_name_initial": {
-                        "llm1_name": llm1_student_name,
-                        "llm2_name": llm2_student_name
+                llm_comparison_data = {
+                    "options": {
+                        "mode": "batch_single_fallback",
+                        "providers": [successful_name],
+                        "total_copies": total_copies,
+                        "fallback_reason": "dual_llm_partial_failure",
                     },
-                    "questions": {}
+                    "llm_comparison": {}
                 }
 
-                llm2_copy = None
-                if llm2_result and llm2_result.parse_success:
-                    for c in llm2_result.copies:
-                        if c.copy_index == copy_idx:
-                            llm2_copy = c
-                            break
-
-                for qid, qdata in copy_result.questions.items():
-                    llm1_qdata = {
-                        "grade": qdata.get('grade', 0),
-                        "max_points": qdata.get('max_points', 1),
-                        "reading": qdata.get('student_answer_read', ''),
-                        "reasoning": qdata.get('reasoning', ''),
-                        "feedback": qdata.get('feedback', ''),
-                        "confidence": qdata.get('confidence', 0.8)
+                for copy_result in batch_result.copies:
+                    copy_idx = copy_result.copy_index
+                    llm_comparison_data["llm_comparison"][f"copy_{copy_idx}"] = {
+                        "student_name": copy_result.student_name,
+                        "questions": {}
                     }
 
-                    llm2_qdata = {}
-                    if llm2_copy and qid in llm2_copy.questions:
-                        q2 = llm2_copy.questions[qid]
-                        llm2_qdata = {
-                            "grade": q2.get('grade', 0),
-                            "max_points": q2.get('max_points', 1),
-                            "reading": q2.get('student_answer_read', ''),
-                            "reasoning": q2.get('reasoning', ''),
-                            "feedback": q2.get('feedback', ''),
-                            "confidence": q2.get('confidence', 0.8)
+                    for qid, qdata in copy_result.questions.items():
+                        llm_comparison_data["llm_comparison"][f"copy_{copy_idx}"]["questions"][qid] = {
+                            successful_name: {
+                                "grade": qdata.get('grade', 0),
+                                "max_points": qdata.get('max_points', 1),
+                                "question_text": qdata.get('question_text', ''),
+                                "reading": qdata.get('student_answer_read', ''),
+                                "reasoning": qdata.get('reasoning', ''),
+                                "feedback": qdata.get('feedback', ''),
+                                "confidence": qdata.get('confidence', 0.8)
+                            },
+                            "final": {
+                                "grade": qdata.get('grade', 0),
+                                "max_points": qdata.get('max_points', 1),
+                                "confidence": qdata.get('confidence', 0.8),
+                                "reasoning": qdata.get('reasoning', ''),
+                                "feedback": qdata.get('feedback', ''),
+                                "method": "single_llm_fallback",
+                                "agreement": None
+                            }
+                        }
+            else:
+                # ===== CROSS-VERIFY STUDENT NAMES =====
+                from utils.name_matching import cross_verify_student_names, format_name_mismatch_message
+
+                name_result = cross_verify_student_names(
+                    llm1_result.copies if llm1_result else [],
+                    llm2_result.copies if llm2_result else []
+                )
+
+                llm_comparison_data = {
+                    "options": {
+                        "mode": "batch",
+                        "providers": provider_names,
+                        "total_copies": total_copies
+                    },
+                    "name_verification": {
+                        "matches": name_result.matches,
+                        "mismatches": name_result.mismatches,
+                        "llm1_only": name_result.llm1_only,
+                        "llm2_only": name_result.llm2_only,
+                        "all_matched": name_result.all_matched
+                    },
+                    "llm_comparison": {}
+                }
+
+                if name_result.requires_user_action:
+                    from core.exceptions import StudentNameMismatchError
+
+                    msg = format_name_mismatch_message(name_result, language)
+
+                    workflow_state = ctx.get_orchestrator_attr('workflow_state')
+                    is_auto_mode = workflow_state.auto_mode if workflow_state else False
+
+                    if is_auto_mode:
+                        print(f"\n{msg}")
+                        print("\n[WARNING] Continuing despite name mismatch (--auto-confirm mode)")
+                        llm_comparison_data["name_verification_warning"] = True
+                    else:
+                        raise StudentNameMismatchError(
+                            msg,
+                            mismatches=name_result.mismatches,
+                            llm1_only=name_result.llm1_only,
+                            llm2_only=name_result.llm2_only
+                        )
+
+                # Build merged results with comparison data
+                batch_result = None
+                name_verification = llm_comparison_data.get("name_verification", {})
+                llm_comparison_data = {
+                    "options": {
+                        "mode": "batch",
+                        "providers": provider_names,
+                        "total_copies": total_copies
+                    },
+                    "name_verification": name_verification,
+                    "llm_comparison": {}
+                }
+
+                if llm1_result and llm1_result.parse_success:
+                    batch_result = llm1_result
+                else:
+                    batch_result = llm2_result
+
+                # For each copy, build comparison data
+                for copy_result in batch_result.copies:
+                    copy_idx = copy_result.copy_index
+
+                    llm1_student_name = copy_result.student_name
+                    llm2_student_name = None
+                    if llm2_result and llm2_result.parse_success:
+                        for c in llm2_result.copies:
+                            if c.copy_index == copy_idx:
+                                llm2_student_name = c.student_name
+                                break
+
+                    llm_comparison_data["llm_comparison"][f"copy_{copy_idx}"] = {
+                        "student_name": copy_result.student_name,
+                        "student_name_initial": {
+                            "llm1_name": llm1_student_name,
+                            "llm2_name": llm2_student_name
+                        },
+                        "questions": {}
+                    }
+
+                    llm2_copy = None
+                    if llm2_result and llm2_result.parse_success:
+                        for c in llm2_result.copies:
+                            if c.copy_index == copy_idx:
+                                llm2_copy = c
+                                break
+
+                    for qid, qdata in copy_result.questions.items():
+                        llm1_qdata = {
+                            "grade": qdata.get('grade', 0),
+                            "max_points": qdata.get('max_points', 1),
+                            "question_text": qdata.get('question_text', ''),
+                            "reading": qdata.get('student_answer_read', ''),
+                            "reasoning": qdata.get('reasoning', ''),
+                            "feedback": qdata.get('feedback', ''),
+                            "confidence": qdata.get('confidence', 0.8)
                         }
 
-                    if llm2_qdata:
-                        final_grade = (llm1_qdata["grade"] + llm2_qdata["grade"]) / 2
-                        max_pts = max(llm1_qdata.get("max_points", 1.0), llm2_qdata.get("max_points", 1.0))
-                        threshold = max_pts * get_settings().grade_agreement_threshold
-                        grade_agreement = abs(llm1_qdata["grade"] - llm2_qdata["grade"]) < threshold
-                        max_points_agreement = abs(llm1_qdata.get("max_points", 1.0) - llm2_qdata.get("max_points", 1.0)) < 0.01
-                        agreement = grade_agreement and max_points_agreement
-                        r1 = (llm1_qdata.get("reading") or "").lower().strip()
-                        r2 = (llm2_qdata.get("reading") or "").lower().strip()
-                        initial_reading_similarity = SequenceMatcher(None, r1, r2).ratio() if r1 and r2 else None
-                    else:
-                        final_grade = llm1_qdata["grade"]
-                        max_pts = llm1_qdata.get("max_points", 1.0)
-                        agreement = True
-                        initial_reading_similarity = None
+                        llm2_qdata = {}
+                        if llm2_copy and qid in llm2_copy.questions:
+                            q2 = llm2_copy.questions[qid]
+                            llm2_qdata = {
+                                "grade": q2.get('grade', 0),
+                                "max_points": q2.get('max_points', 1),
+                                "question_text": q2.get('question_text', ''),
+                                "reading": q2.get('student_answer_read', ''),
+                                "reasoning": q2.get('reasoning', ''),
+                                "feedback": q2.get('feedback', ''),
+                                "confidence": q2.get('confidence', 0.8)
+                            }
 
-                    question_data = {
-                        "max_points": max_pts,
-                        llm1_name: llm1_qdata,
-                    }
-                    if llm2_qdata:
-                        question_data[llm2_name] = llm2_qdata
+                        if llm2_qdata:
+                            final_grade = (llm1_qdata["grade"] + llm2_qdata["grade"]) / 2
+                            max_pts = max(llm1_qdata.get("max_points", 1.0), llm2_qdata.get("max_points", 1.0))
+                            threshold = max_pts * get_settings().grade_agreement_threshold
+                            grade_agreement = abs(llm1_qdata["grade"] - llm2_qdata["grade"]) < threshold
+                            max_points_agreement = abs(llm1_qdata.get("max_points", 1.0) - llm2_qdata.get("max_points", 1.0)) < 0.01
+                            agreement = grade_agreement and max_points_agreement
+                            r1 = (llm1_qdata.get("reading") or "").lower().strip()
+                            r2 = (llm2_qdata.get("reading") or "").lower().strip()
+                            initial_reading_similarity = SequenceMatcher(None, r1, r2).ratio() if r1 and r2 else None
+                        else:
+                            final_grade = llm1_qdata["grade"]
+                            max_pts = llm1_qdata.get("max_points", 1.0)
+                            agreement = True
+                            initial_reading_similarity = None
+
+                        question_data = {
+                            "max_points": max_pts,
+                            llm1_name: llm1_qdata,
+                        }
+                        if llm2_qdata:
+                            question_data[llm2_name] = llm2_qdata
 
                     question_data["_initial_final"] = {
                         "grade": final_grade,
                         "max_points": max_pts,
+                        "confidence": min(llm1_qdata.get("confidence", 0.8), llm2_qdata.get("confidence", 0.8)) if llm2_qdata else llm1_qdata.get("confidence", 0.8),
+                        "reasoning": llm1_qdata.get("reasoning", ""),
+                        "feedback": llm1_qdata.get("feedback", ""),
                         "method": "average" if llm2_qdata else "single_llm",
                         "agreement": agreement,
                         "reading_similarity": initial_reading_similarity
@@ -752,6 +801,9 @@ class BatchGrader(BaseGrader):
                                     llm_comparison_data["llm_comparison"][comp_key]["questions"][qid]["_pending_final"] = {
                                         "grade": verified['final_grade'],
                                         "max_points": resolved_max_points,
+                                        "confidence": verified.get('confidence', 0.8),
+                                        "reasoning": verified.get('llm1_reasoning', ''),
+                                        "feedback": verified.get('final_feedback', ''),
                                         "method": f"verified_{verified.get('method', 'grouped')}"
                                     }
 
@@ -1305,6 +1357,7 @@ class BatchGrader(BaseGrader):
                         provider_name: {
                             "grade": qdata.get('grade', 0),
                             "max_points": qdata.get('max_points', 1),
+                            "question_text": qdata.get('question_text', ''),
                             "reading": qdata.get('student_answer_read', ''),
                             "reasoning": qdata.get('reasoning', ''),
                             "feedback": qdata.get('feedback', ''),
@@ -1438,40 +1491,12 @@ class BatchGrader(BaseGrader):
             # Build grades dict
             grades = {}
             detected_scale = {}
-            reasoning = {}
-            student_feedback = {}
-            readings = {}
-            confidence_by_question = {}
-
-            copy_comparison_questions = None
-            if llm_comparison_data and copy_key in llm_comparison_data.get("llm_comparison", {}):
-                copy_comparison_questions = llm_comparison_data["llm_comparison"][copy_key].get("questions", {})
 
             for qid, qdata in copy_result.questions.items():
                 grades[qid] = qdata.get('grade', 0)
                 max_pts = float(qdata.get('max_points', 0))
                 if max_pts > 0:
                     detected_scale[qid] = max_pts
-
-                if qdata.get('reasoning'):
-                    reasoning[qid] = qdata.get('reasoning')
-
-                feedback = qdata.get('feedback')
-                if not feedback and copy_comparison_questions and qid in copy_comparison_questions:
-                    q_comp = copy_comparison_questions[qid]
-                    for provider_key in q_comp:
-                        if provider_key not in ['max_points', '_initial_final', 'final', 'verification', 'ultimatum', '_pending_final']:
-                            prov_feedback = q_comp[provider_key].get('feedback')
-                            if prov_feedback:
-                                feedback = prov_feedback
-                                break
-                if feedback:
-                    student_feedback[qid] = feedback
-
-                if qdata.get('student_answer_read'):
-                    readings[qid] = qdata.get('student_answer_read')
-                if qdata.get('confidence') is not None:
-                    confidence_by_question[qid] = float(qdata.get('confidence', 0.8))
 
             # Update grading scale from detection (via orchestrator)
             ctx.orchestrator.update_scale_from_detection(detected_scale)
@@ -1567,27 +1592,52 @@ class BatchGrader(BaseGrader):
                     "student_detection": llm_comparison_data["student_detection"]
                 }
 
+            audit_provider_names = (
+                llm_comparison_data.get("options", {}).get("providers")
+                if llm_comparison_data
+                else None
+            )
+            audit_mode = "dual" if audit_provider_names and len(audit_provider_names) > 1 else "single"
+
             graded = GradedCopy(
                 copy_id=original_copy.id,
                 grades=grades,
                 total_score=sum(grades.values()),
                 max_score=batch_max_score,
-                confidence=sum(q.get('confidence', 0.8) for q in copy_result.questions.values()) / max(len(copy_result.questions), 1),
+                confidence=0.5,
                 feedback=copy_result.overall_feedback or "",
-                reasoning=reasoning,
-                student_feedback=student_feedback,
-                readings=readings,
-                confidence_by_question=confidence_by_question,
                 max_points_by_question=max_points_per_question,
                 grading_audit=build_audit_from_llm_comparison(
                     copy_comparison or {},
-                    mode="dual" if ctx.comparison_mode else "single",
+                    mode=audit_mode,
                     grading_method=ctx.grading_mode or "batch",
                     verification_mode=batch_verify or "none",
-                    provider_names=(llm_comparison_data.get("options", {}).get("providers") if llm_comparison_data else None),
+                    provider_names=audit_provider_names,
                     grading_scale=ctx.grading_scale
                 ) if copy_comparison else None
             )
+
+            if graded.grading_audit:
+                final_outputs = extract_final_question_outputs(graded.grading_audit)
+                graded.confidence_by_question = {
+                    q_id: data["confidence"]
+                    for q_id, data in final_outputs.items()
+                    if data["confidence"] is not None
+                }
+                graded.reasoning = {
+                    q_id: data["reasoning"]
+                    for q_id, data in final_outputs.items()
+                    if data["reasoning"]
+                }
+                graded.student_feedback = {
+                    q_id: data["feedback"]
+                    for q_id, data in final_outputs.items()
+                    if data["feedback"]
+                }
+                if graded.confidence_by_question:
+                    graded.confidence = (
+                        sum(c for c in graded.confidence_by_question.values()) / len(graded.confidence_by_question)
+                    )
 
             graded_copies.append(graded)
             ctx.session.graded_copies.append(graded)
@@ -1598,7 +1648,7 @@ class BatchGrader(BaseGrader):
                     final_questions[qid] = {
                         'grade': grades[qid],
                         'max_points': max_points_per_question.get(qid, 1.0),
-                        'confidence': confidence_by_question.get(qid, 0.8)
+                        'confidence': graded.confidence_by_question.get(qid, 0.8)
                     }
 
                 await self._call_callback(progress_callback, 'copy_done', {

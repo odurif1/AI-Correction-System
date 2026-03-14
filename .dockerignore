@@ -42,10 +42,6 @@ outputs/
 temp/
 
 # Web development files
-web/node_modules
-web/.next
-web/out
-web/turbo
 
 # Test files
 tests/

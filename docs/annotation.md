@@ -18,6 +18,7 @@ src/
 ├── prompts/
 │   └── annotation.py          # Prompts LLM pour détection coordonnées
 └── export/
+    ├── annotation_pipeline.py # Pipeline d'export des 2 artefacts PDF
     ├── annotation_service.py  # Service de détection et placement
     └── pdf_annotator.py       # Application des annotations sur PDF
 ```
@@ -28,19 +29,20 @@ Variables d'environnement (.env):
 
 ```bash
 # LLM pour annotations (optionnel)
-# Si non défini, utilise le provider principal
-AI_CORRECTION_ANNOTATION_PROVIDER=glm
-AI_CORRECTION_ANNOTATION_MODEL=glm-4.6v
+# Si non défini, le pipeline génère quand même les 2 PDF
+# avec un placement heuristique des annotations.
+# AI_CORRECTION_ANNOTATION_PROVIDER=<provider>
+# AI_CORRECTION_ANNOTATION_MODEL=<vision-model>
 ```
 
 ### Providers supportés
 
-| Provider | Modèle recommandé | Caractéristiques |
+| Provider | Exemple de modèle | Caractéristiques |
 |----------|-------------------|------------------|
-| **GLM** (z.ai) | glm-4.6v | Visual grounding, bounding boxes (recommandé) |
-| **Gemini** | gemini-2.5-flash | Vision multimodal |
-| **OpenAI** | gpt-4o | Vision multimodal |
-| **OpenRouter** | google/gemini-2.0-flash-exp | Accès multi-modèles |
+| **GLM** | `glm-4.6v` | Visual grounding, bounding boxes |
+| **Gemini** | modèle vision configuré | Vision multimodale |
+| **OpenAI** | modèle vision configuré | Vision multimodale |
+| **OpenRouter** | modèle vision configuré | Accès multi-modèles |
 
 ## Utilisation CLI
 
@@ -59,18 +61,18 @@ python -m src.main correct single batch copies.pdf --annotate --auto-confirm
 
 ## Sorties générées
 
-L'option `--annotate` produit **deux types de fichiers**:
+L'option `--annotate` produit **systématiquement deux types de fichiers**:
 
 ```
 outputs/<session_id>/
 ├── annotated/                      # Copies complètes annotées
-│   ├── Dupont_Marie_annotated.pdf
-│   ├── Martin_Luc_annotated.pdf
+│   ├── student_001_annotated.pdf
+│   ├── student_002_annotated.pdf
 │   └── ...
 │
 └── overlays/                       # Overlays (annotations uniquement)
-    ├── Dupont_Marie_overlay.pdf
-    ├── Martin_Luc_overlay.pdf
+    ├── student_001_overlay.pdf
+    ├── student_002_overlay.pdf
     └── ...
 ```
 
@@ -86,6 +88,13 @@ outputs/<session_id>/
   - Superposition sur les copies scannées
   - Impression séparée sur calque
   - Application non-destructive
+
+### Comportement sans modèle d'annotation
+
+Si `AI_CORRECTION_ANNOTATION_MODEL` n'est pas configuré:
+- le pipeline d'annotation n'est pas désactivé
+- les deux PDF sont quand même générés
+- le placement des annotations utilise le fallback heuristique
 
 ### Superposition manuelle
 
@@ -210,21 +219,21 @@ for placement in annotations.placements:
 └────────┬────────┘
          │
          ▼
-┌─────────────────┐
-│  LLM Vision     │  Analyse le PDF
-│  + Prompts      │  Détermine les coordonnées
-└────────┬────────┘
+┌──────────────────────────┐
+│ AnnotationExportService  │  Orchestration unique
+│ 1 calcul de placement    │  pour 2 sorties PDF
+└────────┬─────────────────┘
          │
          ▼
 ┌─────────────────┐
 │ CopyAnnotations │  Liste des placements
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  PDF Annotator  │  Applique les annotations
-│  + PyMuPDF      │  Génère le PDF final
-└─────────────────┘
+└──────┬─────┬────┘
+       │     │
+       ▼     ▼
+┌───────────────┐   ┌────────────────┐
+│ PDF annoté    │   │ Overlay PDF    │
+│ contenu+notes │   │ annotations    │
+└───────────────┘   └────────────────┘
 ```
 
 ## Fallback heuristique

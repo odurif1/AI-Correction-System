@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== Security Scan: La Corrigeuse ==="
+echo "=== Security Scan ==="
 echo ""
 
 # Color output

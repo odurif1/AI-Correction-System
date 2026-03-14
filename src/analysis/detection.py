@@ -12,6 +12,8 @@ import hashlib
 import json
 import logging
 import time
+import re
+import unicodedata
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 
@@ -30,9 +32,113 @@ from core.exceptions import (
 from vision.pdf_reader import PDFReader
 from ai.provider_factory import create_ai_provider
 from analysis.detection_prompts import build_detection_prompt
-from analysis.detection_translations import get_translations
+from analysis.detection_translations import (
+    get_translations,
+    translate_detection_message,
+    translate_quality_issue,
+)
 
 logger = logging.getLogger(__name__)
+
+
+GENERIC_SECTION_LABELS = {
+    "exercice",
+    "exercise",
+    "question",
+    "partie",
+    "part",
+    "section",
+}
+
+
+def _normalize_text_label(value: str) -> str:
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _ascii_normalized_lower(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    return re.sub(r"\s+", " ", ascii_only).strip().lower()
+
+
+def _parse_points_value(value: Any) -> float:
+    try:
+        if isinstance(value, str):
+            match = re.search(r"[\d.]+", value)
+            if match:
+                return float(match.group())
+            return 1.0
+        return float(value)
+    except (ValueError, TypeError):
+        return 1.0
+
+
+def _normalize_question_key(raw_key: Any) -> tuple[Optional[str], Optional[str]]:
+    """Return a stable internal key and an optional warning message."""
+    if raw_key is None:
+        return None, "Une entrée du barème sans identifiant a été ignorée."
+
+    label = _normalize_text_label(str(raw_key))
+    if not label:
+        return None, "Une entrée vide du barème a été ignorée."
+
+    lowered = _ascii_normalized_lower(label)
+    if lowered in GENERIC_SECTION_LABELS:
+        return None, f"L'entrée de barème '{label}' est trop vague et a été ignorée."
+
+    question_match = re.fullmatch(r"(?:q|question)\s*[:#\- ]*\s*0*(\d+)", lowered)
+    if question_match:
+        return f"Q{int(question_match.group(1))}", None
+
+    numeric_match = re.fullmatch(r"0*(\d+)", lowered)
+    if numeric_match:
+        return f"Q{int(numeric_match.group(1))}", None
+
+    # Keep richer labels as-is after light normalization to preserve exam diversity.
+    return label, None
+
+
+def _normalize_grading_scale(
+    grading_scale: Dict[str, Any],
+    questions_detected: List[Any],
+) -> tuple[Dict[str, float], List[str], List[str]]:
+    """Normalize grading keys conservatively while preserving richer labels."""
+    normalized_scale: Dict[str, float] = {}
+    normalized_questions: List[str] = []
+    warnings: List[str] = []
+
+    def register_question(raw_label: Any) -> None:
+        normalized_key, warning = _normalize_question_key(raw_label)
+        if warning and warning not in warnings:
+            warnings.append(warning)
+        if normalized_key and normalized_key not in normalized_questions:
+            normalized_questions.append(normalized_key)
+
+    for raw_key, raw_value in grading_scale.items():
+        normalized_key, warning = _normalize_question_key(raw_key)
+        if warning and warning not in warnings:
+            warnings.append(warning)
+        if not normalized_key:
+            continue
+
+        points_value = _parse_points_value(raw_value)
+        if normalized_key in normalized_scale and normalized_scale[normalized_key] != points_value:
+            warnings.append(
+                f"Plusieurs valeurs ont été détectées pour '{normalized_key}'. La première a été conservée."
+            )
+            continue
+
+        normalized_scale.setdefault(normalized_key, points_value)
+        if normalized_key not in normalized_questions:
+            normalized_questions.append(normalized_key)
+
+    for raw_question in questions_detected:
+        register_question(raw_question)
+
+    if not normalized_questions:
+        normalized_questions = list(normalized_scale.keys())
+
+    return normalized_scale, normalized_questions, warnings
 
 
 class Detector:
@@ -132,8 +238,8 @@ class Detector:
 
         # Call AI with images
         try:
-            # For the first pass, use the first few sample images
-            detection_images = sample_images[:min(5, len(sample_images))]
+            # Use the full document for structure and scale detection.
+            detection_images = sample_images
 
             # Convert PIL images to format expected by provider
             image_paths = []
@@ -287,46 +393,46 @@ class Detector:
         }
         subject_integration = subject_map.get(subject_str, SubjectIntegration.NOT_DETECTED)
 
+        normalized_questions_detected, question_warnings = [], []
+
         # Parse candidate scales
         candidate_scales = []
         raw_candidate_scales = data.get("candidate_scales", [])
 
         if raw_candidate_scales:
             for candidate in raw_candidate_scales:
+                normalized_candidate_scale, _, candidate_warnings = _normalize_grading_scale(
+                    candidate.get("scale", {}),
+                    [],
+                )
+                question_warnings.extend(
+                    warning for warning in candidate_warnings if warning not in question_warnings
+                )
                 candidate_scales.append({
-                    "scale": candidate.get("scale", {}),
+                    "scale": normalized_candidate_scale,
                     "confidence": candidate.get("confidence", 0.0)
                 })
         else:
             single_scale = data.get("grading_scale", {})
             single_confidence = data.get("confidence_grading_scale", 0.5)
             if single_scale:
+                normalized_single_scale, _, single_warnings = _normalize_grading_scale(single_scale, [])
+                question_warnings.extend(
+                    warning for warning in single_warnings if warning not in question_warnings
+                )
                 candidate_scales.append({
-                    "scale": single_scale,
+                    "scale": normalized_single_scale,
                     "confidence": single_confidence
                 })
 
         # Determine primary grading scale and confidence
-        grading_scale = data.get("grading_scale", {})
-        
-        # Clean up grading scale values to ensure they are floats (handling cases like "1pt")
-        cleaned_scale = {}
-        for k, v in grading_scale.items():
-            try:
-                if isinstance(v, str):
-                    # Extract first number found in string
-                    import re
-                    match = re.search(r'[\d.]+', v)
-                    if match:
-                        cleaned_scale[k] = float(match.group())
-                    else:
-                        cleaned_scale[k] = 1.0 # fallback
-                else:
-                    cleaned_scale[k] = float(v)
-            except (ValueError, TypeError):
-                cleaned_scale[k] = 1.0 # fallback
-        grading_scale = cleaned_scale
-        
+        grading_scale, normalized_questions_detected, primary_warnings = _normalize_grading_scale(
+            data.get("grading_scale", {}),
+            data.get("questions_detected", []),
+        )
+        question_warnings.extend(
+            warning for warning in primary_warnings if warning not in question_warnings
+        )
         confidence_grading_scale = data.get("confidence_grading_scale", 0.5)
 
         if not grading_scale and candidate_scales:
@@ -334,9 +440,18 @@ class Detector:
             best_candidate = candidate_scales[0]
             grading_scale = best_candidate["scale"]
             confidence_grading_scale = best_candidate["confidence"]
+            if not normalized_questions_detected:
+                normalized_questions_detected = list(grading_scale.keys())
+
+        if question_warnings:
+            penalty = min(0.35, 0.1 + (0.05 * len(question_warnings)))
+            confidence_grading_scale = max(0.2, confidence_grading_scale - penalty)
 
         # Determine blocking issues
-        blocking_issues = data.get("blocking_issues", [])
+        blocking_issues = [
+            translate_detection_message(issue, self.language)
+            for issue in data.get("blocking_issues", [])
+        ]
         has_blocking_issues = bool(blocking_issues) or document_type in [
             DocumentType.RANDOM_DOCUMENT,
             DocumentType.SUBJECT_ONLY,
@@ -350,6 +465,15 @@ class Detector:
             blocking_issues.append("Le document contient uniquement le sujet, pas de copies d'élèves")
 
         # Build result
+        translated_quality_issues = [
+            translate_quality_issue(issue, self.language)
+            for issue in data.get("quality_issues", [])
+        ]
+        translated_warnings = [
+            translate_detection_message(warning, self.language)
+            for warning in data.get("warnings", [])
+        ]
+
         result = DetectionResult(
             mode=mode,
             is_valid_pdf=True,
@@ -365,12 +489,12 @@ class Detector:
             subject_page_count=data.get("subject_page_count", 0),
             grading_scale=grading_scale,
             confidence_grading_scale=confidence_grading_scale,
-            questions_detected=data.get("questions_detected", []),
-            quality_issues=data.get("quality_issues", []),
+            questions_detected=normalized_questions_detected,
+            quality_issues=translated_quality_issues,
             overall_quality_score=data.get("overall_quality_score", 1.0),
             blocking_issues=blocking_issues,
             has_blocking_issues=has_blocking_issues,
-            warnings=data.get("warnings", []),
+            warnings=translated_warnings + question_warnings,
             detected_language=data.get("detected_language", self.language),
             exam_name=data.get("exam_name"),
         )

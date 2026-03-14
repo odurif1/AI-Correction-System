@@ -1,5 +1,5 @@
 """
-Access control middleware for La Corrigeuse.
+Access control middleware.
 
 This module provides dependency injection functions for enforcing session
 ownership and access control on protected API endpoints.
@@ -31,7 +31,6 @@ For endpoints that create new sessions (no ownership check needed yet):
 """
 
 from pathlib import Path
-from typing import str
 
 from fastapi import Depends, HTTPException, status
 

@@ -752,7 +752,7 @@ def build_student_name_ultimatum_prompt(
   "name_ultimatum_decisions": [
     {{
       "copy_index": 1,
-      "my_final_name": "Jean Dupont",
+      "my_final_name": "Eleve A",
       "confidence": 0.9
     }},
     ...

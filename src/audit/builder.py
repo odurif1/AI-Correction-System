@@ -5,6 +5,7 @@ This module provides a centralized way to construct the unified
 GradingAudit structure, ensuring consistency across all grading modes.
 """
 
+from difflib import SequenceMatcher
 from typing import Dict, List, Optional, Any
 from core.models import (
     GradingAudit,
@@ -111,6 +112,7 @@ class AuditBuilder:
             llm_result_models[provider_id] = LLMResult(
                 grade=float(result.get("grade", 0)),
                 max_points=float(max_pts) if max_pts is not None else None,
+                question_text=result.get("question_text"),
                 reading=result.get("reading", "") or result.get("student_answer_read", ""),
                 reasoning=result.get("reasoning", ""),
                 feedback=result.get("feedback", "") or result.get("student_feedback", ""),
@@ -122,10 +124,20 @@ class AuditBuilder:
         resolution_model = ResolutionInfo(
             final_grade=float(resolution.get("final_grade", 0)),
             final_max_points=float(final_max_pts) if final_max_pts is not None else 0.0,
+            final_confidence=(
+                float(resolution["final_confidence"])
+                if resolution.get("final_confidence") is not None
+                else None
+            ),
+            final_reasoning=resolution.get("final_reasoning"),
+            final_feedback=resolution.get("final_feedback"),
             method=resolution.get("method", "unknown"),
             phases=resolution.get("phases", ["initial"]),
             agreement=resolution.get("agreement"),
-            initial_reading_similarity=resolution.get("initial_reading_similarity")
+            initial_reading_similarity=resolution.get("initial_reading_similarity"),
+            final_reading=resolution.get("final_reading"),
+            final_reading_method=resolution.get("final_reading_method"),
+            reading_consensus=resolution.get("reading_consensus"),
         )
 
         self.questions[question_id] = QuestionAudit(
@@ -145,7 +157,7 @@ class AuditBuilder:
         Args:
             final_name: Final resolved student name
             llm_results: Dict mapping provider ID to detected name
-                {"LLM1": "Jean Dupont", "LLM2": "J. Dupont"}
+                {"LLM1": "Eleve A", "LLM2": "E. A"}
             resolution: Resolution info
                 {"method": "consensus", "phases": ["initial"], "agreement": True}
         """
@@ -214,6 +226,92 @@ class AuditBuilder:
             student_detection=self.student_detection,
             summary=self._compute_summary()
         )
+
+
+def _reading_similarity(reading1: str, reading2: str) -> Optional[float]:
+    if not reading1 or not reading2:
+        return None
+    return SequenceMatcher(None, reading1.strip().lower(), reading2.strip().lower()).ratio()
+
+
+def _pick_consensus_reading(reading1: str, reading2: str) -> Optional[str]:
+    similarity = _reading_similarity(reading1, reading2)
+    if similarity is None or similarity < 0.8:
+        return None
+    return reading1 if len(reading1 or "") >= len(reading2 or "") else reading2
+
+
+def _resolve_final_reading(qdata: Dict[str, Any], llm1_data: Dict[str, Any], llm2_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Derive a legitimate final reading only when the available data supports it.
+
+    Returns:
+        {
+            "final_reading": Optional[str],
+            "final_reading_method": Optional[str],
+            "reading_consensus": Optional[bool]
+        }
+    """
+    llm1_reading = llm1_data.get("reading", "") or llm1_data.get("student_answer_read", "")
+    llm2_reading = llm2_data.get("reading", "") or llm2_data.get("student_answer_read", "")
+
+    if not llm2_data:
+        return {
+            "final_reading": llm1_reading or None,
+            "final_reading_method": "single_llm" if llm1_reading else None,
+            "reading_consensus": None if llm1_reading else None,
+        }
+
+    ultimatum = qdata.get("ultimatum", {})
+    llm1_final_reading = ultimatum.get("llm1_final_reading", "")
+    llm2_final_reading = ultimatum.get("llm2_final_reading", "")
+    chosen_ultimatum_reading = _pick_consensus_reading(llm1_final_reading, llm2_final_reading)
+    if chosen_ultimatum_reading:
+        return {
+            "final_reading": chosen_ultimatum_reading,
+            "final_reading_method": ultimatum.get("method", "ultimatum_consensus"),
+            "reading_consensus": True,
+        }
+
+    verification = qdata.get("verification", {})
+    if verification and verification.get("reading_disagreement") is False:
+        llm1_verified = verification.get("llm1_new_reading", "")
+        llm2_verified = verification.get("llm2_new_reading", "")
+        chosen_verified_reading = _pick_consensus_reading(llm1_verified, llm2_verified)
+        if chosen_verified_reading:
+            return {
+                "final_reading": chosen_verified_reading,
+                "final_reading_method": verification.get("method", "verification_consensus"),
+                "reading_consensus": True,
+            }
+
+    chosen_initial_reading = _pick_consensus_reading(llm1_reading, llm2_reading)
+    if chosen_initial_reading:
+        return {
+            "final_reading": chosen_initial_reading,
+            "final_reading_method": "initial_consensus",
+            "reading_consensus": True,
+        }
+
+    return {
+        "final_reading": None,
+        "final_reading_method": None,
+        "reading_consensus": False if (llm1_reading or llm2_reading) else None,
+    }
+
+
+def extract_final_question_outputs(audit: GradingAudit) -> Dict[str, Dict[str, Any]]:
+    """Extract only final professor-facing per-question outputs from an audit."""
+    outputs: Dict[str, Dict[str, Any]] = {}
+    for question_id, qaudit in audit.questions.items():
+        outputs[question_id] = {
+            "confidence": qaudit.resolution.final_confidence,
+            "reasoning": qaudit.resolution.final_reasoning,
+            "feedback": qaudit.resolution.final_feedback,
+            "max_points": qaudit.resolution.final_max_points,
+            "grade": qaudit.resolution.final_grade,
+        }
+    return outputs
 
 
 def build_audit_from_llm_comparison(
@@ -331,6 +429,7 @@ def build_audit_from_llm_comparison(
                 phases_list = ["initial"]  # No verification/ultimatum = stayed at initial
 
             final_data = qdata.get("final", qdata.get("_initial_final", qdata.get("_pending_final", {})))
+            reading_resolution = _resolve_final_reading(qdata, llm1_data, llm2_data)
 
             # Use grading_scale for final_max_points
             final_max_pts = question_max_points if question_max_points is not None else final_data.get("max_points")
@@ -338,10 +437,16 @@ def build_audit_from_llm_comparison(
             resolution = {
                 "final_grade": final_data.get("grade", 0),
                 "final_max_points": final_max_pts,
+                "final_confidence": final_data.get("confidence"),
+                "final_reasoning": final_data.get("reasoning"),
+                "final_feedback": final_data.get("feedback") or final_data.get("student_feedback"),
                 "method": final_data.get("method", "unknown"),
                 "phases": phases_list,
                 "agreement": final_data.get("agreement", agreement),
-                "initial_reading_similarity": qdata.get("_initial_final", {}).get("reading_similarity")
+                "initial_reading_similarity": qdata.get("_initial_final", {}).get("reading_similarity"),
+                "final_reading": reading_resolution["final_reading"],
+                "final_reading_method": reading_resolution["final_reading_method"],
+                "reading_consensus": reading_resolution["reading_consensus"],
             }
 
             builder.add_question_result(

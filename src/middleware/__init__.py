@@ -1,5 +1,5 @@
 """
-Middleware for La Corrigeuse.
+Middleware package.
 
 Includes error tracking, logging, and request handling middleware.
 """

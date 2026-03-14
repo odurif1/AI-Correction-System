@@ -36,11 +36,46 @@ class SessionResponse(BaseModel):
 
 class SessionDetailResponse(SessionResponse):
     """Detailed session information including copies and grades."""
+    prepared_correction: Optional[Dict[str, Any]] = None
+    documents: List["SessionDocumentResponse"] = Field(default_factory=list)
     copies: List[Dict[str, Any]] = Field(default_factory=list)
     graded_copies: List[Dict[str, Any]] = Field(default_factory=list)
     question_weights: Dict[str, float] = Field(default_factory=dict)
     question_names: Dict[str, str] = Field(default_factory=dict)
     cost_breakdown: Optional["CostBreakdown"] = None
+
+
+class SessionDocumentResponse(BaseModel):
+    """A document uploaded into a session."""
+    document_id: str
+    filename: str
+    storage_path: str
+    page_count: int
+    status: str
+    detected_type: str
+    confidence: float
+    issues: List[str] = Field(default_factory=list)
+    evidence: List[str] = Field(default_factory=list)
+    text_excerpt: Optional[str] = None
+    page_classifications: List[Dict[str, Any]] = Field(default_factory=list)
+    segments: List[Dict[str, Any]] = Field(default_factory=list)
+    user_decision: str
+    usable: bool
+
+
+class UpdateSessionDocumentRequest(BaseModel):
+    """Update the user decision for an uploaded session document."""
+    user_decision: Literal["pending", "student_copies", "subject_only", "grading_scheme", "exclude"]
+
+
+class ConfirmSessionDocumentsResponse(BaseModel):
+    """Summary of the document confirmation phase."""
+    success: bool
+    copies_document_ids: List[str] = Field(default_factory=list)
+    reference_document_ids: List[str] = Field(default_factory=list)
+    excluded_document_ids: List[str] = Field(default_factory=list)
+    issues: List[str] = Field(default_factory=list)
+    prepared_correction: Optional[Dict[str, Any]] = None
 
 
 # ============================================================================
@@ -94,12 +129,26 @@ class LLMGradeInfo(BaseModel):
     reading: Optional[str] = None
 
 
+class ReviewContextResponse(BaseModel):
+    """Compact post-correction context for professor review."""
+    question_facts: List[str] = Field(default_factory=list)
+    facts_source: Optional[str] = None
+
+
 class DisagreementResponse(BaseModel):
     """A disagreement between two LLMs."""
     copy_id: str
     copy_index: int
     student_name: Optional[str] = None
     question_id: str
+    question_label: Optional[str] = None
+    question_text: Optional[str] = None
+    review_context: Optional[ReviewContextResponse] = None
+    disagreement_type: Optional[str] = None
+    answer_excerpt: Optional[str] = None
+    answer_excerpt_source: Optional[str] = None
+    start_page: Optional[int] = None
+    end_page: Optional[int] = None
     max_points: float
     llm1: LLMGradeInfo
     llm2: LLMGradeInfo

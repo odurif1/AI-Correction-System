@@ -322,6 +322,7 @@ class BatchGrader:
                             logger.warning(f"Question {qid} has None data, skipping")
                             continue
                         questions[qid] = {
+                            'question_text': qdata.get('question_text', ''),
                             'student_answer_read': qdata.get('student_answer_read', ''),
                             'grade': _parse_grade_value(qdata.get('grade', 0)),
                             'max_points': _parse_grade_value(qdata.get('max_points', 1)),
@@ -1808,13 +1809,6 @@ class CacheManager:
         self._images_by_copy: Dict[int, List[str]] = {}
         # Store the common prefix (system prompt + images)
         self._prefix_content: Dict[int, Tuple[str, List[str]]] = {}  # copy_idx -> (prompt, images)
-        # Track cache statistics
-        self._cache_stats: Dict[str, Any] = {
-            "calls": 0,              # Total API calls made
-            "cached_tokens": 0,      # Total tokens served from cache
-            "total_tokens": 0,       # Total tokens processed
-            "estimated_savings": 0,  # Estimated token savings (75% of cached)
-        }
 
     async def create_sessions(
         self,
@@ -1957,24 +1951,12 @@ class CacheManager:
             _call_provider_vision(provider2, prompt2, images)
         )
 
-        # Track cache statistics (estimate based on prefix reuse)
-        # Each successful call with common prefix should benefit from caching
-        self._cache_stats["calls"] += 2  # Two providers called
-
-        # Estimate tokens: prefix length + images
         common_prefix, _ = self._prefix_content.get(
             int(session_id.replace("copy_", "")) if session_id and session_id.startswith("copy_") else 0,
             ("", [])
         )
         if common_prefix:
-            prefix_tokens = len(common_prefix) // 4
-            image_tokens = len(images) * 258 if images else 0
-            cached_tokens = prefix_tokens + image_tokens
-            # Assume ~75% savings on cached tokens for subsequent calls
-            self._cache_stats["cached_tokens"] += cached_tokens * 2
-            self._cache_stats["total_tokens"] += cached_tokens * 2
-            self._cache_stats["estimated_savings"] += int(cached_tokens * 2 * 0.75)
-            logger.debug(f"Cache estimate for {session_id}: prefix={prefix_tokens} tokens, images={image_tokens} tokens, estimated savings={int(cached_tokens * 2 * 0.75)}")
+            logger.debug(f"Implicit cache eligible for {session_id}: common prefix reused for both providers")
 
         return results[0], results[1]
 
@@ -2096,19 +2078,9 @@ class CacheManager:
         return results
 
     def clear(self):
-        """Clear stored content and log cache statistics."""
+        """Clear stored content."""
         self._images_by_copy.clear()
         self._prefix_content.clear()
-
-        # Log final cache statistics
-        stats = self._cache_stats
-        if stats["calls"] > 0:
-            savings_pct = (stats["estimated_savings"] / stats["total_tokens"] * 100) if stats["total_tokens"] > 0 else 0
-            logger.info(
-                f"Cache statistics: {stats['calls']} calls, "
-                f"{stats['cached_tokens']}/{stats['total_tokens']} tokens cached "
-                f"(~{savings_pct:.0f}% savings, ~{stats['estimated_savings']} tokens saved)"
-            )
 
 
 class ExplicitCacheManager:
@@ -2493,4 +2465,3 @@ class ExplicitCacheManager:
 
 # Backward compatibility alias
 ChatContinuationManager = CacheManager
-

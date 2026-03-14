@@ -1,4 +1,4 @@
-# bandit configuration for La Corrigeuse
+# bandit configuration
 # https://bandit.readthedocs.io/
 
 exclude_dirs:

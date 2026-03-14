@@ -47,8 +47,26 @@ class DocumentType(str, Enum):
     """Type of document detected during pre-analysis."""
     STUDENT_COPIES = "student_copies"
     SUBJECT_ONLY = "subject_only"
+    GRADING_SCHEME = "grading_scheme"
     RANDOM_DOCUMENT = "random_document"
     UNCLEAR = "unclear"
+
+
+class DocumentStatus(str, Enum):
+    """Lifecycle state for an uploaded session document."""
+    UPLOADED = "uploaded"
+    CLASSIFIED = "classified"
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+
+
+class DocumentDecision(str, Enum):
+    """User-confirmed role for an uploaded session document."""
+    PENDING = "pending"
+    STUDENT_COPIES = "student_copies"
+    SUBJECT_ONLY = "subject_only"
+    GRADING_SCHEME = "grading_scheme"
+    EXCLUDE = "exclude"
 
 
 class PDFStructure(str, Enum):
@@ -183,6 +201,62 @@ class CopyDocument(BaseModel):
     processed: bool = False
 
 
+class SessionDocument(BaseModel):
+    """Metadata for a PDF uploaded into a grading session."""
+    id: str = Field(default_factory=generate_id)
+    filename: str
+    storage_path: str
+    page_count: int = 0
+    status: DocumentStatus = DocumentStatus.UPLOADED
+    detected_type: DocumentType = DocumentType.UNCLEAR
+    confidence: float = 0.0
+    issues: List[str] = Field(default_factory=list)
+    evidence: List[str] = Field(default_factory=list)
+    text_excerpt: Optional[str] = None
+    page_classifications: List["DocumentPageClassification"] = Field(default_factory=list)
+    segments: List["DocumentSegment"] = Field(default_factory=list)
+    user_decision: DocumentDecision = DocumentDecision.PENDING
+    usable: bool = False
+    created_at: datetime = Field(default_factory=datetime.now)
+
+
+class DocumentPageClassification(BaseModel):
+    """Classification result for a single page of an uploaded document."""
+    page_number: int
+    detected_type: DocumentType = DocumentType.UNCLEAR
+    confidence: float = 0.0
+    evidence: List[str] = Field(default_factory=list)
+    text_excerpt: Optional[str] = None
+
+
+class DocumentSegment(BaseModel):
+    """Contiguous range of similarly classified pages."""
+    start_page: int
+    end_page: int
+    detected_type: DocumentType = DocumentType.UNCLEAR
+    confidence: float = 0.0
+    page_count: int = 0
+
+
+class PreparedCorrectionQuestion(BaseModel):
+    """A targeted question that blocks automatic launch of grading."""
+    code: str
+    message: str
+    document_ids: List[str] = Field(default_factory=list)
+
+
+class PreparedCorrectionSession(BaseModel):
+    """Minimal prepared state used as the contract before grading starts."""
+    copy_document_ids: List[str] = Field(default_factory=list)
+    reference_document_ids: List[str] = Field(default_factory=list)
+    excluded_document_ids: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+    questions_for_user: List[PreparedCorrectionQuestion] = Field(default_factory=list)
+    ready_to_grade: bool = False
+    primary_copy_document_id: Optional[str] = None
+    prepared_at: datetime = Field(default_factory=datetime.now)
+
+
 class GradingPolicy(BaseModel):
     """
     The AI's "mental model" - evolves based on teacher interactions.
@@ -234,6 +308,8 @@ class GradingSession(BaseModel):
     user_id: Optional[str] = None
 
     # Data
+    documents: List[SessionDocument] = Field(default_factory=list)
+    prepared_correction: Optional[PreparedCorrectionSession] = None
     copies: List[CopyDocument] = Field(default_factory=list)
     graded_copies: List['GradedCopy'] = Field(default_factory=list)
     policy: GradingPolicy = Field(default_factory=GradingPolicy)
@@ -304,10 +380,6 @@ class GradedCopy(BaseModel):
     student_feedback: Dict[str, str] = Field(default_factory=dict)
     # {question_id: pedagogical feedback for students}
 
-    # Readings (what the AI read from the student's answer)
-    readings: Dict[str, str] = Field(default_factory=dict)
-    # {question_id: text read from student's answer}
-
     # Detected max points per question (from document)
     max_points_by_question: Dict[str, float] = Field(default_factory=dict)
     # {question_id: max_points detected from document}
@@ -340,6 +412,7 @@ class LLMResult(BaseModel):
     """Result from a single LLM for a question."""
     grade: float
     max_points: Optional[float] = None  # None if not provided by LLM
+    question_text: Optional[str] = None
     reading: str = ""
     reasoning: str = ""
     feedback: str = ""
@@ -350,10 +423,16 @@ class ResolutionInfo(BaseModel):
     """Resolution information for a question after LLM comparison."""
     final_grade: float
     final_max_points: float  # Barème retained after resolution
+    final_confidence: Optional[float] = None
+    final_reasoning: Optional[str] = None
+    final_feedback: Optional[str] = None
     method: str  # consensus, average, verification_consensus, ultimatum_average, etc.
     phases: List[str]  # ["initial"], ["verification"], ["verification", "ultimatum"], etc.
     agreement: Optional[bool] = None  # null for single LLM
     initial_reading_similarity: Optional[float] = None  # SequenceMatcher ratio between initial LLM readings
+    final_reading: Optional[str] = None
+    final_reading_method: Optional[str] = None
+    reading_consensus: Optional[bool] = None
 
 
 class QuestionAudit(BaseModel):
@@ -365,7 +444,7 @@ class QuestionAudit(BaseModel):
 class StudentDetectionAudit(BaseModel):
     """Audit information for student name detection."""
     final_name: str
-    llm_results: Dict[str, str]  # "LLM1" -> "Jean Dupont", "LLM2" -> "J. Dupont"
+    llm_results: Dict[str, str]  # "LLM1" -> "Eleve A", "LLM2" -> "E. A"
     resolution: ResolutionInfo
 
 
