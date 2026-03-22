@@ -27,7 +27,7 @@ Le résultat n’est pas seulement une note:
 - audit détaillé des décisions de correction
 - calibration et contrôle de cohérence entre copies
 - annotation PDF avec placement des feedbacks
-- API et CLI pour piloter le pipeline
+- CLI pour piloter le pipeline
 
 ## Structure utile
 
@@ -35,12 +35,9 @@ Le résultat n’est pas seulement une note:
 src/
 ├── ai/             # Providers et orchestration LLM
 ├── analysis/       # Détection et analyse des documents
-├── api/            # Endpoints HTTP + WebSocket
 ├── core/           # Session, grading, modèles métier
-├── db/             # Persistance SQL
 ├── export/         # Exports et annotation PDF
 ├── prompts/        # Prompts
-├── services/       # Jobs persistants, worker, billing
 ├── storage/        # Stockage des sessions et artefacts
 └── vision/         # Lecture PDF / extraction page par page
 
@@ -61,45 +58,17 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Configuration minimale:
+Configuration minimale dans `.env`:
 
 ```env
-AI_CORRECTION_AI_PROVIDER=
-AI_CORRECTION_GEMINI_API_KEY=
-AI_CORRECTION_SESSION_SECRET=
-AI_CORRECTION_DATABASE_URL=
-# ou AI_CORRECTION_OPENAI_API_KEY=
-# ou AI_CORRECTION_GLM_API_KEY=
-# ou AI_CORRECTION_OPENROUTER_API_KEY=
+AI_CORRECTION_AI_PROVIDER=gemini
+AI_CORRECTION_GEMINI_API_KEY=votre-cle-api
+AI_CORRECTION_SESSION_SECRET=un-secret-aleatoire
 ```
 
-En production:
-- définissez `AI_CORRECTION_ENVIRONMENT=production`
-- laissez `AI_CORRECTION_SESSION_COOKIE_SECURE=true`
-- utilisez `AI_CORRECTION_DATABASE_URL` vers une base partagée plutôt que SQLite local
-- faites tourner au moins un worker dédié
-- configurez `AI_CORRECTION_ADMIN_API_KEY` si vous exposez les endpoints d’administration
+Autres providers disponibles: `openai`, `glm`, `openrouter`.
 
-API:
-
-```bash
-python src/main.py api --port 8000
-```
-
-Worker:
-
-```bash
-python src/main.py worker --poll-interval 2
-```
-
-Docker Compose production-like stack:
-
-```bash
-cp .env.example .env
-docker compose up -d --build
-```
-
-CLI:
+Utilisation en ligne de commande:
 
 ```bash
 python -m src.main correct <pdfs...>
@@ -117,8 +86,6 @@ python -m src.main correct <pdfs...>
 ## Documentation
 
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
-- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
-- [docs/API.md](docs/API.md)
 - [docs/annotation.md](docs/annotation.md)
 - [docs/dual_llm_architecture.md](docs/dual_llm_architecture.md)
 - [docs/AUDIT_STRUCTURE.md](docs/AUDIT_STRUCTURE.md)
