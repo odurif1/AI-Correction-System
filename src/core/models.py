@@ -322,6 +322,9 @@ class GradingSession(BaseModel):
     # Metadata
     total_questions: int = 0
     copies_processed: int = 0
+    requested_llm_mode: Optional[Literal["single", "dual"]] = None
+    annotations_generated_at: Optional[datetime] = None
+    annotations_invalidated_at: Optional[datetime] = None
 
     # Teacher interactions
     pending_decisions: List[str] = Field(default_factory=list)

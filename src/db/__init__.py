@@ -1,7 +1,15 @@
 """Database module."""
 
 from db.database import Base, engine, SessionLocal, get_db, init_db
-from db.models import User, SubscriptionTier, UsageRecord
+from db.models import (
+    User,
+    SubscriptionTier,
+    UsageRecord,
+    SessionJob,
+    SessionJobEvent,
+    SessionJobStatus,
+    SessionJobType,
+)
 
 __all__ = [
     "Base",
@@ -12,4 +20,8 @@ __all__ = [
     "User",
     "SubscriptionTier",
     "UsageRecord",
+    "SessionJob",
+    "SessionJobEvent",
+    "SessionJobStatus",
+    "SessionJobType",
 ]

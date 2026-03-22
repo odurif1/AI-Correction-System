@@ -404,8 +404,8 @@ def build_audit_from_llm_comparison(
             # Build resolution (phases block removed - redundant with llm_results)
             agreement = True
 
-            # Calculate initial agreement (for resolution)
-            if llm_results:
+            # Calculate initial agreement only when two real provider results exist.
+            if len(llm_results) >= 2:
                 initial_grade1 = llm1_data.get("grade", 0) if llm1_data else 0
                 initial_grade2 = llm2_data.get("grade", 0) if llm2_data else 0
                 # Use grading_scale for max_points in agreement calculation
@@ -429,6 +429,16 @@ def build_audit_from_llm_comparison(
                 phases_list = ["initial"]  # No verification/ultimatum = stayed at initial
 
             final_data = qdata.get("final", qdata.get("_initial_final", qdata.get("_pending_final", {})))
+            if not final_data:
+                final_data = {
+                    "grade": qdata.get("grade"),
+                    "max_points": question_max_points if question_max_points is not None else qdata.get("max_points"),
+                    "confidence": qdata.get("confidence"),
+                    "reasoning": qdata.get("reasoning"),
+                    "feedback": qdata.get("feedback") or qdata.get("student_feedback"),
+                    "method": qdata.get("method"),
+                    "agreement": qdata.get("agreement"),
+                }
             reading_resolution = _resolve_final_reading(qdata, llm1_data, llm2_data)
 
             # Use grading_scale for final_max_points

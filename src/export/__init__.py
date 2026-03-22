@@ -10,7 +10,7 @@ Post-grading tasks:
 
 from export.pdf_annotator import PDFAnnotator, BatchAnnotator
 from export.analytics import AnalyticsGenerator, DataExporter
-from export.annotation_pipeline import AnnotationExportService, AnnotationArtifact
+from export.annotation_pipeline import AnnotationExportService, AnnotationArtifact, SessionAnnotationArtifacts
 from export.annotation_service import (
     AnnotationCoordinateDetector,
     AnnotationPlacement,
@@ -25,6 +25,7 @@ __all__ = [
     'DataExporter',
     'AnnotationExportService',
     'AnnotationArtifact',
+    'SessionAnnotationArtifacts',
     'AnnotationCoordinateDetector',
     'AnnotationPlacement',
     'CopyAnnotations',

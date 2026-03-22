@@ -8,10 +8,12 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import text
 from db import SessionLocal
 from loguru import logger
+from api.rate_limiter import limiter
 
 router = APIRouter()
 
 
+@limiter.exempt
 @router.get("/health")
 async def health_check():
     """

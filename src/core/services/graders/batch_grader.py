@@ -3,15 +3,213 @@ import logging
 import traceback
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from audit.builder import build_audit_from_llm_comparison, extract_final_question_outputs
 from config.settings import get_settings
 from core.models import CopyDocument, GradedCopy, SessionStatus
 from core.services.graders.base import BaseGrader, GradingContext
 from utils.sorting import question_sort_key
+from vision.pdf_reader import PDFReader, split_pdf_by_ranges
 
 logger = logging.getLogger(__name__)
+
+
+def _find_copy_questions(batch_result: Any, copy_index: int) -> Dict[str, Dict[str, Any]]:
+    """Return question data for a given copy index from a batch result."""
+    if not batch_result:
+        return {}
+
+    for copy_result in getattr(batch_result, "copies", []):
+        if getattr(copy_result, "copy_index", None) == copy_index:
+            return getattr(copy_result, "questions", {}) or {}
+
+    return {}
+
+
+def _provider_question_payload(qdata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Normalize a provider question payload to the audit/comparison shape."""
+    if not qdata:
+        return {}
+
+    return {
+        "grade": qdata.get("grade", 0),
+        "max_points": qdata.get("max_points", 1),
+        "question_text": qdata.get("question_text", ""),
+        "reading": qdata.get("reading", qdata.get("student_answer_read", "")),
+        "reasoning": qdata.get("reasoning", ""),
+        "feedback": qdata.get("feedback", qdata.get("student_feedback", "")),
+        "confidence": qdata.get("confidence", 0.8),
+    }
+
+
+def _compute_agreement(
+    llm1_data: Dict[str, Any],
+    llm2_data: Dict[str, Any],
+    max_points: float,
+) -> bool:
+    """Compute whether two provider grades agree under the configured threshold."""
+    if not llm1_data or not llm2_data:
+        return True
+
+    threshold = max_points * get_settings().grade_agreement_threshold
+    return abs(llm1_data.get("grade", 0) - llm2_data.get("grade", 0)) < threshold
+
+
+def _merge_copy_question_comparison(
+    *,
+    existing_questions: Optional[Dict[str, Dict[str, Any]]],
+    final_questions: Optional[Dict[str, Dict[str, Any]]],
+    llm1_questions: Optional[Dict[str, Dict[str, Any]]],
+    llm2_questions: Optional[Dict[str, Dict[str, Any]]],
+    llm1_name: str,
+    llm2_name: str,
+    grading_scale: Dict[str, float],
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Build a complete per-copy question map.
+
+    `existing_questions` may contain only the disagreement/audit subset. This helper
+    fills the missing questions from the provider outputs and final per-question data
+    so the CLI summary and grading audit remain complete.
+    """
+    existing_questions = existing_questions or {}
+    final_questions = final_questions or {}
+    llm1_questions = llm1_questions or {}
+    llm2_questions = llm2_questions or {}
+
+    all_qids = set(existing_questions) | set(final_questions) | set(llm1_questions) | set(llm2_questions)
+    merged: Dict[str, Dict[str, Any]] = {}
+
+    for qid in sorted(all_qids, key=question_sort_key):
+        existing = dict(existing_questions.get(qid, {}))
+        llm1_data = existing.get(llm1_name) or _provider_question_payload(llm1_questions.get(qid))
+        llm2_data = existing.get(llm2_name) or _provider_question_payload(llm2_questions.get(qid))
+        final_data = dict(existing.get("final") or existing.get("_initial_final") or existing.get("_pending_final") or {})
+        resolved_qdata = final_questions.get(qid, {})
+
+        max_points = grading_scale.get(qid)
+        if max_points is None:
+            max_points = (
+                existing.get("max_points")
+                or llm1_data.get("max_points")
+                or llm2_data.get("max_points")
+                or resolved_qdata.get("max_points")
+                or 1.0
+            )
+
+        agreement = final_data.get("agreement")
+        if agreement is None:
+            agreement = _compute_agreement(llm1_data, llm2_data, float(max_points))
+
+        if llm1_data:
+            llm1_data = dict(llm1_data)
+            llm1_data["max_points"] = max_points
+            existing[llm1_name] = llm1_data
+        if llm2_data:
+            llm2_data = dict(llm2_data)
+            llm2_data["max_points"] = max_points
+            existing[llm2_name] = llm2_data
+
+        if not final_data:
+            fallback_confidence = (
+                min(llm1_data.get("confidence", 0.8), llm2_data.get("confidence", 0.8))
+                if llm1_data and llm2_data
+                else llm1_data.get("confidence", llm2_data.get("confidence", resolved_qdata.get("confidence", 0.8)))
+            )
+            final_data = {
+                "grade": resolved_qdata.get(
+                    "grade",
+                    (llm1_data.get("grade", 0) + llm2_data.get("grade", 0)) / 2 if llm1_data and llm2_data else llm1_data.get("grade", llm2_data.get("grade", 0))
+                ),
+                "max_points": max_points,
+                "confidence": resolved_qdata.get("confidence", fallback_confidence),
+                "reasoning": resolved_qdata.get(
+                    "reasoning",
+                    llm1_data.get("reasoning") or llm2_data.get("reasoning", ""),
+                ),
+                "feedback": resolved_qdata.get(
+                    "feedback",
+                    resolved_qdata.get("student_feedback") or llm1_data.get("feedback") or llm2_data.get("feedback", ""),
+                ),
+                "method": "average" if llm1_data and llm2_data else "single_llm",
+                "agreement": agreement,
+            }
+
+        existing["final"] = final_data
+        merged[qid] = existing
+
+    return merged
+
+
+def _materialize_detected_batch_copies(
+    ctx: GradingContext,
+    batch_result: Any,
+) -> None:
+    """
+    Replace placeholder copies with real split PDFs when student detection happened
+    inside batch grading on a single source PDF.
+    """
+    if not batch_result or not getattr(batch_result, "copies", None):
+        return
+
+    source_copies = ctx.session.copies
+    if len(source_copies) != 1:
+        return
+
+    source_copy = source_copies[0]
+    source_pdf_path = getattr(source_copy, "pdf_path", None)
+    if not source_pdf_path:
+        return
+
+    ranges: List[tuple[int, int]] = []
+    for copy_result in batch_result.copies:
+        pages = sorted(set(getattr(copy_result, "pages", []) or []))
+        if not pages:
+            return
+        ranges.append((pages[0] - 1, pages[-1] - 1))
+
+    split_dir = Path(ctx.store.session_dir) / "splits"
+    split_paths = split_pdf_by_ranges(source_pdf_path, str(split_dir), ranges)
+    if len(split_paths) != len(batch_result.copies):
+        logger.warning("Split generation did not return one PDF per detected copy")
+        return
+
+    materialized_copies: List[CopyDocument] = []
+
+    for index, (copy_result, split_path) in enumerate(zip(batch_result.copies, split_paths), start=1):
+        pages = sorted(set(copy_result.pages))
+        split_reader = PDFReader(split_path)
+        split_page_count = split_reader.get_page_count()
+
+        copy_dir = Path(ctx.store.session_dir) / "copies" / f"copy_{index}"
+        copy_dir.mkdir(parents=True, exist_ok=True)
+        page_images = []
+        for page_num in range(split_page_count):
+            image_bytes = split_reader.get_page_image_bytes(page_num)
+            image_path = str(copy_dir / f"page_{page_num}.png")
+            with open(image_path, 'wb') as handle:
+                handle.write(image_bytes)
+            page_images.append(image_path)
+        split_reader.close()
+
+        copy_doc = CopyDocument(
+            pdf_path=split_path,
+            page_count=split_page_count,
+            student_name=copy_result.student_name,
+            content_summary={},
+            page_images=page_images,
+            language=source_copy.language or 'fr',
+            start_page=pages[0],
+            end_page=pages[-1],
+        )
+
+        with open(split_path, 'rb') as handle:
+            pdf_bytes = handle.read()
+        ctx.store.save_copy(copy_doc, pdf_bytes, copy_number=index)
+        materialized_copies.append(copy_doc)
+
+    ctx.session.copies = materialized_copies
 
 
 class BatchGrader(BaseGrader):
@@ -26,12 +224,16 @@ class BatchGrader(BaseGrader):
         use_chat_continuation = ctx.get_orchestrator_attr('_use_chat_continuation', False)
 
         # ===== PRE-DETECTION PHASE =====
+        # Only needed when the session still contains a single source PDF.
+        # If copies have already been split upstream, reusing stored detection here
+        # would incorrectly rebuild all students from the first PDF again.
         pre_detected_students = None
         detection_hints = None
+        can_reuse_detection_structure = total_copies == 1 and not ctx.pages_per_copy
 
         # Check stored detection first
         stored_detection = ctx.store.load_detection()
-        if stored_detection:
+        if stored_detection and can_reuse_detection_structure:
             if stored_detection.students and len(stored_detection.students) >= 5:
                 # Many LLM-confirmed students — trust individual boundaries
                 pre_detected_students = stored_detection.students
@@ -51,7 +253,7 @@ class BatchGrader(BaseGrader):
             elif stored_detection.students:
                 pre_detected_students = stored_detection.students
                 logger.info(f"Reusing stored detection: {len(pre_detected_students)} students")
-        elif total_copies == 1 and not ctx.pages_per_copy and ctx.comparison_mode:
+        elif can_reuse_detection_structure and ctx.comparison_mode:
             logger.info("Running pre-detection to ensure consistent student detection between LLMs")
             if progress_callback:
                 await self._call_callback(progress_callback, 'detection_start', {
@@ -233,6 +435,8 @@ class BatchGrader(BaseGrader):
 
         graded_copies = []
         llm_comparison_data = {}
+        llm1_result = None
+        llm2_result = None
 
         # ===== SETUP IMPLICIT CACHING =====
         chat_manager = None
@@ -534,20 +738,31 @@ class BatchGrader(BaseGrader):
                     'copies': []
                 }
                 for copy_idx_key, copy_data in llm_comparison_data.get("llm_comparison", {}).items():
+                    copy_index = int(str(copy_idx_key).replace("copy_", ""))
+                    merged_questions = _merge_copy_question_comparison(
+                        existing_questions=copy_data.get("questions", {}),
+                        final_questions=None,
+                        llm1_questions=_find_copy_questions(llm1_result, copy_index),
+                        llm2_questions=_find_copy_questions(llm2_result, copy_index),
+                        llm1_name=llm1_name,
+                        llm2_name=llm2_name,
+                        grading_scale=ctx.grading_scale,
+                    )
                     copy_summary = {
                         'copy_index': copy_idx_key,
                         'student_name': copy_data.get('student_name'),
                         'questions': {}
                     }
-                    for qid, qdata in copy_data.get('questions', {}).items():
+                    for qid, qdata in merged_questions.items():
                         llm1_q = qdata.get(llm1_name, {})
                         llm2_q = qdata.get(llm2_name, {})
-                        frozen_max_pts = ctx.session.policy.question_weights.get(qid, 1.0)
+                        frozen_max_pts = ctx.session.policy.question_weights.get(qid, ctx.grading_scale.get(qid, 1.0))
+                        resolved = qdata.get("final") or qdata.get("_initial_final") or qdata.get("_pending_final") or {}
                         copy_summary['questions'][qid] = {
                             'llm1_grade': llm1_q.get('grade'),
                             'llm2_grade': llm2_q.get('grade'),
                             'max_points': frozen_max_pts,
-                            'agreement': qdata.get('_initial_final', {}).get('agreement', True)
+                            'agreement': resolved.get('agreement', True)
                         }
                     comparison_summary['copies'].append(copy_summary)
 
@@ -1393,19 +1608,11 @@ class BatchGrader(BaseGrader):
                 ]
             }
 
-        # If LLM detected more students than we have copies, create new CopyDocuments
+        # If batch grading detected multiple students inside a single source PDF,
+        # materialize real split PDFs now so downstream annotation/export is page-correct.
         if len(batch_result.copies) > len(ctx.session.copies):
-            logger.info(f"LLM detected {len(batch_result.copies)} students, creating additional copies")
-            first_copy = ctx.session.copies[0] if ctx.session.copies else None
-            for i in range(len(ctx.session.copies), len(batch_result.copies)):
-                new_copy = CopyDocument(
-                    pdf_path=first_copy.pdf_path if first_copy else None,
-                    page_count=first_copy.page_count if first_copy else 0,
-                    student_name=None,
-                    language=first_copy.language if first_copy else 'fr'
-                )
-                ctx.session.copies.append(new_copy)
-                logger.info(f"Created new copy {i+1} for detected student")
+            logger.info(f"LLM detected {len(batch_result.copies)} students, materializing split PDFs")
+            _materialize_detected_batch_copies(ctx, batch_result)
             total_copies = len(ctx.session.copies)
 
         # Add student detection info
@@ -1518,11 +1725,11 @@ class BatchGrader(BaseGrader):
                 student_name_initial = copy_data.get("student_name_initial", {})
 
                 student_name_section = {}
+                initial_agreement = False
 
                 llm1_initial = student_name_initial.get("llm1_name")
                 llm2_initial = student_name_initial.get("llm2_name")
                 if llm1_initial or llm2_initial:
-                    initial_agreement = False
                     if llm1_initial and llm2_initial:
                         initial_agreement = llm1_initial.lower().strip() == llm2_initial.lower().strip()
                     student_name_section["initial"] = {
@@ -1577,11 +1784,21 @@ class BatchGrader(BaseGrader):
                 if student_detection.get("copy_index"):
                     student_name_section["copy_index"] = student_detection["copy_index"]
 
+                merged_questions = _merge_copy_question_comparison(
+                    existing_questions=copy_data.get("questions", {}),
+                    final_questions=copy_result.questions,
+                    llm1_questions=_find_copy_questions(llm1_result, copy_result.copy_index),
+                    llm2_questions=_find_copy_questions(llm2_result, copy_result.copy_index),
+                    llm1_name=llm1_name if ctx.comparison_mode and llm1_result and llm2_result else "LLM1",
+                    llm2_name=llm2_name if ctx.comparison_mode and llm1_result and llm2_result else "LLM2",
+                    grading_scale=ctx.grading_scale,
+                )
+
                 copy_comparison = {
                     "options": llm_comparison_data["options"],
                     "llm_comparison": {
                         copy_key: {
-                            "questions": copy_data.get("questions", {})
+                            "questions": merged_questions
                         }
                     },
                     "student_name": student_name_section

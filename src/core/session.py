@@ -9,7 +9,7 @@ import asyncio
 import re
 import tempfile
 import os
-from typing import List, Dict, Optional, Tuple
+from typing import Any, List, Dict, Optional, Tuple
 from datetime import datetime
 from pathlib import Path
 
@@ -54,6 +54,7 @@ class GradingSessionOrchestrator:
         reading_disagreement_callback: callable = None,
         skip_reading_consensus: bool = False,
         force_single_llm: bool = False,
+        force_comparison_llm: bool = False,
         pages_per_copy: int = None,
         second_reading: bool = False,
         parallel: int = 6,
@@ -99,6 +100,7 @@ class GradingSessionOrchestrator:
         self._reading_disagreement_callback = reading_disagreement_callback
         self._skip_reading_consensus = skip_reading_consensus
         self._force_single_llm = force_single_llm
+        self._force_comparison_llm = force_comparison_llm
         self._pages_per_copy = pages_per_copy
         self._second_reading = second_reading
         self._parallel = parallel
@@ -137,7 +139,12 @@ class GradingSessionOrchestrator:
 
         # Initialize AI provider (single or comparison mode)
         settings = get_settings()
-        if settings.comparison_mode and not force_single_llm:
+        if force_comparison_llm:
+            self.ai = create_comparison_provider(
+                disagreement_callback=disagreement_callback
+            )
+            self._comparison_mode = True
+        elif settings.comparison_mode and not force_single_llm:
             self.ai = create_comparison_provider(
                 disagreement_callback=disagreement_callback
             )
@@ -623,6 +630,32 @@ Reponds UNIQUEMENT par:
             await applier.apply_corrections(reports, self.store)
 
         self._save_sync()
+
+    async def apply_teacher_decision(
+        self,
+        *,
+        question_id: str,
+        copy_id: str,
+        teacher_guidance: str,
+        original_score: float,
+        new_score: float,
+    ) -> Dict[str, Any]:
+        """Apply a teacher decision and propagate it to similar graded copies."""
+        session_store = self.store
+        applier = RetroactiveApplier(self.session, self.ai)
+        updated_count, extracted_rule = await applier.extract_and_apply(
+            question_id=question_id,
+            copy_id=copy_id,
+            teacher_guidance=teacher_guidance,
+            original_score=original_score,
+            new_score=new_score,
+            session_store=session_store,
+        )
+        self._save_sync()
+        return {
+            "updated_count": updated_count,
+            "extracted_rule": extracted_rule,
+        }
 
     async def verify_detected_parameters(self) -> Dict[str, Any]:
         """

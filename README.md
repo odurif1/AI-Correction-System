@@ -35,11 +35,12 @@ Le résultat n’est pas seulement une note:
 src/
 ├── ai/             # Providers et orchestration LLM
 ├── analysis/       # Détection et analyse des documents
-├── api/            # Endpoints pour piloter le pipeline
+├── api/            # Endpoints HTTP + WebSocket
 ├── core/           # Session, grading, modèles métier
-├── db/             # Persistance SQLite
+├── db/             # Persistance SQL
 ├── export/         # Exports et annotation PDF
 ├── prompts/        # Prompts
+├── services/       # Jobs persistants, worker, billing
 ├── storage/        # Stockage des sessions et artefacts
 └── vision/         # Lecture PDF / extraction page par page
 
@@ -65,15 +66,37 @@ Configuration minimale:
 ```env
 AI_CORRECTION_AI_PROVIDER=
 AI_CORRECTION_GEMINI_API_KEY=
+AI_CORRECTION_SESSION_SECRET=
+AI_CORRECTION_DATABASE_URL=
 # ou AI_CORRECTION_OPENAI_API_KEY=
 # ou AI_CORRECTION_GLM_API_KEY=
 # ou AI_CORRECTION_OPENROUTER_API_KEY=
 ```
 
+En production:
+- définissez `AI_CORRECTION_ENVIRONMENT=production`
+- laissez `AI_CORRECTION_SESSION_COOKIE_SECURE=true`
+- utilisez `AI_CORRECTION_DATABASE_URL` vers une base partagée plutôt que SQLite local
+- faites tourner au moins un worker dédié
+- configurez `AI_CORRECTION_ADMIN_API_KEY` si vous exposez les endpoints d’administration
+
 API:
 
 ```bash
 python src/main.py api --port 8000
+```
+
+Worker:
+
+```bash
+python src/main.py worker --poll-interval 2
+```
+
+Docker Compose production-like stack:
+
+```bash
+cp .env.example .env
+docker compose up -d --build
 ```
 
 CLI:
@@ -94,6 +117,7 @@ python -m src.main correct <pdfs...>
 ## Documentation
 
 - [docs/CONFIGURATION.md](docs/CONFIGURATION.md)
+- [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
 - [docs/API.md](docs/API.md)
 - [docs/annotation.md](docs/annotation.md)
 - [docs/dual_llm_architecture.md](docs/dual_llm_architecture.md)

@@ -24,7 +24,7 @@ import asyncio
 import sys
 import argparse
 from pathlib import Path
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from rich.console import Console
 from rich.table import Table
@@ -35,7 +35,7 @@ from core.workflow import WorkflowCallbacks
 from core.workflow_state import CorrectionState, WorkflowPhase
 from utils.sorting import natural_sort_key
 from config.settings import get_settings
-from config.constants import DEFAULT_PARALLEL_COPIES
+from config.constants import DATA_DIR, DEFAULT_PARALLEL_COPIES, SESSION_JSON
 from interaction.cli import CLI
 from interaction.cli_correct import (
     ProgressHandler,
@@ -43,6 +43,7 @@ from interaction.cli_correct import (
     create_name_disagreement_callback,
     create_reading_disagreement_callback
 )
+from core.models import SessionStatus
 
 
 def check_api_key() -> bool:
@@ -92,11 +93,58 @@ def validate_pdf_path(path_str: str) -> tuple[bool, str]:
     return True, ""
 
 
+def resolve_session_user_id(session_id: str) -> str | None:
+    """Resolve the owning user for a persisted session directory."""
+    sessions_root = Path(DATA_DIR) / "sessions"
+    if not sessions_root.exists():
+        return None
+
+    preferred_order = ["cli_user"]
+    seen = set()
+    user_dirs = []
+
+    for user_id in preferred_order:
+        user_dir = sessions_root / user_id
+        if user_dir.exists():
+            user_dirs.append(user_dir)
+            seen.add(user_dir.name)
+
+    for user_dir in sorted(p for p in sessions_root.iterdir() if p.is_dir()):
+        if user_dir.name not in seen:
+            user_dirs.append(user_dir)
+
+    for user_dir in user_dirs:
+        session_dir = user_dir / session_id
+        if session_dir.is_dir() and (session_dir / SESSION_JSON).exists():
+            return user_dir.name
+
+    return None
+
+
+def get_session_store_for_cli(session_id: str):
+    """Load a session store for CLI commands without relying on legacy user IDs."""
+    from storage.session_store import SessionStore
+
+    user_id = resolve_session_user_id(session_id)
+    if not user_id:
+        return None
+    return SessionStore(session_id, user_id=user_id)
+
+
 
 async def command_correct(args):
     """Run correction on PDF files with interactive workflow."""
     if not check_api_key():
         return 1
+
+    def mark_session_error(message: str) -> None:
+        """Persist an explicit error state instead of leaving the session in correction."""
+        try:
+            orchestrator.session.status = SessionStatus.ERROR
+            orchestrator._save_sync()
+            cli.console.print(f"[dim]Session marquée en erreur: {message}[/dim]")
+        except Exception:
+            pass
 
     cli = CLI()
 
@@ -158,6 +206,7 @@ async def command_correct(args):
         reading_disagreement_callback=None,
         skip_reading_consensus=args.skip_reading,
         force_single_llm=(args.llm_mode == "single"),
+        force_comparison_llm=(args.llm_mode == "dual"),
         pages_per_copy=args.pages_per_copy,
         second_reading=args.second_reading,
         parallel=args.parallel,
@@ -177,10 +226,12 @@ async def command_correct(args):
     orchestrator.name_disagreement_callback = name_disagreement_callback
     orchestrator.reading_disagreement_callback = reading_disagreement_callback
 
+    session_artifacts_dir = orchestrator.store.session_dir
+
     # Initialize debug capture if --debug flag is set
     if args.debug:
         from utils.debug_capture import init_debug
-        debug_dir = Path(args.output) / orchestrator.session_id / "debug"
+        debug_dir = session_artifacts_dir / "debug"
         init_debug(debug_dir)
         cli.console.print("[yellow]🐛 Debug mode enabled - capturing prompts to debug/debug_log.json[/yellow]")
 
@@ -223,47 +274,55 @@ async def command_correct(args):
     # ============================================================
     # Token tracking setup (before any LLM calls)
     # ============================================================
-    _prev_tokens = {'prompt': 0, 'completion': 0, 'cached': 0}
+    _prev_tokens_by_source: Dict[int, Dict[str, int]] = {}
     _current_sub_phase = WorkflowPhase.GRADING  # Track sub-phase within grading (verification, ultimatum)
     _token_debug_log = []  # Debug log for token tracking
+    usage_sources: List[tuple[str, Any]] = [("Correction", orchestrator.ai)]
 
-    def record_phase_tokens(current_phase: WorkflowPhase, event_name: str = ""):
+    def get_usage_snapshot(provider: Any) -> Dict[str, int]:
+        """Safely fetch token usage for a provider-like object."""
+        if provider is None or not hasattr(provider, 'get_token_usage'):
+            return {'prompt': 0, 'completion': 0, 'cached': 0}
+
+        usage = provider.get_token_usage() or {}
+        return {
+            'prompt': usage.get('prompt_tokens', 0),
+            'completion': usage.get('completion_tokens', 0),
+            'cached': usage.get('cached_tokens', 0),
+        }
+
+    def record_phase_tokens(current_phase: WorkflowPhase, event_name: str = "", provider: Any = None):
         """Record token usage for the completed phase (delta)."""
-        nonlocal state, _prev_tokens
-        if hasattr(orchestrator.ai, 'get_token_usage'):
-            usage = orchestrator.ai.get_token_usage()
-            current_prompt = usage.get('prompt_tokens', 0)
-            current_completion = usage.get('completion_tokens', 0)
-            current_cached = usage.get('cached_tokens', 0)
+        nonlocal state
+        tracked_provider = provider or orchestrator.ai
+        source_key = id(tracked_provider)
+        previous = _prev_tokens_by_source.setdefault(source_key, {'prompt': 0, 'completion': 0, 'cached': 0})
+        current = get_usage_snapshot(tracked_provider)
 
-            # Calculate delta from previous phase
-            delta_prompt = current_prompt - _prev_tokens['prompt']
-            delta_completion = current_completion - _prev_tokens['completion']
-            delta_cached = current_cached - _prev_tokens['cached']
-            delta_total = delta_prompt + delta_completion
+        delta_prompt = current['prompt'] - previous['prompt']
+        delta_completion = current['completion'] - previous['completion']
+        delta_cached = current['cached'] - previous['cached']
 
-            # Debug log
-            _token_debug_log.append({
-                'event': event_name,
-                'phase': current_phase.value,
-                'delta_prompt': delta_prompt,
-                'delta_completion': delta_completion,
-                'delta_cached': delta_cached,
-                'total_prompt': current_prompt,
-                'total_completion': current_completion,
-                'total_cached': current_cached
-            })
+        _token_debug_log.append({
+            'event': event_name,
+            'phase': current_phase.value,
+            'provider_id': source_key,
+            'delta_prompt': delta_prompt,
+            'delta_completion': delta_completion,
+            'delta_cached': delta_cached,
+            'total_prompt': current['prompt'],
+            'total_completion': current['completion'],
+            'total_cached': current['cached']
+        })
 
-            # Update state with delta (always record, even if 0, to track all phases)
-            state = state.with_token_usage(
-                phase=current_phase,
-                prompt_tokens=delta_prompt,
-                completion_tokens=delta_completion,
-                cached_tokens=delta_cached
-            )
+        state = state.with_token_usage(
+            phase=current_phase,
+            prompt_tokens=delta_prompt,
+            completion_tokens=delta_completion,
+            cached_tokens=delta_cached
+        )
 
-            # Store current for next delta calculation
-            _prev_tokens = {'prompt': current_prompt, 'completion': current_completion, 'cached': current_cached}
+        _prev_tokens_by_source[source_key] = current
 
     # ============================================================
     # Phase 1: Détection (Initialisation + Diagnostic)
@@ -277,6 +336,7 @@ async def command_correct(args):
     try:
         analysis = await orchestrator.analyze_only()
     except Exception as e:
+        mark_session_error(f"analysis_failed: {e}")
         cli.show_error(f"Analysis failed: {e}")
         return 1
 
@@ -322,7 +382,7 @@ async def command_correct(args):
         try:
             from analysis.detection import Detector
             detector = Detector(
-                user_id=user_id if hasattr(args, 'user_id') else 'default',
+                user_id=orchestrator.session.user_id,
                 session_id=orchestrator.session_id,
                 language=language,
                 provider=orchestrator.ai  # Use orchestrator's provider for token tracking
@@ -492,6 +552,7 @@ async def command_correct(args):
     try:
         graded = await orchestrator.grade_all(progress_callback=progress_handler)
     except Exception as e:
+        mark_session_error(f"grading_failed: {e}")
         # Handle specific errors with user-friendly messages
         from core.exceptions import StudentNameMismatchError, DualLLMFailureError, OutputTruncatedError
         if isinstance(e, OutputTruncatedError):
@@ -594,8 +655,6 @@ async def command_correct(args):
     # ============================================================
     # Phase 6: Annotation (optionnel)
     # ============================================================
-    annotated_files = []
-    overlay_files = []
     if args.annotate:
         annotation_model = get_settings().annotation_model
         state = state.with_phase(WorkflowPhase.ANNOTATION)
@@ -613,39 +672,35 @@ async def command_correct(args):
 
         from export.annotation_pipeline import AnnotationExportService
 
-        annotation_output_dir = Path(args.output) / orchestrator.session_id
+        annotation_output_dir = session_artifacts_dir
         annotation_service = AnnotationExportService(session=orchestrator.session)
+        annotation_provider = getattr(
+            getattr(annotation_service.annotator, "coordinate_detector", None),
+            "provider",
+            None,
+        )
+        if annotation_provider is not None and annotation_provider is not orchestrator.ai:
+            usage_sources.append(("Annotation", annotation_provider))
 
-        for i, (copy, graded_copy) in enumerate(zip(orchestrator.session.copies, graded), 1):
-            student_name = copy.student_name or f"copie_{i}"
-
-            try:
-                cli.console.print(f"  [dim]{student_name}...[/dim]", end="")
-
-                artifact = annotation_service.export_copy_artifacts(
-                    copy=copy,
-                    graded=graded_copy,
-                    output_dir=str(annotation_output_dir),
-                    smart_placement=True,
-                    language=language,
-                    filename_stem=student_name,
-                )
-                annotated_files.append(artifact.annotated_pdf)
-                overlay_files.append(artifact.overlay_pdf)
-
-                cli.console.print(f" [green]✓[/green]")
-            except Exception as e:
-                cli.console.print(f" [red]✗ {e}[/red]")
-
-        if annotated_files:
-            cli.console.print(f"[green]✓ {len(annotated_files)} copie(s) annotée(s)[/green]")
-            exports['annotated_pdfs'] = str(annotation_output_dir / "annotated")
-        if overlay_files:
-            cli.console.print(f"[green]✓ {len(overlay_files)} overlay(s) généré(s)[/green]")
-            exports['annotation_overlays'] = str(annotation_output_dir / "overlays")
+        try:
+            cli.console.print("  [dim]Génération du PDF annoté et de l'overlay global...[/dim]", end="")
+            artifacts = annotation_service.export_session_artifacts(
+                copies=orchestrator.session.copies,
+                graded_copies=graded,
+                output_dir=str(annotation_output_dir),
+                smart_placement=True,
+                language=language,
+            )
+            cli.console.print(" [green]✓[/green]")
+            cli.console.print(f"[green]✓ {artifacts.copy_count} copie(s) regroupée(s) dans 1 PDF annoté[/green]")
+            cli.console.print("[green]✓ 1 overlay global généré[/green]")
+            exports['annotated_pdfs'] = artifacts.annotated_pdf
+            exports['annotation_overlays'] = artifacts.overlay_pdf
+        except Exception as e:
+            cli.console.print(f" [red]✗ {e}[/red]")
 
         # Record ANNOTATION phase tokens
-        record_phase_tokens(WorkflowPhase.ANNOTATION)
+        record_phase_tokens(WorkflowPhase.ANNOTATION, provider=annotation_provider)
 
     # Mark complete
     from core.models import SessionStatus
@@ -754,49 +809,76 @@ async def command_correct(args):
         )
 
         # Show by provider with cost info
-        if hasattr(orchestrator.ai, 'get_token_usage'):
-            provider_usage = orchestrator.ai.get_token_usage()
+        provider_rows_printed = False
+        for source_name, provider in usage_sources:
+            if not hasattr(provider, 'get_token_usage'):
+                continue
+
+            provider_usage = provider.get_token_usage() or {}
+            rows: List[tuple[str, Dict[str, Any]]] = []
             if 'by_provider' in provider_usage:
+                rows.extend(provider_usage['by_provider'].items())
+            elif provider_usage.get('total_tokens', 0) > 0:
+                provider_label = getattr(provider, 'model_name', provider.__class__.__name__)
+                rows.append((provider_label, provider_usage))
+
+            if not rows:
+                continue
+
+            if not provider_rows_printed:
                 cli.console.print(f"\n  [dim]Par LLM:[/dim]")
-                for provider_name, usage in provider_usage['by_provider'].items():
-                    cached = usage.get('cached_tokens', 0)
-                    total = usage.get('total_tokens', 0)
-                    billable_total = usage.get('billable_total_tokens', max(0, total - cached))
-                    calls = usage.get('calls', 0)
-                    if cached > 0:
-                        cli.console.print(
-                            f"  [{provider_name}] {total:,} bruts "
-                            f"({calls} calls, {cached:,} cache, {billable_total:,} facturables)",
-                            markup=False
-                        )
-                    else:
-                        cli.console.print(
-                            f"  [{provider_name}] {billable_total:,} facturables ({calls} calls)",
-                            markup=False
-                        )
+                provider_rows_printed = True
+
+            for provider_name, usage in rows:
+                cached = usage.get('cached_tokens', 0)
+                total = usage.get('total_tokens', 0)
+                billable_total = usage.get('billable_total_tokens', max(0, total - cached))
+                calls = usage.get('calls', 0)
+                label = provider_name if source_name == "Correction" else f"{provider_name} [{source_name}]"
+                if cached > 0:
+                    cli.console.print(
+                        f"  [{label}] {total:,} bruts "
+                        f"({calls} calls, {cached:,} cache, {billable_total:,} facturables)",
+                        markup=False
+                    )
+                else:
+                    cli.console.print(
+                        f"  [{label}] {billable_total:,} facturables ({calls} calls)",
+                        markup=False
+                    )
 
         # Show estimated cost if available
-        if hasattr(orchestrator.ai, 'get_estimated_cost'):
+        total_estimated_cost = 0.0
+        total_cached_savings = 0.0
+        has_cost = False
+        for _, provider in usage_sources:
+            if not hasattr(provider, 'get_estimated_cost'):
+                continue
             try:
-                cost_info = orchestrator.ai.get_estimated_cost()
-                if cost_info and cost_info.get('estimated_cost_usd') is not None:
-                    total_cost = cost_info['estimated_cost_usd']
-                    cached_savings = cost_info.get('cached_savings_usd', 0) or 0
-                    cli.console.print(f"\n  💰 [bold]Coût estimé: ${total_cost:.4f}[/bold]")
-                    if cached_savings > 0:
-                        cli.console.print(f"     [green]✓ Économie cache: ${cached_savings:.4f}[/green]")
+                cost_info = provider.get_estimated_cost()
             except Exception:
-                pass  # Cost calculation may not be available for all providers
+                continue
+            if not cost_info or cost_info.get('estimated_cost_usd') is None:
+                continue
+            total_estimated_cost += cost_info.get('estimated_cost_usd', 0) or 0
+            total_cached_savings += cost_info.get('cached_savings_usd', 0) or 0
+            has_cost = True
+
+        if has_cost:
+            cli.console.print(f"\n  💰 [bold]Coût estimé: ${total_estimated_cost:.4f}[/bold]")
+            if total_cached_savings > 0:
+                cli.console.print(f"     [green]✓ Économie cache: ${total_cached_savings:.4f}[/green]")
 
     return 0
 
 
 def command_status(args):
     """Show status of a session."""
-    from storage.session_store import SessionStore
-
     console = Console()
-    store = SessionStore(args.session)
+    store = get_session_store_for_cli(args.session)
+    if store is None:
+        console.print(f"[red]Session not found: {args.session}[/red]")
+        return 1
     session = store.load_session()
 
     if not session:
@@ -826,18 +908,19 @@ def command_status(args):
 
 def command_analytics(args):
     """Show analytics for a session."""
-    from storage.session_store import SessionStore
-
     console = Console()
 
-    store = SessionStore(args.session)
+    store = get_session_store_for_cli(args.session)
+    if store is None:
+        console.print(f"[red]Session not found: {args.session}[/red]")
+        return 1
     session = store.load_session()
 
     if not session:
         console.print(f"[red]Session not found: {args.session}[/red]")
         return 1
 
-    orchestrator = GradingSessionOrchestrator(session_id=args.session)
+    orchestrator = GradingSessionOrchestrator(session_id=args.session, user_id=store.user_id)
     analytics = orchestrator.get_analytics()
 
     # Display analytics
@@ -866,18 +949,19 @@ def command_analytics(args):
 
 def command_export(args):
     """Export session data."""
-    from storage.session_store import SessionStore
-
     console = Console()
 
-    store = SessionStore(args.session)
+    store = get_session_store_for_cli(args.session)
+    if store is None:
+        console.print(f"[red]Session not found: {args.session}[/red]")
+        return 1
     session = store.load_session()
 
     if not session:
         console.print(f"[red]Session not found: {args.session}[/red]")
         return 1
 
-    orchestrator = GradingSessionOrchestrator(session_id=args.session)
+    orchestrator = GradingSessionOrchestrator(session_id=args.session, user_id=store.user_id)
     exported = orchestrator.export_data(args.format)
 
     console.print(f"[green]Exported session {args.session}:[/green]")
@@ -890,7 +974,6 @@ def command_export(args):
 def command_list(args):
     """List all sessions."""
     from storage.file_store import SessionIndex
-    from storage.session_store import SessionStore
 
     console = Console()
 
@@ -904,11 +987,14 @@ def command_list(args):
     table = Table(title="Sessions")
     table.add_column("Name", style="cyan", max_width=30)
     table.add_column("ID", style="dim", width=8)
+    table.add_column("Owner", style="magenta", max_width=18)
     table.add_column("Created", style="green")
     table.add_column("Status", style="yellow")
 
     for session_id in sessions:
-        session_store = SessionStore(session_id)
+        session_store = get_session_store_for_cli(session_id)
+        if session_store is None:
+            continue
         session = session_store.load_session()
 
         if session:
@@ -924,6 +1010,7 @@ def command_list(args):
             table.add_row(
                 name,
                 short_id,
+                session_store.user_id,
                 str(session.created_at)[:19],
                 session.status
             )
@@ -957,6 +1044,37 @@ def command_api(args):
     return 0
 
 
+def command_worker(args):
+    """Start the persistent grading worker."""
+    from services.job_runner import run_worker_loop
+
+    console = Console()
+    try:
+        settings = get_settings()
+        settings.validate_worker_runtime_configuration()
+    except ValueError as exc:
+        console.print(f"[red]Configuration error: {exc}[/red]")
+        return 1
+
+    console.print("[bold green]Starting grading worker[/bold green]")
+    console.print(f"Poll interval: {args.poll_interval}s")
+    console.print(f"Stale timeout: {args.stale_after}s")
+    if args.once:
+        console.print("Mode: single pass")
+
+    processed = asyncio.run(
+        run_worker_loop(
+            poll_interval=args.poll_interval,
+            stale_after_seconds=args.stale_after,
+            once=args.once,
+        )
+    )
+
+    if args.once:
+        console.print(f"Processed jobs: {processed}")
+    return 0
+
+
 def main():
     """Main entry point."""
     parser = argparse.ArgumentParser(
@@ -976,6 +1094,7 @@ Examples:
   %(prog)s status abc123
   %(prog)s export abc123 --format json,csv
   %(prog)s list
+  %(prog)s worker --poll-interval 2
 
 Arguments:
   llm_mode        single ou dual (nombre de LLM utilisés)
@@ -1051,11 +1170,6 @@ Note on --second-reading:
         "--annotate",
         action="store_true",
         help="Générer des PDFs annotés avec le feedback (nécessite un LLM vision configuré)"
-    )
-    correct_parser.add_argument(
-        "--output",
-        default="outputs",
-        help="Output directory"
     )
     correct_parser.add_argument(
         "--subject",
@@ -1160,6 +1274,25 @@ Note on --second-reading:
         help="Number of workers"
     )
 
+    worker_parser = subparsers.add_parser("worker", help="Start persistent grading worker")
+    worker_parser.add_argument(
+        "--poll-interval",
+        type=float,
+        default=2.0,
+        help="Seconds to wait between queue polls when idle"
+    )
+    worker_parser.add_argument(
+        "--stale-after",
+        type=int,
+        default=7200,
+        help="Fail running jobs after this many seconds without progress"
+    )
+    worker_parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Process at most one queued job, then exit"
+    )
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1179,6 +1312,8 @@ Note on --second-reading:
         return command_list(args)
     elif args.command == "api":
         return command_api(args)
+    elif args.command == "worker":
+        return command_worker(args)
 
     return 0
 

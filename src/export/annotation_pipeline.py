@@ -8,7 +8,10 @@ Builds annotation placements once per copy, then renders both export targets:
 
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import List
+
+import fitz
 
 from core.models import CopyDocument, GradedCopy, GradingSession
 from export.pdf_annotator import PDFAnnotator
@@ -21,6 +24,14 @@ class AnnotationArtifact:
     student_name: str | None
     annotated_pdf: str
     overlay_pdf: str
+
+
+@dataclass
+class SessionAnnotationArtifacts:
+    """Generated combined annotation files for a full session."""
+    annotated_pdf: str
+    overlay_pdf: str
+    copy_count: int
 
 
 class AnnotationExportService:
@@ -38,6 +49,7 @@ class AnnotationExportService:
         smart_placement: bool = True,
         language: str = "fr",
         filename_stem: str | None = None,
+        annotations: "CopyAnnotations" = None,
     ) -> AnnotationArtifact:
         """
         Export both annotation artifacts for a single student copy.
@@ -51,12 +63,13 @@ class AnnotationExportService:
         stem = filename_stem or copy.student_name or copy.id
         safe_stem = stem.replace(" ", "_").replace("/", "-")
 
-        annotations = self.annotator.prepare_annotations(
-            copy=copy,
-            graded=graded,
-            smart_placement=smart_placement,
-            language=language,
-        )
+        if annotations is None:
+            annotations = self.annotator.prepare_annotations(
+                copy=copy,
+                graded=graded,
+                smart_placement=smart_placement,
+                language=language,
+            )
 
         annotated_path = annotated_dir / f"{safe_stem}_annotated.pdf"
         overlay_path = overlay_dir / f"{safe_stem}_overlay.pdf"
@@ -92,23 +105,63 @@ class AnnotationExportService:
         output_dir: str,
         smart_placement: bool = True,
         language: str = "fr",
-    ) -> List[AnnotationArtifact]:
+        annotations_by_copy: dict[str, "CopyAnnotations"] | None = None,
+    ) -> SessionAnnotationArtifacts:
         """
-        Export both annotation artifacts for each graded copy in the session.
+        Export both annotation artifacts for the full session as two combined PDFs.
         """
-        artifacts: List[AnnotationArtifact] = []
+        base_dir = Path(output_dir)
+        annotated_dir = base_dir / "annotated"
+        overlay_dir = base_dir / "overlays"
+        annotated_dir.mkdir(parents=True, exist_ok=True)
+        overlay_dir.mkdir(parents=True, exist_ok=True)
 
-        for index, (copy, graded) in enumerate(zip(copies, graded_copies), start=1):
-            student_name = copy.student_name or f"copie_{index}"
-            artifacts.append(
-                self.export_copy_artifacts(
-                    copy=copy,
-                    graded=graded,
-                    output_dir=output_dir,
-                    smart_placement=smart_placement,
-                    language=language,
-                    filename_stem=student_name,
+        annotated_output = annotated_dir / "copies_annotees.pdf"
+        overlay_output = overlay_dir / "annotations_overlay.pdf"
+
+        artifacts: List[AnnotationArtifact] = []
+        with TemporaryDirectory(dir=base_dir) as temp_dir:
+            temp_base = Path(temp_dir)
+            for index, (copy, graded) in enumerate(zip(copies, graded_copies), start=1):
+                student_name = copy.student_name or f"copie_{index}"
+                artifacts.append(
+                    self.export_copy_artifacts(
+                        copy=copy,
+                        graded=graded,
+                        output_dir=str(temp_base),
+                        smart_placement=smart_placement,
+                        language=language,
+                        filename_stem=f"{index:03d}_{student_name}",
+                        annotations=(annotations_by_copy or {}).get(copy.id),
+                    )
                 )
+
+            self._merge_pdfs(
+                [artifact.annotated_pdf for artifact in artifacts],
+                annotated_output,
+            )
+            self._merge_pdfs(
+                [artifact.overlay_pdf for artifact in artifacts],
+                overlay_output,
             )
 
-        return artifacts
+        return SessionAnnotationArtifacts(
+            annotated_pdf=str(annotated_output),
+            overlay_pdf=str(overlay_output),
+            copy_count=len(artifacts),
+        )
+
+    @staticmethod
+    def _merge_pdfs(pdf_paths: List[str], output_path: Path) -> None:
+        """Merge PDFs in order into a single output file."""
+        merged_doc = fitz.open()
+        try:
+            for pdf_path in pdf_paths:
+                source_doc = fitz.open(pdf_path)
+                try:
+                    merged_doc.insert_pdf(source_doc)
+                finally:
+                    source_doc.close()
+            merged_doc.save(str(output_path))
+        finally:
+            merged_doc.close()

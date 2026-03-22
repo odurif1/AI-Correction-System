@@ -1,9 +1,10 @@
 import json
+from types import SimpleNamespace
 
 import pytest
 
 from analysis.detection import Detector
-from core.models import ClassAnswerMap, CopyDocument, GradingSession, SessionStatus
+from core.models import ClassAnswerMap, CopyDocument, DetectionResult, GradingSession, SessionStatus, StudentInfo
 from core.services.detection_service import DetectionService
 
 
@@ -14,6 +15,18 @@ def make_detector(tmp_path):
         cache_dir=tmp_path / "cache",
         provider=object(),
     )
+
+
+def test_detector_default_cache_dir_is_under_session_directory(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    detector = Detector(
+        user_id="user-1",
+        session_id="session-1",
+        provider=object(),
+    )
+
+    assert detector.cache_dir.resolve() == (tmp_path / "data" / "sessions" / "user-1" / "session-1" / "cache").resolve()
 
 
 def test_detection_normalizes_numeric_question_ids(tmp_path):
@@ -111,6 +124,43 @@ def test_detection_keeps_richer_labels_for_exam_diversity(tmp_path):
         "Exercice 1 - Analyse de document",
         "Exercice 2 - Rédaction",
     ]
+
+
+@pytest.mark.asyncio
+async def test_batch_mode_uses_detected_ranges_to_split_copies(tmp_path, monkeypatch):
+    session = GradingSession(user_id="user-1", status=SessionStatus.DIAGNOSTIC, class_map=ClassAnswerMap())
+    store = SimpleNamespace(
+        session_dir=tmp_path,
+        load_detection=lambda: DetectionResult(
+            students=[
+                StudentInfo(index=1, name="Alice", start_page=1, end_page=2),
+                StudentInfo(index=2, name="Bob", start_page=3, end_page=4),
+            ]
+        ),
+    )
+
+    service = DetectionService(
+        session=session,
+        store=store,
+        ai=object(),
+        pdf_paths=["copies.pdf"],
+        grading_mode="batch",
+    )
+
+    called = {"split": 0, "minimal": 0}
+
+    async def fake_from_detection(detection):
+        called["split"] += 1
+
+    async def fake_minimal():
+        called["minimal"] += 1
+
+    monkeypatch.setattr(service, "_load_copies_from_detection", fake_from_detection)
+    monkeypatch.setattr(service, "_load_copies_minimal", fake_minimal)
+
+    await service._load_copies_phase()
+
+    assert called == {"split": 1, "minimal": 0}
 
 
 def test_detection_applies_progressive_confidence_penalty(tmp_path):

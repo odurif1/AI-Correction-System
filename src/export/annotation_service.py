@@ -39,8 +39,14 @@ class AnnotationPlacement:
     page_number: int           # 1-based page number (1 = first page)
     x_percent: float           # Horizontal position (0-100%)
     y_percent: float           # Vertical position (0-100%)
+    label_text: Optional[str] = None
     width_percent: float = 30.0  # Width as % of page width
     height_percent: float = 5.0  # Height as % of page height
+    font_size: int = 10
+    text_color: str = "#B0121F"
+    bold: bool = False
+    italic: bool = False
+    boxed: bool = False
     placement: str = "below_answer"  # Placement hint from LLM
     confidence: float = 0.0    # LLM confidence (0.0-1.0)
     placement_source: str = "llm"  # llm | heuristic
@@ -212,7 +218,9 @@ class AnnotationCoordinateDetector:
         # Build prompt
         prompt = build_direct_annotation_prompt(
             feedback_by_question,
-            language,
+            grades_by_question=graded_copy.grades,
+            max_points_by_question=graded_copy.max_points_by_question,
+            language=language,
             expected_pages_by_question=expected_pages_by_question,
         )
 
@@ -288,12 +296,18 @@ class AnnotationCoordinateDetector:
 
             annotations.placements.append(AnnotationPlacement(
                 question_id=q_id,
+                label_text="",
                 feedback_text=feedback,
                 page_number=page_num + 1,  # 1-based page number
                 x_percent=70.0,  # Right side
                 y_percent=y_position,
                 width_percent=25.0,
                 height_percent=5.0,
+                font_size=10,
+                text_color="#B0121F",
+                bold=False,
+                italic=False,
+                boxed=False,
                 placement="right_margin",
                 confidence=0.5,  # Lower confidence for heuristic
                 placement_source="heuristic",
@@ -358,15 +372,39 @@ class AnnotationCoordinateDetector:
                 except (ValueError, TypeError):
                     return default
 
+            def clamp_dimension_percent(value, default, minimum, maximum):
+                try:
+                    return max(minimum, min(maximum, float(value)))
+                except (ValueError, TypeError):
+                    return default
+
+            placement_hint = str(ann_data.get("placement", "right_margin") or "right_margin")
+            if placement_hint not in {
+                "right_margin",
+                "left_margin",
+                "below_answer",
+                "above_answer",
+                "right_of_answer",
+                "left_of_answer",
+                "near_blank_space",
+            }:
+                placement_hint = "near_blank_space"
+
             annotations.placements.append(AnnotationPlacement(
                 question_id=q_id,
+                label_text=str(ann_data.get("label_text", "")),
                 feedback_text=ann_data.get("feedback_text", graded_copy.student_feedback.get(q_id, "")),
                 page_number=page_num,  # 1-based
                 x_percent=clamp_percent(ann_data.get("x_percent"), 70.0),
                 y_percent=clamp_percent(ann_data.get("y_percent"), 20.0),
-                width_percent=clamp_percent(ann_data.get("width_percent"), 25.0),
-                height_percent=clamp_percent(ann_data.get("height_percent"), 5.0),
-                placement=ann_data.get("placement", "right_margin"),
+                width_percent=clamp_dimension_percent(ann_data.get("width_percent"), 22.0, 12.0, 35.0),
+                height_percent=clamp_dimension_percent(ann_data.get("height_percent"), 7.0, 4.0, 18.0),
+                font_size=max(7, min(18, int(ann_data.get("font_size", 10) or 10))),
+                text_color=str(ann_data.get("text_color", "#B0121F")),
+                bold=bool(ann_data.get("bold", False)),
+                italic=bool(ann_data.get("italic", False)),
+                boxed=bool(ann_data.get("boxed", False)),
+                placement=placement_hint,
                 confidence=max(0.0, min(1.0, float(ann_data.get("confidence", 0.5)))),
                 placement_source="llm",
                 page_validated=False,
@@ -533,7 +571,8 @@ def create_annotation_boxes(
     annotations: CopyAnnotations,
     pdf_doc: fitz.Document,
     page_number_offset: int = 0,
-) -> Dict[int, List[Tuple[fitz.Rect, str]]]:
+    reserved_rects_by_page: Optional[Dict[int, List[fitz.Rect]]] = None,
+) -> Dict[int, List[Tuple[fitz.Rect, AnnotationPlacement]]]:
     """
     Create annotation boxes for each page.
 
@@ -545,9 +584,11 @@ def create_annotation_boxes(
         page_number_offset: Offset applied after converting the 1-based page
             number to a 0-based page index. Use `1` when the target document
             has a prepended cover page.
+        reserved_rects_by_page: Additional blocked zones to keep free on
+            specific pages (for example the score/header area on page 1).
 
     Returns:
-        Dict mapping 0-based page_index -> list of (rect, feedback_text)
+        Dict mapping 0-based page_index -> list of (rect, placement)
     """
     boxes = {}
 
@@ -564,72 +605,249 @@ def create_annotation_boxes(
         page_width = page.rect.width
         page_height = page.rect.height
 
-        # Convert percentages to points
-        x = percent_to_points(placement.x_percent, page_width)
-        y = percent_to_points(placement.y_percent, page_height)
-        width = percent_to_points(placement.width_percent, page_width, margin=5)
-        height = percent_to_points(placement.height_percent, page_height, margin=3)
-
-        rect = fitz.Rect(x, y, x + width, y + height)
+        anchor_rect = _find_question_anchor_rect(page, placement.question_id)
+        rect = _build_annotation_rect(placement, page_width, page_height, anchor_rect=anchor_rect)
 
         if page_index not in boxes:
             boxes[page_index] = []
-        adjusted_rect = _avoid_box_overlap(
-            rect=rect,
-            existing_rects=[existing_rect for existing_rect, _ in boxes[page_index]],
-            page_width=page_width,
-            page_height=page_height,
-        )
-        boxes[page_index].append((adjusted_rect, placement.feedback_text))
+
+        occupied_rects = _extract_page_content_rects(page)
+        if reserved_rects_by_page and page_index in reserved_rects_by_page:
+            occupied_rects.extend(reserved_rects_by_page[page_index])
+        if placement.placement_source == "manual":
+            adjusted_rect = rect
+        else:
+            adjusted_rect = _fit_box_to_free_space(
+                rect=rect,
+                page=page,
+                content_rects=occupied_rects,
+                existing_rects=[existing_rect for existing_rect, _ in boxes[page_index]],
+                anchor_rect=anchor_rect,
+            )
+        boxes[page_index].append((adjusted_rect, placement))
 
     return boxes
 
 
-def _avoid_box_overlap(
-    rect: fitz.Rect,
-    existing_rects: List[fitz.Rect],
+def _build_annotation_rect(
+    placement: AnnotationPlacement,
     page_width: float,
     page_height: float,
+    anchor_rect: Optional[fitz.Rect] = None,
+) -> fitz.Rect:
+    """Estimate a usable text region for one annotation."""
+    x = percent_to_points(placement.x_percent, page_width)
+    y = percent_to_points(placement.y_percent, page_height)
+    if anchor_rect is not None:
+        y = anchor_rect.y0
+        x = max(x, anchor_rect.x1 + 8.0)
+
+    preferred_width = max(
+        percent_to_points(placement.width_percent, page_width, margin=12),
+        page_width * 0.22,
+    )
+
+    estimated_lines = _estimate_annotation_line_count(
+        question_id=placement.question_id,
+        feedback_text=placement.feedback_text,
+        box_width=preferred_width,
+    )
+    line_height = 11.0
+    padding = 10.0
+    preferred_height = max(
+        percent_to_points(placement.height_percent, page_height, margin=6),
+        estimated_lines * line_height + padding,
+    )
+
+    max_width = max(80.0, page_width - 24.0)
+    max_height = max(24.0, page_height - 24.0)
+    width = min(preferred_width, max_width)
+    height = min(preferred_height, max_height)
+
+    x = max(12.0, min(x, page_width - width - 12.0))
+    y = max(12.0, min(y, page_height - height - 12.0))
+    return fitz.Rect(x, y, x + width, y + height)
+
+
+def _estimate_annotation_line_count(
+    question_id: str,
+    feedback_text: str,
+    box_width: float,
+    font_size: int = 8,
+) -> int:
+    """Estimate how many lines the annotation text will require."""
+    char_width = max(font_size * 0.5, 1.0)
+    max_chars_per_line = max(18, int(max(box_width, 80.0) / char_width))
+    text = f"{question_id} {feedback_text}".strip()
+    words = text.split()
+    if not words:
+        return 2
+
+    line_count = 1
+    current_length = 0
+    for word in words:
+        projected = len(word) if current_length == 0 else current_length + 1 + len(word)
+        if projected <= max_chars_per_line:
+            current_length = projected
+            continue
+        if len(word) > max_chars_per_line:
+            if current_length > 0:
+                line_count += 1
+            line_count += max(1, math.ceil(len(word) / max_chars_per_line)) - 1
+            current_length = len(word) % max_chars_per_line or max_chars_per_line
+            continue
+        line_count += 1
+        current_length = len(word)
+
+    return max(2, line_count)
+
+
+def _find_question_anchor_rect(page: fitz.Page, question_id: str) -> Optional[fitz.Rect]:
+    """Find the text block most likely to correspond to the question label."""
+    patterns = AnnotationCoordinateDetector._build_question_page_patterns(question_id)
+    best_rect: Optional[fitz.Rect] = None
+
+    for block in page.get_text("blocks"):
+        if len(block) < 5:
+            continue
+        x0, y0, x1, y1, text = block[:5]
+        normalized = AnnotationCoordinateDetector._normalize_page_text(str(text))
+        if not normalized.strip():
+            continue
+        if any(pattern.search(normalized) for pattern in patterns):
+            candidate = fitz.Rect(x0, y0, x1, y1)
+            if best_rect is None or candidate.y0 < best_rect.y0:
+                best_rect = candidate
+
+    return best_rect
+
+
+def _extract_page_content_rects(page: fitz.Page) -> List[fitz.Rect]:
+    """Extract meaningful content blocks already present on the page."""
+    rects: List[fitz.Rect] = []
+    for block in page.get_text("blocks"):
+        if len(block) < 5:
+            continue
+        x0, y0, x1, y1, text = block[:5]
+        if not text or not str(text).strip():
+            continue
+        rects.append(fitz.Rect(x0, y0, x1, y1))
+    return rects
+
+
+def _fit_box_to_free_space(
+    rect: fitz.Rect,
+    page: fitz.Page,
+    content_rects: List[fitz.Rect],
+    existing_rects: List[fitz.Rect],
+    anchor_rect: Optional[fitz.Rect] = None,
     gap: float = 4.0,
 ) -> fitz.Rect:
     """
-    Move a box vertically to avoid overlaps with existing boxes on the page.
+    Place a box in usable free space near the detected answer area.
 
-    If the requested column is saturated, the box is moved to a safe right-margin
-    column and stacked from the top.
+    Preference order:
+    1. Right margin beside existing content at the detected y-position.
+    2. Left margin if it is wider.
+    3. A free horizontal band below nearby content.
+    4. Bottom area as a last resort.
     """
-    if not existing_rects:
-        return rect
-
+    page_width = page.rect.width
+    page_height = page.rect.height
     margin = 10.0
     width = rect.width
     height = rect.height
-    max_y = max(margin, page_height - height - margin)
+    obstacles = content_rects + existing_rects
 
+    nearby = [
+        block for block in content_rects
+        if abs(((block.y0 + block.y1) / 2.0) - ((rect.y0 + rect.y1) / 2.0)) <= max(height * 1.8, 60.0)
+    ]
+    if not nearby:
+        nearby = content_rects
+
+    content_left = min((block.x0 for block in nearby), default=margin + 80.0)
+    content_right = max((block.x1 for block in nearby), default=page_width - margin - 80.0)
+
+    candidate_specs: List[Tuple[float, float, float]] = []
+
+    if anchor_rect is not None:
+        right_of_anchor = page_width - anchor_rect.x1 - (margin * 2)
+        if right_of_anchor >= page_width * 0.12:
+            candidate_specs.append(
+                (
+                    anchor_rect.x1 + gap,
+                    page_width - margin,
+                    max(margin, anchor_rect.y0 - 2.0),
+                )
+            )
+        below_anchor = anchor_rect.y1 + gap
+        if below_anchor + height <= page_height - margin:
+            candidate_specs.append((margin, page_width - margin, below_anchor))
+
+    right_margin_width = page_width - content_right - (margin * 2)
+    if right_margin_width >= min(width, page_width * 0.18):
+        candidate_specs.append((content_right + gap, min(page_width - margin, content_right + gap + max(width, right_margin_width)), rect.y0))
+
+    left_margin_width = content_left - (margin * 2)
+    if left_margin_width >= min(width, page_width * 0.18):
+        candidate_specs.append((margin, margin + max(width, left_margin_width), rect.y0))
+
+    if nearby:
+        band_y = max(block.y1 for block in nearby) + gap
+        candidate_specs.append((margin, page_width - margin, band_y))
+
+    candidate_specs.append((margin, page_width - margin, max(rect.y0, page_height - height - 90.0)))
+
+    for x0, x1, start_y in candidate_specs:
+        available_width = min(x1 - x0, page_width - (2 * margin))
+        candidate_width = max(min(width, available_width), min(available_width, page_width * 0.16))
+        if candidate_width <= 40:
+            continue
+        candidate = fitz.Rect(x0, max(margin, start_y), x0 + candidate_width, max(margin, start_y) + height)
+        fitted = _stack_rect_without_overlap(candidate, obstacles, page_height, gap=gap, margin=margin)
+        if fitted is not None:
+            return fitted
+
+    fallback = fitz.Rect(
+        page_width - width - margin,
+        margin,
+        page_width - margin,
+        margin + height,
+    )
+    return _stack_rect_without_overlap(fallback, obstacles, page_height, gap=gap, margin=margin) or fallback
+
+
+def _stack_rect_without_overlap(
+    rect: fitz.Rect,
+    obstacles: List[fitz.Rect],
+    page_height: float,
+    gap: float = 4.0,
+    margin: float = 10.0,
+) -> Optional[fitz.Rect]:
+    """Move a candidate downward within its column until it no longer overlaps."""
+    width = rect.width
+    height = rect.height
+    max_y = max(margin, page_height - height - margin)
     candidate = fitz.Rect(rect)
 
-    for _ in range(50):
+    for _ in range(80):
         collisions = [
-            existing for existing in existing_rects
-            if candidate.intersects(existing)
-            or abs(candidate.y0 - existing.y1) < gap and not (
-                candidate.x1 <= existing.x0 or candidate.x0 >= existing.x1
+            obstacle for obstacle in obstacles
+            if candidate.intersects(obstacle)
+            or (
+                abs(candidate.y0 - obstacle.y1) < gap
+                and not (candidate.x1 <= obstacle.x0 or candidate.x0 >= obstacle.x1)
             )
         ]
         if not collisions:
+            candidate.y0 = min(candidate.y0, max_y)
+            candidate.y1 = candidate.y0 + height
             return candidate
 
-        next_y = max(existing.y1 for existing in collisions) + gap
-        if next_y <= max_y:
-            candidate = fitz.Rect(candidate.x0, next_y, candidate.x0 + width, next_y + height)
-            continue
+        next_y = max(obstacle.y1 for obstacle in collisions) + gap
+        if next_y > max_y:
+            return None
+        candidate = fitz.Rect(candidate.x0, next_y, candidate.x0 + width, next_y + height)
 
-        margin_x = max(margin, page_width - width - margin)
-        candidate = fitz.Rect(margin_x, margin, margin_x + width, margin + height)
-
-    return fitz.Rect(
-        candidate.x0,
-        min(candidate.y0, max_y),
-        candidate.x1,
-        min(candidate.y0, max_y) + height,
-    )
+    return None

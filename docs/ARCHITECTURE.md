@@ -1,155 +1,110 @@
 # Architecture Overview
 
-This document describes the architecture of the AI Correction System.
+This document describes the runtime architecture actually used by the application.
 
 ## System Overview
 
-The AI Correction System is an intelligent grading platform that uses dual-LLM verification to grade student assignments consistently and fairly.
+The production path is split between an HTTP API and a dedicated grading worker:
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          CLI / API Layer                             │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐  │
-│  │   CLI (cli.py)  │  │  API (app.py)   │  │  WebSocket (ws.py)  │  │
-│  └────────┬────────┘  └────────┬────────┘  └──────────┬──────────┘  │
-└───────────┼─────────────────────┼─────────────────────┼─────────────┘
-            │                     │                     │
-            ▼                     ▼                     ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Core Layer                                   │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐  │
-│  │ Session Manager │  │  Models (Pyd)   │  │  Workflow State     │  │
-│  │   (session.py)  │  │  (models.py)    │  │ (workflow_state.py) │  │
-│  └────────┬────────┘  └─────────────────┘  └─────────────────────┘  │
-└───────────┼─────────────────────────────────────────────────────────┘
-            │
-            ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                          AI Layer                                   │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐  │
-│  │ Base Provider   │  │ Gemini Provider │  │ OpenAI Provider     │  │
-│  │(base_provider)  │  │(gemini_provider)│  │(openai_provider)    │  │
-│  └────────┬────────┘  └────────┬────────┘  └──────────┬──────────┘  │
-│           │                    │                      │             │
-│           ▼                    ▼                      ▼             │
-│  ┌─────────────────────────────────────────────────────────────────┐│
-│  │              Comparison Provider (Dual LLM)                     ││
-│  │              (comparison_provider.py)                           ││
-│  └─────────────────────────────────────────────────────────────────┘│
-└─────────────────────────────────────────────────────────────────────┘
-            │
-            ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Storage Layer                                │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐  │
-│  │ Session Store   │  │   File Store    │  │   Audit Builder     │  │
-│  │(session_store)  │  │ (file_store.py) │  │  (audit/builder.py) │  │
-│  └─────────────────┘  └─────────────────┘  └─────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
-            │
-            ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Export Layer                                 │
-│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐  │
-│  │ PDF Annotator   │  │ Data Exporter   │  │ Annotation Service  │  │
-│  │(pdf_annotator)  │  │ (analytics.py)  │  │(annotation_service) │  │
-│  └─────────────────┘  └─────────────────┘  └─────────────────────┘  │
-└─────────────────────────────────────────────────────────────────────┘
+```text
+Browser / CLI
+    |
+    v
+FastAPI API
+    |
+    +--> Session storage on shared filesystem (`AI_CORRECTION_DATA_DIR`)
+    |
+    +--> Persistent job queue in SQL (`session_jobs`, `session_job_events`)
+              |
+              v
+        Grading worker
+              |
+              +--> LLM providers
+              +--> session artifacts / reports / annotations
 ```
 
-## Core Components
+## Main Runtime Components
 
-### 1. Session Management (`src/core/session.py`)
+### 1. API process
 
-The `GradingSessionOrchestrator` is the main entry point for grading operations:
+The API in `src/api/app.py` is responsible for:
 
-- Manages the complete grading workflow
-- Coordinates between AI providers, storage, and export
-- Handles teacher decisions and jurisprudence
+- authentication and browser session cookies
+- upload, detection, review, export, and admin endpoints
+- enqueuing grading jobs
+- exposing progress through WebSocket by replaying persisted job events
 
-### 2. AI Providers (`src/ai/`)
+The API no longer performs grading in memory with `BackgroundTasks`.
 
-#### Base Provider
-Abstract base class defining the provider interface:
-- `call_vision()` - Image-based AI calls
-- `call_text()` - Text-only AI calls
-- `get_embedding()` - Text embeddings for similarity
+### 2. Worker process
 
-#### Comparison Provider
-Implements dual-LLM verification:
-- Sends same request to two different LLMs
-- Compares results and detects disagreements
-- Resolves conflicts through verification phases
+The worker in `src/services/job_runner.py` is responsible for:
 
-### 3. Storage (`src/storage/`)
+- claiming queued jobs from the database
+- reconstructing the grading session from persisted files
+- executing analysis and grading
+- writing progress events back to the database
+- finalizing token deduction and job status
 
-#### Session Store
-Manages session persistence:
+You can start it with:
+
+```bash
+python src/main.py worker --poll-interval 2
 ```
+
+### 3. Persistent job layer
+
+The queue is defined in `src/db/models.py` and managed by `src/services/job_service.py`.
+
+- `session_jobs` stores the durable job state
+- `session_job_events` stores the ordered progress stream
+
+This gives:
+
+- crash recovery
+- API/worker separation
+- multi-process safety for queued work
+- reconnection-friendly WebSocket progress
+
+### 4. Shared filesystem storage
+
+Session artifacts still live under `AI_CORRECTION_DATA_DIR`:
+
+```text
 data/
-├── {session_id}/
-│   ├── session.json          # Session state
-│   ├── policy.json           # Grading policy
-│   ├── cache/                # Analysis cache
-│   ├── copies/
-│   │   └── {copy_number}/
-│   │       ├── source.pdf
-│   │       ├── annotation.json
-│   │       └── audit.json
-│   ├── annotated/            # Annotated PDFs
-│   └── reports/              # Export reports
-└── _index.json               # Session index
+└── sessions/
+    └── {user_id}/
+        └── {session_id}/
+            ├── session.json
+            ├── policy.json
+            ├── cache/
+            ├── copies/
+            ├── annotated/
+            ├── overlays/
+            ├── reports/
+            └── debug/
 ```
 
-### 4. Grading Workflow
+The API and the worker must therefore share the same persistent volume.
 
-The grading process follows these phases:
+## Grading Flow
 
-1. **Initialization** - Load PDFs, detect questions, extract text
-2. **Grading** - Dual LLM grading with confidence scoring
-3. **Verification** - Cross-verification for disagreements
-4. **Ultimatum** - Final resolution for persistent disagreements
-5. **Calibration** - Consistency check across all copies
-6. **Export** - Generate reports and annotated PDFs
+1. The API receives uploads and stores session metadata.
+2. Detection runs synchronously from the API.
+3. `/confirm-detection` or `/grade` creates a durable grading job.
+4. The worker claims the job and runs the grading pipeline.
+5. Progress events are persisted in SQL.
+6. WebSocket clients replay the event stream and stay in sync after reconnects.
+7. Reports and annotated outputs are written into the shared session directory.
 
-## Dual-LLM Architecture
+## Deployment Shape
 
-See [dual_llm_architecture.md](./dual_llm_architecture.md) for details on the dual-LLM verification system.
+For a serious deployment, the minimum topology is:
 
-## Data Flow
+- 1+ API instances
+- 1+ worker instances
+- 1 shared SQL database, preferably PostgreSQL
+- 1 shared persistent volume for `AI_CORRECTION_DATA_DIR`
+- HTTPS in front of the API
 
-```
-PDF Upload → Page Extraction → Question Detection →
-    ↓
-Dual LLM Grading (Parallel)
-    ↓
-Result Comparison → Agreement?
-    ↓                    ↓
-   Yes              No → Verification Phase
-    ↓                    ↓
-Store Results    Ultimatum Phase (if needed)
-    ↓                    ↓
-Generate Reports ← Final Resolution
-    ↓
-Annotated PDFs
-```
-
-## Key Design Decisions
-
-### Immutable State
-`CorrectionState` uses immutable patterns - all modifications return new instances.
-
-### Token Tracking
-Running totals are maintained for O(1) token usage queries.
-
-### Atomic Writes
-Index updates use file locking and atomic rename for crash safety.
-
-### API Authentication
-API key authentication via `X-API-Key` header (optional in development mode).
-
-## Error Handling
-
-- Custom exceptions in `src/core/exceptions.py`
-- Automatic retry with exponential backoff for transient errors
-- Graceful fallback to heuristic methods on LLM failure
+SQLite is acceptable for development, not for staging/production.

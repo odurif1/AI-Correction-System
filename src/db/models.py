@@ -1,7 +1,7 @@
 """Database models."""
 
 from datetime import datetime, timezone
-from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, Enum as SQLEnum, UniqueConstraint
+from sqlalchemy import Column, String, DateTime, Integer, ForeignKey, Enum as SQLEnum, UniqueConstraint, JSON
 from sqlalchemy.orm import relationship
 from db.database import Base
 import enum
@@ -121,4 +121,86 @@ class UsageRecord(Base):
     # Unique constraint for idempotency (one record per session per user)
     __table_args__ = (
         UniqueConstraint('user_id', 'session_id', name='uq_usage_record_session'),
+    )
+
+
+class SessionJobType(str, enum.Enum):
+    """Supported asynchronous job types."""
+    GRADE_SESSION = "grade_session"
+
+
+class SessionJobStatus(str, enum.Enum):
+    """Lifecycle status for background jobs."""
+    QUEUED = "queued"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+
+class SessionJob(Base):
+    """Persistent grading job tracked outside the API process memory."""
+    __tablename__ = "session_jobs"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    session_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, ForeignKey("users.id"), nullable=False, index=True)
+    job_type = Column(
+        SQLEnum(SessionJobType),
+        default=SessionJobType.GRADE_SESSION,
+        nullable=False,
+        index=True,
+    )
+    status = Column(
+        SQLEnum(SessionJobStatus),
+        default=SessionJobStatus.QUEUED,
+        nullable=False,
+        index=True,
+    )
+    stage = Column(String, default="queued", nullable=False)
+    requested_llm_mode = Column(String, nullable=True)
+    grading_method = Column(String, nullable=True)
+    batch_verify = Column(String, nullable=True)
+    worker_id = Column(String, nullable=True, index=True)
+    payload = Column(JSON, default=dict, nullable=False)
+    result_payload = Column(JSON, default=dict, nullable=False)
+    total_copies = Column(Integer, default=0, nullable=False)
+    completed_copies = Column(Integer, default=0, nullable=False)
+    last_event_sequence = Column(Integer, default=0, nullable=False)
+    error_message = Column(String, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    user = relationship("User", backref="session_jobs")
+    events = relationship(
+        "SessionJobEvent",
+        back_populates="job",
+        cascade="all, delete-orphan",
+        order_by="SessionJobEvent.sequence",
+    )
+
+
+class SessionJobEvent(Base):
+    """Persistent event stream for grading job progress."""
+    __tablename__ = "session_job_events"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
+    job_id = Column(String, ForeignKey("session_jobs.id"), nullable=False, index=True)
+    session_id = Column(String, nullable=False, index=True)
+    sequence = Column(Integer, nullable=False)
+    event_type = Column(String, nullable=False)
+    payload = Column(JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), nullable=False)
+
+    job = relationship("SessionJob", back_populates="events")
+
+    __table_args__ = (
+        UniqueConstraint("job_id", "sequence", name="uq_session_job_event_sequence"),
     )

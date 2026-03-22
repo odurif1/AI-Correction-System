@@ -25,6 +25,11 @@ Recommended: start from `.env.example`.
 |----------|----------|-------------|
 | `AI_CORRECTION_AI_PROVIDER` | Yes | Primary provider: `gemini`, `openai`, `glm`, or `openrouter` |
 | `AI_CORRECTION_DATA_DIR` | No | Local storage directory, default `data` |
+| `AI_CORRECTION_DATABASE_URL` | No in dev, Yes in prod | Shared SQL database URL. Required for staging/production and should be PostgreSQL there |
+| `AI_CORRECTION_ENVIRONMENT` | No | `development`, `test`, `staging`, or `production` |
+| `AI_CORRECTION_SESSION_SECRET` | API only | Required to sign browser sessions |
+| `AI_CORRECTION_SESSION_COOKIE_SECURE` | No | If unset, follows environment. Must be `true` in staging/production |
+| `AI_CORRECTION_ADMIN_API_KEY` | No | Enables admin-only API endpoints |
 
 ## Provider API keys
 
@@ -99,11 +104,28 @@ If `AI_CORRECTION_ANNOTATION_MODEL` is not set, annotated PDFs and overlays are 
 | `AI_CORRECTION_SENTRY_TRACES_SAMPLE_RATE` | `0.1` |
 | `AI_CORRECTION_CORS_ORIGINS` | `[]` |
 
+## Deployment stack helpers
+
+These variables are used by the provided `docker-compose.yml`:
+
+| Variable | Default |
+|----------|---------|
+| `POSTGRES_DB` | `ai_correction` |
+| `POSTGRES_USER` | `ai_correction` |
+| `POSTGRES_PASSWORD` | `change-me` |
+| `WEB_CONCURRENCY` | `2` |
+| `WORKER_POLL_INTERVAL` | `2` |
+| `WORKER_STALE_AFTER` | `7200` |
+| `HTTP_PORT` | `80` |
+
 ## Example
 
 ```env
 AI_CORRECTION_AI_PROVIDER=gemini
 AI_CORRECTION_GEMINI_API_KEY=<api-key>
+AI_CORRECTION_SESSION_SECRET=<long-random-secret>
+AI_CORRECTION_ENVIRONMENT=production
+AI_CORRECTION_DATABASE_URL=postgresql+psycopg://ai_correction:change-me@db:5432/ai_correction
 
 # Optional
 AI_CORRECTION_GEMINI_MODEL=<configured-model>

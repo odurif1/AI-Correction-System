@@ -26,6 +26,9 @@ class SessionResponse(BaseModel):
     session_id: str
     status: str
     created_at: str
+    llm_mode: Optional[Literal["single", "dual"]] = None
+    requested_llm_mode: Optional[Literal["single", "dual"]] = None
+    llm_mode_warning: Optional[str] = None
     copies_count: int
     graded_count: int
     average_score: Optional[float] = None
@@ -43,6 +46,67 @@ class SessionDetailResponse(SessionResponse):
     question_weights: Dict[str, float] = Field(default_factory=dict)
     question_names: Dict[str, str] = Field(default_factory=dict)
     cost_breakdown: Optional["CostBreakdown"] = None
+    annotation_ready: bool = False
+    annotation_count: int = 0
+    annotation_modified: bool = False
+    annotation_files: List[str] = Field(default_factory=list)
+    overlay_files: List[str] = Field(default_factory=list)
+
+
+class AnnotateSessionResponse(BaseModel):
+    """Response after generating annotated PDFs for a session."""
+    success: bool
+    session_id: str
+    annotation_count: int
+
+
+class AnnotationPlacementResponse(BaseModel):
+    question_id: str
+    label_text: Optional[str] = None
+    feedback_text: str
+    page_number: int
+    x_percent: float
+    y_percent: float
+    width_percent: float = 30.0
+    height_percent: float = 5.0
+    font_size: int = 10
+    text_color: str = "#B0121F"
+    bold: bool = False
+    italic: bool = False
+    boxed: bool = False
+    placement: str = "below_answer"
+    confidence: float = 0.0
+    placement_source: str = "llm"
+    page_validated: bool = False
+    page_correction_reason: Optional[str] = None
+
+
+class AnnotationEditorQuestionResponse(BaseModel):
+    question_id: str
+    score: float
+    max_points: float
+    feedback: str = ""
+
+
+class AnnotationEditorCopyResponse(BaseModel):
+    copy_id: str
+    student_name: Optional[str] = None
+    page_count: int
+    total_score: float
+    max_score: float
+    overall_feedback: str = ""
+    page_image_count: int = 0
+    questions: List[AnnotationEditorQuestionResponse] = Field(default_factory=list)
+    placements: List[AnnotationPlacementResponse] = Field(default_factory=list)
+
+
+class AnnotationEditorSessionResponse(BaseModel):
+    session_id: str
+    copies: List[AnnotationEditorCopyResponse] = Field(default_factory=list)
+
+
+class UpdateAnnotationPlacementsRequest(BaseModel):
+    placements: List[AnnotationPlacementResponse] = Field(default_factory=list)
 
 
 class SessionDocumentResponse(BaseModel):
@@ -103,6 +167,8 @@ class GradeResponse(BaseModel):
     total_count: int
     pending_review: int
     grading_mode: Literal["single", "dual"] = "dual"
+    job_id: Optional[str] = None
+    job_status: Optional[str] = None
 
 
 class TeacherDecisionRequest(BaseModel):
@@ -343,6 +409,7 @@ class ConfirmDetectionRequest(BaseModel):
     confirm: bool = True
     adjustments: Optional[Dict[str, Any]] = None
     selected_scale_index: Optional[int] = None
+    llm_mode: Literal["single", "dual"] = "dual"
 
     # Grading configuration - equivalent to CLI: dual batch --batch-verify per-copy
     grading_mode: Literal["individual", "batch", "hybrid"] = "batch"
@@ -362,6 +429,8 @@ class ConfirmDetectionResponse(BaseModel):
     status: str
     grading_scale: Dict[str, float]
     num_students: int
+    job_id: Optional[str] = None
+    job_status: Optional[str] = None
 
 
 class StartGradingRequest(BaseModel):

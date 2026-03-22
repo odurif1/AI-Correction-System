@@ -17,6 +17,28 @@ from config.constants import (
     ANNOTATION_ALPHA
 )
 
+PROFESSOR_RED = (0.82, 0.07, 0.12)
+
+
+def _hex_to_pdf_color(value: str) -> Tuple[float, float, float]:
+    color = (value or "").strip().lstrip("#")
+    if len(color) != 6:
+        return PROFESSOR_RED
+    try:
+        return tuple(int(color[i:i + 2], 16) / 255 for i in (0, 2, 4))
+    except ValueError:
+        return PROFESSOR_RED
+
+
+def _font_name(bold: bool = False, italic: bool = False) -> str:
+    if bold and italic:
+        return "hebi"
+    if bold:
+        return "hebo"
+    if italic:
+        return "heit"
+    return "helv"
+
 
 class PDFAnnotator:
     """
@@ -176,15 +198,48 @@ class PDFAnnotator:
             # Add annotations to overlay pages
             if annotations and annotations.placements:
                 from export.annotation_service import create_annotation_boxes
-                boxes_by_page = create_annotation_boxes(annotations, overlay_doc)
+                question_annotations, meta_annotations = self._split_annotations(annotations)
+                meta_boxes_by_page = self._create_meta_boxes(meta_annotations, overlay_doc)
+                reserved_rects_by_page = self._build_reserved_rects_by_page(
+                    overlay_doc,
+                    graded,
+                    first_student_page_index=0,
+                    meta_boxes_by_page=meta_boxes_by_page,
+                )
+                boxes_by_page = create_annotation_boxes(
+                    question_annotations,
+                    overlay_doc,
+                    reserved_rects_by_page=reserved_rects_by_page,
+                )
 
                 for page_num in range(len(overlay_doc)):
                     page = overlay_doc[page_num]
+                    if page_num in meta_boxes_by_page:
+                        for rect, placement in meta_boxes_by_page[page_num]:
+                            self._add_meta_annotation(page, rect, placement)
+                    elif page_num == 0:
+                        self._add_total_score_stamp(page, graded)
+                        self._add_overall_feedback_stamp(page, graded)
 
                     # Add question annotations
                     if page_num in boxes_by_page:
-                        for rect, feedback_text in boxes_by_page[page_num]:
-                            self._add_feedback_annotation(page, rect, feedback_text, graded)
+                        for rect, placement in boxes_by_page[page_num]:
+                            self._add_feedback_annotation(
+                                page,
+                                rect,
+                                placement.question_id,
+                                getattr(placement, "label_text", None),
+                                placement.feedback_text,
+                                graded,
+                                font_size_override=getattr(placement, "font_size", None),
+                                text_color=getattr(placement, "text_color", None),
+                                bold_override=getattr(placement, "bold", False),
+                                italic_override=getattr(placement, "italic", False),
+                                boxed=getattr(placement, "boxed", False),
+                            )
+            elif len(overlay_doc) > 0:
+                self._add_total_score_stamp(overlay_doc[0], graded)
+                self._add_overall_feedback_stamp(overlay_doc[0], graded)
 
             # Save overlay
             overlay_doc.save(output_path)
@@ -243,37 +298,63 @@ class PDFAnnotator:
         """
         from export.annotation_service import create_annotation_boxes
 
+        question_annotations, meta_annotations = self._split_annotations(annotations)
+        meta_boxes_by_page = self._create_meta_boxes(meta_annotations, doc, page_number_offset=1)
+        reserved_rects_by_page = self._build_reserved_rects_by_page(
+            doc,
+            graded,
+            first_student_page_index=1,
+            meta_boxes_by_page=meta_boxes_by_page,
+        )
+
         # Group annotations by page
         boxes_by_page = create_annotation_boxes(
-            annotations,
+            question_annotations,
             doc,
             page_number_offset=1,
+            reserved_rects_by_page=reserved_rects_by_page,
         )
 
         # Add annotations to each page
         for page_num in range(1, original_page_count + 1):
             page = doc[page_num]
-
-            # Add page summary in margin
-            rect = fitz.Rect(page.rect.width - 80, 50, page.rect.width - 10, 100)
-            self._add_annotation_box(
-                page,
-                rect,
-                f"Page {page_num}",
-                f"Score: {graded.total_score:.1f}/{graded.max_score:.1f}"
-            )
+            if page_num in meta_boxes_by_page:
+                for rect, placement in meta_boxes_by_page[page_num]:
+                    self._add_meta_annotation(page, rect, placement)
+            elif page_num == 1:
+                self._add_total_score_stamp(page, graded)
+                self._add_overall_feedback_stamp(page, graded)
 
             # Add smart-placed feedback annotations
             if page_num in boxes_by_page:
-                for rect, feedback_text in boxes_by_page[page_num]:
-                    self._add_feedback_annotation(page, rect, feedback_text, graded)
+                for rect, placement in boxes_by_page[page_num]:
+                            self._add_feedback_annotation(
+                                page,
+                                rect,
+                                placement.question_id,
+                                getattr(placement, "label_text", None),
+                                placement.feedback_text,
+                                graded,
+                                font_size_override=getattr(placement, "font_size", None),
+                                text_color=getattr(placement, "text_color", None),
+                                bold_override=getattr(placement, "bold", False),
+                                italic_override=getattr(placement, "italic", False),
+                                boxed=getattr(placement, "boxed", False),
+                            )
 
     def _add_feedback_annotation(
         self,
         page: fitz.Page,
         rect: fitz.Rect,
+        question_id: str,
+        label_text: Optional[str],
         feedback_text: str,
-        graded: GradedCopy
+        graded: GradedCopy,
+        font_size_override: Optional[int] = None,
+        text_color: Optional[str] = None,
+        bold_override: Optional[bool] = None,
+        italic_override: Optional[bool] = None,
+        boxed: bool = False,
     ):
         """
         Add a feedback annotation at the specified position.
@@ -281,40 +362,54 @@ class PDFAnnotator:
         Args:
             page: PDF page
             rect: Rectangle for annotation
+            question_id: Question identifier
             feedback_text: Feedback text to display
             graded: Graded copy (for context/color)
         """
-        # Draw light background
-        page.draw_rect(
-            rect,
-            color=(0.6, 0.8, 1.0),  # Blue border
-            fill=(0.95, 0.98, 1.0),  # Very light blue fill
-            width=1.0
-        )
-
-        # Calculate text layout
-        font_size = 8
+        header = self._format_annotation_header(question_id, graded, label_text=label_text)
+        full_text = f"{header} {feedback_text}".strip() if header else feedback_text
+        preferred_font_size = max(7, min(18, int(font_size_override or 10)))
+        font_size, lines = self._fit_annotation_text_to_rect(full_text, rect, preferred_font_size=preferred_font_size)
         line_height = font_size + 3
-        margin = 4
-        max_width = rect.width - (margin * 2)
+        color = _hex_to_pdf_color(text_color or "#B0121F")
+        bold = bool(bold_override)
+        italic = bool(italic_override)
 
-        # Word wrap the feedback
-        lines = self._wrap_text(feedback_text, max_width, font_size)
+        if boxed:
+            page.draw_rect(rect, color=color, width=1)
 
         # Draw each line
-        y_pos = rect.y0 + margin + font_size
+        y_pos = rect.y0 + font_size
         for line in lines:
-            if y_pos > rect.y1 - margin:
+            if y_pos > rect.y1:
                 break  # Stop if we exceed the box height
             self._add_text(
                 page,
                 line,
-                rect.x0 + margin,
+                rect.x0,
                 y_pos,
                 size=font_size,
-                color=(0.1, 0.2, 0.4)
+                bold=bold,
+                italic=italic,
+                color=color
             )
             y_pos += line_height
+
+    def _format_annotation_header(self, question_id: str, graded: GradedCopy, label_text: Optional[str] = None) -> str:
+        """Format the question label with earned points for inline annotations."""
+        if question_id.startswith("__"):
+            return ""
+        base_label = (label_text or "").strip()
+        grade = graded.grades.get(question_id)
+        max_points = graded.max_points_by_question.get(question_id)
+
+        if grade is None:
+            return base_label
+        if max_points is None:
+            return f"{base_label} ({grade:.1f})".strip()
+
+        max_display = int(max_points) if max_points == int(max_points) else max_points
+        return f"{base_label} ({grade:.1f}/{max_display})".strip()
 
     def _wrap_text(self, text: str, max_width: float, font_size: int) -> List[str]:
         """
@@ -357,6 +452,54 @@ class PDFAnnotator:
             lines.append(current_line)
 
         return lines if lines else [text[:max_chars]]
+
+    def _fit_annotation_text_to_rect(
+        self,
+        text: str,
+        rect: fitz.Rect,
+        preferred_font_size: int = 8,
+        min_font_size: int = 6,
+    ) -> Tuple[int, List[str]]:
+        """Fit annotation text into its box by shrinking modestly, then truncating."""
+        available_height = max(rect.height - 2.0, 1.0)
+
+        for font_size in range(preferred_font_size, min_font_size - 1, -1):
+            line_height = font_size + 3
+            max_lines = max(1, int(available_height // line_height))
+            lines = self._wrap_text(text, rect.width, font_size)
+            if len(lines) <= max_lines:
+                return font_size, lines
+
+        font_size = min_font_size
+        line_height = font_size + 3
+        max_lines = max(1, int(available_height // line_height))
+        lines = self._wrap_text(text, rect.width, font_size)
+        return font_size, self._truncate_annotation_lines(lines, max_lines, rect.width, font_size)
+
+    def _truncate_annotation_lines(
+        self,
+        lines: List[str],
+        max_lines: int,
+        max_width: float,
+        font_size: int,
+    ) -> List[str]:
+        """Truncate wrapped lines cleanly without adding visible markers."""
+        if len(lines) <= max_lines:
+            return lines
+        if max_lines <= 0:
+            return []
+
+        visible = list(lines[:max_lines])
+        visible[-1] = self._truncate_line_to_width(visible[-1], max_width, font_size)
+        return visible
+
+    def _truncate_line_to_width(self, text: str, max_width: float, font_size: int) -> str:
+        """Trim a single line until it fits the available width."""
+        char_width = max(font_size * 0.5, 1.0)
+        max_chars = max(1, int(max_width / char_width))
+        if len(text) <= max_chars:
+            return text
+        return text[:max_chars].rstrip()
 
     def _add_cover_page(
         self,
@@ -425,21 +568,8 @@ class PDFAnnotator:
         graded: GradedCopy
     ):
         """Annotate a single page."""
-        # Find blank areas for annotations
-        zones = self._find_annotation_zones(page)
-
-        # Add question grades if we have zone info
-        # For now, add a summary in the margin
-
-        rect = fitz.Rect(page.rect.width - 80, 50, page.rect.width - 10, 200)
-
-        # Add summary box
-        self._add_annotation_box(
-            page,
-            rect,
-            f"Page {page_num + 1}",
-            f"Total: {graded.total_score:.1f}/{graded.max_score:.1f}"
-        )
+        if page_num == 0:
+            self._add_total_score_stamp(page, graded)
 
     def _find_annotation_zones(self, page: fitz.Page) -> List[fitz.Rect]:
         """
@@ -487,15 +617,15 @@ class PDFAnnotator:
         y: float,
         size: int = ANNOTATION_FONT_SIZE,
         bold: bool = False,
+        italic: bool = False,
         color: Tuple[float, float, float] = (0, 0, 0)
     ):
         """Add text to a page."""
-        # Use helv for normal, helv-bold doesn't exist, so we just use helvetica
-        fontname = "helv" if not bold else "hebo"  # hebo is helvetica bold outline
+        fontname = _font_name(bold=bold, italic=italic)
         page.insert_text(
             (x, y),
             text,
-            fontname="helv",
+            fontname=fontname,
             fontsize=size,
             color=color
         )
@@ -507,6 +637,7 @@ class PDFAnnotator:
         y: float,
         size: int = ANNOTATION_FONT_SIZE,
         bold: bool = False,
+        italic: bool = False,
         color: Tuple[float, float, float] = (0, 0, 0)
     ):
         """Add centered text to a page."""
@@ -516,10 +647,111 @@ class PDFAnnotator:
         page.insert_text(
             (x, y),
             text,
-            fontname="helv",
+            fontname=_font_name(bold=bold, italic=italic),
             fontsize=size,
             color=color
         )
+
+    def _add_total_score_stamp(self, page: fitz.Page, graded: GradedCopy) -> None:
+        """Add the total score prominently at the top of the first student page."""
+        max_display = int(graded.max_score) if graded.max_score == int(graded.max_score) else graded.max_score
+        score_text = f"Note : {graded.total_score:.1f}/{max_display}"
+        x = max(24, page.rect.width - 180)
+        y = 28
+        self._add_text(page, score_text, x, y, size=16, bold=True, color=PROFESSOR_RED)
+
+    def _add_overall_feedback_stamp(self, page: fitz.Page, graded: GradedCopy) -> None:
+        """Add the overall student feedback near the top of the first page."""
+        if not graded.feedback:
+            return
+
+        summary = " ".join(graded.feedback.split())
+        lines = self._wrap_text(summary, max_width=page.rect.width - 48, font_size=10)[:3]
+        if not lines:
+            return
+
+        y = 52
+        for line in lines:
+            self._add_text(page, line, 24, y, size=10, color=PROFESSOR_RED)
+            y += 12
+
+    def _build_reserved_rects_by_page(
+        self,
+        doc: fitz.Document,
+        graded: GradedCopy,
+        first_student_page_index: int,
+        meta_boxes_by_page: Dict[int, List[Tuple[fitz.Rect, Any]]] | None = None,
+    ) -> Dict[int, List[fitz.Rect]]:
+        """Reserve the header band used by the score and overall feedback."""
+        if meta_boxes_by_page:
+            return {
+                page_index: [fitz.Rect(rect) for rect, _ in boxes]
+                for page_index, boxes in meta_boxes_by_page.items()
+            }
+        if first_student_page_index < 0 or first_student_page_index >= len(doc):
+            return {}
+
+        page = doc[first_student_page_index]
+        header_bottom = 52.0
+        if graded.feedback:
+            summary = " ".join(graded.feedback.split())
+            lines = self._wrap_text(summary, max_width=page.rect.width - 48, font_size=10)[:3]
+            header_bottom += (len(lines) * 12.0) + 8.0
+        else:
+            header_bottom += 8.0
+
+        return {
+            first_student_page_index: [
+                fitz.Rect(
+                    12.0,
+                    12.0,
+                    page.rect.width - 12.0,
+                    min(page.rect.height - 12.0, header_bottom),
+                )
+            ]
+        }
+
+    def _split_annotations(self, annotations: "CopyAnnotations") -> Tuple["CopyAnnotations", "CopyAnnotations"]:
+        from export.annotation_service import CopyAnnotations
+
+        meta = [placement for placement in annotations.placements if placement.question_id.startswith("__")]
+        questions = [placement for placement in annotations.placements if not placement.question_id.startswith("__")]
+        return (
+            CopyAnnotations(copy_id=annotations.copy_id, student_name=annotations.student_name, placements=questions),
+            CopyAnnotations(copy_id=annotations.copy_id, student_name=annotations.student_name, placements=meta),
+        )
+
+    def _create_meta_boxes(
+        self,
+        annotations: "CopyAnnotations",
+        doc: fitz.Document,
+        page_number_offset: int = 0,
+    ) -> Dict[int, List[Tuple[fitz.Rect, Any]]]:
+        from export.annotation_service import _build_annotation_rect
+
+        boxes: Dict[int, List[Tuple[fitz.Rect, Any]]] = {}
+        for placement in annotations.placements:
+            page_index = max(0, min(placement.page_number - 1 + page_number_offset, len(doc) - 1))
+            page = doc[page_index]
+            rect = _build_annotation_rect(placement, page.rect.width, page.rect.height)
+            boxes.setdefault(page_index, []).append((rect, placement))
+        return boxes
+
+    def _add_meta_annotation(self, page: fitz.Page, rect: fitz.Rect, placement: Any) -> None:
+        font_size = max(7, min(22, int(getattr(placement, "font_size", 16 if placement.question_id == "__total_score__" else 10))))
+        bold = bool(getattr(placement, "bold", placement.question_id == "__total_score__"))
+        italic = bool(getattr(placement, "italic", False))
+        line_height = font_size + (3 if bold else 2)
+        lines = self._wrap_text(placement.feedback_text, rect.width, font_size)
+        y_pos = rect.y0 + font_size
+        color = _hex_to_pdf_color(getattr(placement, "text_color", "#B0121F"))
+        if getattr(placement, "boxed", False):
+            page.draw_rect(rect, color=color, width=1)
+        for line in lines:
+            if y_pos > rect.y1:
+                break
+            self._add_text(page, line, rect.x0, y_pos, size=font_size, bold=bold, italic=italic, color=color)
+            y_pos += line_height
 
     def _add_line(self, page: fitz.Page, y: float, margin: float = 50):
         """Add a horizontal line."""

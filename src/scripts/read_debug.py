@@ -15,18 +15,24 @@ from pathlib import Path
 from typing import Optional
 import argparse
 
+from config.constants import DATA_DIR
+
+
+def _iter_session_debug_candidates(session_id: str):
+    """Yield possible debug log paths for a session across all user spaces."""
+    sessions_root = Path(DATA_DIR) / "sessions"
+    if not sessions_root.exists():
+        return
+
+    for user_dir in sorted(path for path in sessions_root.iterdir() if path.is_dir()):
+        yield user_dir.name, user_dir / session_id / "debug" / "debug_log.json"
+
 
 def find_debug_log(session_id: str) -> Optional[Path]:
     """Trouve le fichier debug_log.json pour une session."""
-    base_path = Path(__file__).parent.parent.parent / "data" / session_id / "debug" / "debug_log.json"
-    if base_path.exists():
-        return base_path
-
-    # Essayer dans outputs/
-    alt_path = Path(__file__).parent.parent.parent / "outputs" / session_id / "debug" / "debug_log.json"
-    if alt_path.exists():
-        return alt_path
-
+    for _, candidate in _iter_session_debug_candidates(session_id) or []:
+        if candidate.exists():
+            return candidate
     return None
 
 
@@ -133,8 +139,10 @@ def main():
     if not debug_path:
         print(f"❌ Fichier debug non trouvé pour la session: {args.session_id}")
         print("\nCherché dans:")
-        print(f"  - data/{args.session_id}/debug/debug_log.json")
-        print(f"  - outputs/{args.session_id}/debug/debug_log.json")
+        for user_id, candidate in _iter_session_debug_candidates(args.session_id) or []:
+            print(f"  - {candidate}")
+        if not (Path(DATA_DIR) / "sessions").exists():
+            print(f"  - {Path(DATA_DIR) / 'sessions' / '<user_id>' / args.session_id / 'debug' / 'debug_log.json'}")
         sys.exit(1)
 
     print(f"📄 Fichier: {debug_path}")

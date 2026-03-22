@@ -3,19 +3,21 @@ Simplified storage system - single directory per session.
 
 Architecture:
     data/
-    ├── {session_id}/
-    │   ├── session.json          # État complet session
-    │   ├── policy.json           # Politique de correction
-    │   ├── diagnostic.json       # Diagnostic PDF (structure, barème)
-    │   ├── cache/                # Cache d'analyse
-    │   ├── copies/
-    │   │   └── {copy_number}/
-    │   │       ├── original.pdf      # PDF original
-    │   │       ├── annotation.json   # Infos essentielles pour annotation
-    │   │       └── audit.json        # TOUT: échanges LLM, raisonnements, etc.
-    │   ├── annotated/            # PDFs annotés (export)
-    │   └── reports/              # Exports finaux (dérivés)
-    └── _index.json               # Index des sessions
+    └── sessions/
+        └── {user_id}/
+            ├── _index.json           # Index des sessions de l'utilisateur
+            └── {session_id}/
+                ├── session.json      # État complet session
+                ├── policy.json       # Politique de correction
+                ├── detection.json    # Détection PDF (structure, barème)
+                ├── cache/            # Cache d'analyse
+                ├── copies/
+                │   └── {copy_number}/
+                │       ├── original.pdf      # PDF original
+                │       ├── annotation.json   # Infos essentielles pour annotation
+                │       └── audit.json        # TOUT: échanges LLM, raisonnements, etc.
+                ├── annotated/        # PDFs annotés (export)
+                └── reports/          # Exports finaux (dérivés)
 
 Fichiers par copie:
 - annotation.json: Essentiel pour annoter (notes, feedbacks)
@@ -40,7 +42,7 @@ from core.models import (
 from core.exceptions import SerializationError, ValidationFailedError
 from config.constants import (
     DATA_DIR, SESSIONS_INDEX,
-    SESSION_JSON, POLICY_JSON, CLUSTERS_JSON, AUDIT_LOG,
+    SESSION_JSON, POLICY_JSON, AUDIT_LOG,
     GRADES_CSV, FULL_REPORT_JSON
 )
 
@@ -280,6 +282,12 @@ class SessionStore:
         with open(annotation_file, 'r', encoding='utf-8') as f:
             return json.load(f)
 
+    def save_annotation_data(self, copy_number: str, data: Dict[str, Any]) -> None:
+        """Persist the full annotation.json payload for a copy."""
+        copy_dir = self.session_dir / "copies" / str(copy_number)
+        copy_dir.mkdir(parents=True, exist_ok=True)
+        self._save_json(copy_dir / "annotation.json", data)
+
     def list_copies(self) -> List[str]:
         """Liste les numéros de copies."""
         copies_dir = self.session_dir / "copies"
@@ -437,10 +445,6 @@ class SessionStore:
         detection_file = self.session_dir / "detection.json"
 
         if not detection_file.exists():
-            # Fallback to old diagnostic.json for migration
-            old_file = self.session_dir / "diagnostic.json"
-            if old_file.exists():
-                return self._migrate_from_diagnostic(old_file)
             return None
 
         try:
@@ -458,43 +462,11 @@ class SessionStore:
         except Exception as e:
             raise ValidationFailedError(f"DetectionResult validation failed: {e}", {"file": str(detection_file)})
 
-    def _migrate_from_diagnostic(self, old_file: Path) -> Optional[DetectionResult]:
-        """Migrate from old diagnostic.json format to new detection.json."""
-        try:
-            with open(old_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            # Convert old field names to new ones
-            if 'analysis_id' in data:
-                data['detection_id'] = data.pop('analysis_id')
-            if 'analysis_duration_ms' in data:
-                data['detection_duration_ms'] = data.pop('analysis_duration_ms')
-            if 'analyzed_at' in data:
-                data['detected_at'] = data.pop('analyzed_at')
-            if 'cached' in data:
-                del data['cached']  # Remove deprecated field
-            if 'mode' not in data:
-                data['mode'] = 'interactive'
-
-            result = DetectionResult(**data)
-
-            # Save in new format
-            self.save_detection(result)
-
-            # Remove old file
-            old_file.unlink()
-
-            return result
-        except Exception as e:
-            logger.warning(f"Failed to migrate diagnostic.json: {e}")
-            return None
-
     def clear_detection(self) -> None:
         """Remove persisted detection files for the session."""
-        for filename in ("detection.json", "diagnostic.json"):
-            file_path = self.session_dir / filename
-            if file_path.exists():
-                file_path.unlink()
+        detection_file = self.session_dir / "detection.json"
+        if detection_file.exists():
+            detection_file.unlink()
 
     def clear_processing_artifacts(self) -> None:
         """Clear derived artifacts generated from uploaded documents."""
@@ -628,9 +600,9 @@ class SessionStore:
         """Met à jour l'index global des sessions avec verrouillage fichier."""
         # Use user-specific index file if user_id is set
         if self.user_id:
-            index_file = self.base_dir / self.user_id / SESSIONS_INDEX
+            index_file = self.base_dir / "sessions" / self.user_id / SESSIONS_INDEX
         else:
-            index_file = self.base_dir / SESSIONS_INDEX
+            index_file = self.base_dir / "sessions" / SESSIONS_INDEX
 
         # Ensure base directory exists
         index_file.parent.mkdir(parents=True, exist_ok=True)
@@ -700,9 +672,9 @@ class SessionIndex:
 
         # User-specific index file if user_id is set
         if user_id:
-            self.index_file = self.base_dir / user_id / SESSIONS_INDEX
+            self.index_file = self.base_dir / "sessions" / user_id / SESSIONS_INDEX
         else:
-            self.index_file = self.base_dir / SESSIONS_INDEX
+            self.index_file = self.base_dir / "sessions" / SESSIONS_INDEX
 
     def list_sessions(self) -> List[str]:
         """Liste toutes les sessions de l'utilisateur."""
@@ -749,8 +721,18 @@ class SessionIndex:
 
         cleaned = 0
         for session_id in list(index.keys()):
-            session_dir = self.index_file.parent / session_id
-            if not session_dir.exists() or not (session_dir / SESSION_JSON).exists():
+            if self.user_id:
+                session_dir = self.base_dir / "sessions" / self.user_id / session_id
+            else:
+                # Global index is not authoritative. Drop entries that no longer exist anywhere.
+                session_dir = None
+                sessions_root = self.base_dir / "sessions"
+                for user_dir in sessions_root.iterdir() if sessions_root.exists() else []:
+                    candidate = user_dir / session_id
+                    if candidate.exists() and (candidate / SESSION_JSON).exists():
+                        session_dir = candidate
+                        break
+            if session_dir is None or not session_dir.exists() or not (session_dir / SESSION_JSON).exists():
                 del index[session_id]
                 cleaned += 1
 

@@ -156,6 +156,7 @@ class BatchCopyResult:
     questions: Dict[str, Dict[str, Any]]  # {Q1: {grade, reading, feedback, ...}}
     overall_feedback: str = ""
     image_paths: List[str] = field(default_factory=list)  # Paths to copy images
+    pages: List[int] = field(default_factory=list)  # 1-based page numbers in original PDF
 
     # Position in original PDF (1-based page numbers) for page-based matching
     pdf_start_page: Optional[int] = None
@@ -175,6 +176,7 @@ class BatchCopyResult:
             "questions": self.questions,
             "overall_feedback": self.overall_feedback,
             "image_paths": self.image_paths,
+            "pages": self.pages,
             "pdf_start_page": self.pdf_start_page,
             "pdf_end_page": self.pdf_end_page
         }
@@ -313,6 +315,14 @@ class BatchGrader:
                 for copy_data in data.get('copies', []):
                     copy_index = copy_data.get('copy_index', 0)
                     student_name = copy_data.get('student_name')
+                    raw_pages = copy_data.get('pages', []) or []
+                    detected_pages = []
+                    for page in raw_pages:
+                        try:
+                            detected_pages.append(int(page))
+                        except (TypeError, ValueError):
+                            continue
+                    detected_pages = sorted(set(page for page in detected_pages if page > 0))
 
                     # Parse questions
                     questions = {}
@@ -335,6 +345,9 @@ class BatchGrader:
                     input_copy = copies_by_index.get(copy_index, {})
                     pdf_start_page = input_copy.get('start_page')
                     pdf_end_page = input_copy.get('end_page')
+                    if detected_pages:
+                        pdf_start_page = pdf_start_page or detected_pages[0]
+                        pdf_end_page = pdf_end_page or detected_pages[-1]
 
                     # In batch mode, all input images are shared across detected copies
                     # (the LLM sees all pages and detects students from them)
@@ -344,6 +357,7 @@ class BatchGrader:
                         questions=questions,
                         overall_feedback=copy_data.get('overall_feedback', ''),
                         image_paths=all_input_images,  # All copies see all images
+                        pages=detected_pages,
                         pdf_start_page=pdf_start_page,
                         pdf_end_page=pdf_end_page
                     ))

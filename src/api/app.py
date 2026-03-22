@@ -4,15 +4,20 @@ FastAPI application.
 Provides the public grading API with WebSocket support for real-time progress.
 """
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, WebSocket, WebSocketDisconnect, Depends, Security, Request, status
-from fastapi.security import APIKeyHeader
+from contextlib import asynccontextmanager
+
+import asyncio
+
+from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Depends, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
+from slowapi.middleware import SlowAPIMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from pathlib import Path
+from datetime import datetime
 import shutil
 import uuid
 import re
@@ -54,7 +59,6 @@ from core.session import GradingSessionOrchestrator
 from core.services.document_preparation_service import DocumentPreparationService
 from core.services.review_context_service import ReviewContextService
 from storage.session_store import SessionStore
-from api.websocket import manager as ws_manager
 from api.schemas import (
     CreateSessionRequest, SessionResponse, SessionDetailResponse,
     GradeResponse, TeacherDecisionRequest,
@@ -66,16 +70,33 @@ from api.schemas import (
     StartGradingRequest, UpdateGradeRequest, UpdateGradeResponse, UpdateStudentNameRequest,
     UpdateSessionSubjectRequest, UpdateQuestionWeightRequest, UpdateQuestionWeightResponse,
     UpdateQuestionNameRequest, UpdateQuestionNameResponse,
-    SessionDocumentResponse, UpdateSessionDocumentRequest, ConfirmSessionDocumentsResponse
+    SessionDocumentResponse, UpdateSessionDocumentRequest, ConfirmSessionDocumentsResponse,
+    AnnotateSessionResponse,
+    AnnotationEditorSessionResponse, AnnotationEditorCopyResponse,
+    AnnotationEditorQuestionResponse, AnnotationPlacementResponse,
+    UpdateAnnotationPlacementsRequest,
 )
 
 # Import auth module
-from api.auth import PUBLIC_USER_ID, get_current_user, get_admin_user
+from api.auth import (
+    SESSION_COOKIE_NAME,
+    extract_user_id_from_cookie_value,
+    get_current_user,
+    get_admin_user,
+)
 from db import SessionLocal, User
+from db import SessionJobStatus
 
 # Import token deduction service
 from services.token_service import TokenDeductionService
 from services.token_service import InsufficientTokensError, UserNotFoundError, DeductionError
+from services.job_service import (
+    ACTIVE_JOB_STATUSES,
+    JobConflictError,
+    JobService,
+    build_job_progress_snapshot,
+    serialize_job_event,
+)
 
 # Import health check router
 from api.health import router as health_router
@@ -97,66 +118,324 @@ from asgi_correlation_id import CorrelationIdMiddleware
 # Import structured logging
 from loguru import logger
 from config.logging_config import setup_structured_logging
+from config.constants import DATA_DIR
 from vision.pdf_reader import PDFReader
+from utils.sorting import question_sort_key
 
 # Import stdlib logger for compatibility
 stdlib_logger = logging.getLogger(__name__)
 
-# ============================================================================
-# WebSocket Progress Event Types
-# ============================================================================
 
-# Progress event types for real-time grading updates
-PROGRESS_EVENT_COPY_START = "copy_start"
-PROGRESS_EVENT_QUESTION_DONE = "question_done"
-PROGRESS_EVENT_COPY_DONE = "copy_done"
-PROGRESS_EVENT_COPY_ERROR = "copy_error"
-PROGRESS_EVENT_SESSION_COMPLETE = "session_complete"
-PROGRESS_EVENT_SESSION_ERROR = "session_error"
-
-# API Key authentication
-API_KEY_NAME = "X-API-Key"
-api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+def get_annotation_status(store: SessionStore) -> tuple[bool, int]:
+    """Return whether annotated PDFs exist for the session and how many."""
+    annotated_dir = store.session_dir / "annotated"
+    if not annotated_dir.exists():
+        return False, 0
+    count = sum(1 for path in annotated_dir.glob("*.pdf") if path.is_file())
+    return count > 0, count
 
 
-def get_api_key(api_key: str = Security(api_key_header)) -> str:
-    """Verify API key from header."""
-    expected_key = os.getenv("AI_CORRECTION_API_KEY", "")
+def list_annotation_files(store: SessionStore) -> list[str]:
+    """Return sorted annotated PDF filenames for the session."""
+    annotated_dir = store.session_dir / "annotated"
+    if not annotated_dir.exists():
+        return []
+    return sorted(
+        path.name
+        for path in annotated_dir.glob("*.pdf")
+        if path.is_file()
+    )
 
-    # If no API key is configured, allow all requests (development mode)
-    if not expected_key:
-        return "dev_mode"
 
-    if not api_key or api_key != expected_key:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or missing API key"
+def list_overlay_files(store: SessionStore) -> list[str]:
+    """Return sorted annotation overlay filenames for the session."""
+    overlay_dir = store.session_dir / "overlays"
+    if not overlay_dir.exists():
+        return []
+    return sorted(
+        path.name
+        for path in overlay_dir.glob("*.pdf")
+        if path.is_file()
+    )
+
+
+def has_manual_annotation_changes(store: SessionStore, session: GradingSession) -> bool:
+    """Return True when at least one copy has manually edited annotation placements."""
+    for copy in session.copies:
+        annotation_payload = store.load_annotation(copy.id) or {}
+        saved = annotation_payload.get("annotation_placements")
+        if not isinstance(saved, dict) or saved.get("source") != "manual":
+            continue
+        updated_at = saved.get("updated_at")
+        synced_to_pdf_at = saved.get("synced_to_pdf_at")
+        if not synced_to_pdf_at:
+            return True
+        if isinstance(updated_at, str) and updated_at > synced_to_pdf_at:
+            return True
+    return False
+
+
+def has_pending_annotation_regeneration(store: SessionStore, session: GradingSession) -> bool:
+    """Return True when annotated PDFs are stale and should be regenerated."""
+    if has_manual_annotation_changes(store, session):
+        return True
+
+    if not session.annotations_generated_at:
+        return False
+
+    if (
+        session.annotations_invalidated_at
+        and session.annotations_invalidated_at > session.annotations_generated_at
+    ):
+        return True
+
+    return False
+
+
+def invalidate_annotation_exports(session: GradingSession) -> None:
+    """Mark generated annotation PDFs as stale after grading data changes."""
+    if session.annotations_generated_at:
+        session.annotations_invalidated_at = datetime.now()
+
+
+def serialize_annotation_placement(placement) -> dict[str, Any]:
+    """Convert an AnnotationPlacement dataclass to a JSON-serializable dict."""
+    return {
+        "question_id": placement.question_id,
+        "label_text": placement.label_text,
+        "feedback_text": placement.feedback_text,
+        "page_number": placement.page_number,
+        "x_percent": placement.x_percent,
+        "y_percent": placement.y_percent,
+        "width_percent": placement.width_percent,
+        "height_percent": placement.height_percent,
+        "font_size": placement.font_size,
+        "text_color": placement.text_color,
+        "bold": placement.bold,
+        "italic": placement.italic,
+        "boxed": placement.boxed,
+        "placement": placement.placement,
+        "confidence": placement.confidence,
+        "placement_source": placement.placement_source,
+        "page_validated": placement.page_validated,
+        "page_correction_reason": placement.page_correction_reason,
+    }
+
+
+def load_saved_copy_annotations(store: SessionStore, copy_id: str):
+    """Load saved annotation placements from annotation.json when present."""
+    from export.annotation_service import AnnotationPlacement, CopyAnnotations
+
+    annotation_payload = store.load_annotation(copy_id) or {}
+    saved = annotation_payload.get("annotation_placements")
+    if not isinstance(saved, dict):
+        return None
+
+    placements = []
+    for item in saved.get("placements", []):
+        if not isinstance(item, dict):
+            continue
+        placements.append(AnnotationPlacement(**item))
+
+    return CopyAnnotations(
+        copy_id=saved.get("copy_id") or copy_id,
+        student_name=saved.get("student_name"),
+        placements=placements,
+    )
+
+
+def save_copy_annotations(store: SessionStore, copy_id: str, annotations, source: str) -> None:
+    """Persist annotation placements into annotation.json."""
+    annotation_payload = store.load_annotation(copy_id) or {}
+    annotation_payload["annotation_placements"] = {
+        "copy_id": annotations.copy_id,
+        "student_name": annotations.student_name,
+        "source": source,
+        "updated_at": datetime.now().isoformat(),
+        "placements": [serialize_annotation_placement(p) for p in annotations.placements],
+    }
+    store.save_annotation_data(copy_id, annotation_payload)
+
+
+def mark_copy_annotations_synced(store: SessionStore, copy_id: str) -> None:
+    """Mark saved annotation placements as reflected in generated PDFs."""
+    annotation_payload = store.load_annotation(copy_id) or {}
+    saved = annotation_payload.get("annotation_placements")
+    if not isinstance(saved, dict):
+        return
+    saved["synced_to_pdf_at"] = datetime.now().isoformat()
+    annotation_payload["annotation_placements"] = saved
+    store.save_annotation_data(copy_id, annotation_payload)
+
+
+def _format_total_score_text(graded) -> str:
+    max_display = int(graded.max_score) if graded.max_score == int(graded.max_score) else graded.max_score
+    return f"Note : {graded.total_score:.1f}/{max_display}"
+
+
+def _default_meta_placements(graded):
+    from export.annotation_service import AnnotationPlacement
+
+    placements = [
+        AnnotationPlacement(
+            question_id="__total_score__",
+            label_text="",
+            feedback_text=_format_total_score_text(graded),
+            page_number=1,
+            x_percent=68.0,
+            y_percent=2.5,
+            width_percent=28.0,
+            height_percent=5.0,
+            font_size=16,
+            text_color="#B0121F",
+            bold=True,
+            italic=False,
+            boxed=True,
+            placement="header",
+            confidence=1.0,
+            placement_source="system",
+            page_validated=True,
         )
-    return api_key
+    ]
+    if graded.feedback:
+        placements.append(
+            AnnotationPlacement(
+                question_id="__overall_feedback__",
+                label_text="",
+                feedback_text=graded.feedback,
+                page_number=1,
+                x_percent=4.0,
+                y_percent=6.5,
+                width_percent=88.0,
+                height_percent=12.0,
+                font_size=10,
+                text_color="#B0121F",
+                bold=False,
+                italic=False,
+                boxed=False,
+                placement="header",
+                confidence=1.0,
+                placement_source="system",
+                page_validated=True,
+            )
+        )
+    return placements
 
 
-def verify_websocket_session_access(session_id: str) -> Optional[str]:
-    """Validate WebSocket access within the shared public workspace."""
-    store = SessionStore(session_id, user_id=PUBLIC_USER_ID)
+def build_copy_annotations_for_editor(store: SessionStore, session: GradingSession, copy, graded):
+    """Load existing placements or generate them once for the editor."""
+    from export.annotation_service import CopyAnnotations
+    from export.pdf_annotator import PDFAnnotator
+
+    saved = load_saved_copy_annotations(store, copy.id)
+    if saved is not None:
+        existing_ids = {placement.question_id for placement in saved.placements}
+        for meta in _default_meta_placements(graded):
+            if meta.question_id not in existing_ids:
+                saved.placements.append(meta)
+        return saved
+
+    annotator = PDFAnnotator(session=session)
+    generated = annotator.prepare_annotations(
+        copy=copy,
+        graded=graded,
+        smart_placement=False,
+        language="fr",
+    )
+    annotations = CopyAnnotations(
+        copy_id=generated.copy_id,
+        student_name=generated.student_name,
+        placements=[*_default_meta_placements(graded), *generated.placements],
+    )
+    save_copy_annotations(store, copy.id, annotations, source="generated")
+    return annotations
+
+def verify_websocket_session_access(session_id: str, session_cookie: str | None) -> Optional[str]:
+    """Validate WebSocket access against the signed browser session cookie."""
+    user_id = extract_user_id_from_cookie_value(session_cookie)
+    if not user_id:
+        return None
+    store = SessionStore(session_id, user_id=user_id)
     if not store.exists():
         return None
-    return PUBLIC_USER_ID
+    return user_id
 
 
-def serialize_progress_for_client(progress: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip internal fields before sending progress state to the client."""
-    return {
-        "status": progress.get("status"),
-        "copies_uploaded": progress.get("copies_uploaded", 0),
-        "copies_graded": progress.get("copies_graded", 0),
-        "grading_mode": progress.get("grading_mode", "dual"),
-        "error": progress.get("error"),
-    }
+def get_latest_session_job(session_id: str, user_id: str):
+    """Load the latest persisted job for a session."""
+    db = SessionLocal()
+    try:
+        return JobService(db).get_latest_session_job(session_id, user_id=user_id)
+    finally:
+        db.close()
+
+
+def get_session_progress_snapshot(session_id: str, user_id: str, session: GradingSession) -> dict[str, Any]:
+    """Build the persisted progress payload returned over WebSocket."""
+    job = get_latest_session_job(session_id, user_id)
+    copies_uploaded = len(session.copies or [])
+    if not copies_uploaded:
+        copies_uploaded = len(get_session_copy_documents(session))
+    grading_mode = session.requested_llm_mode or infer_session_llm_mode(session) or "dual"
+    return build_job_progress_snapshot(
+        session_status=session.status.value if hasattr(session.status, "value") else str(session.status),
+        copies_uploaded=copies_uploaded,
+        grading_mode=grading_mode,
+        job=job,
+    )
+
+
+def reconcile_session_runtime_state(store: SessionStore, session_id: str, user_id: str, session: GradingSession) -> GradingSession:
+    """Repair persisted session status based on the latest durable job state."""
+    latest_job = get_latest_session_job(session_id, user_id)
+
+    if latest_job and latest_job.status in ACTIVE_JOB_STATUSES:
+        if session.status != SessionStatus.CORRECTION:
+            session.status = SessionStatus.CORRECTION
+            store.save_session(session)
+        return session
+
+    if latest_job and latest_job.status == SessionJobStatus.COMPLETED:
+        if session.status != SessionStatus.COMPLETE:
+            session.status = SessionStatus.COMPLETE
+            store.save_session(session)
+        return session
+
+    if latest_job and latest_job.status == SessionJobStatus.FAILED:
+        if session.status != SessionStatus.ERROR:
+            session.status = SessionStatus.ERROR
+            store.save_session(session)
+        return session
+
+    if session.status == SessionStatus.CORRECTION:
+        if session.graded_copies:
+            session.status = SessionStatus.COMPLETE
+        else:
+            session.status = SessionStatus.DIAGNOSTIC
+        store.save_session(session)
+
+    return session
+
+
+def infer_session_llm_mode(session: GradingSession) -> Optional[str]:
+    """Infer single/dual mode from stored graded copy audits when available."""
+    for graded in session.graded_copies:
+        if graded.grading_audit and graded.grading_audit.mode in {"single", "dual"}:
+            return graded.grading_audit.mode
+    return None
+
+
+def get_llm_mode_warning(session: GradingSession) -> Optional[str]:
+    """Return a visible warning when requested and actual grading modes diverge."""
+    actual_mode = infer_session_llm_mode(session)
+    if session.requested_llm_mode == "dual" and actual_mode == "single":
+        return "Double correction demandée, mais correction simple exécutée."
+    return None
 
 
 def get_session_temp_dir(session_id: str) -> Path:
     """Return the temporary upload directory for a session."""
-    return Path("temp") / session_id
+    return Path(DATA_DIR) / "temp" / session_id
 
 
 def list_uploaded_pdfs(session_id: str) -> List[Path]:
@@ -735,6 +1014,12 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         # Extract correlation ID and user ID
         correlation_id = request.headers.get("X-Request-ID", "unknown")
         user_id = getattr(request.state, "user_id", None)
+        if user_id is None:
+            user_id = extract_user_id_from_cookie_value(request.cookies.get(SESSION_COOKIE_NAME))
+            if user_id:
+                request.state.user_id = user_id
+        if user_id:
+            set_user_context(user_id=user_id)
 
         # Start timer
         start_time = time.time()
@@ -793,10 +1078,46 @@ def create_app() -> FastAPI:
     """
     settings = get_settings()
 
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        """Initialize and validate runtime services for the API process."""
+        try:
+            runtime_settings = get_settings()
+            runtime_settings.validate_api_runtime_configuration()
+            # This will raise ValidationError if the provider configuration is invalid
+            stdlib_logger.info(f"Security configuration validated. Provider: {runtime_settings.ai_provider}")
+        except (ValidationError, ValueError) as e:
+            stdlib_logger.error(f"Configuration error: {e}")
+            raise SystemExit(1)
+
+        # Initialize structured logging (Loguru JSON)
+        setup_structured_logging(level="INFO")
+        logger.info("Structured logging initialized with correlation ID support")
+
+        # Initialize Sentry error tracking
+        init_sentry(
+            dsn=runtime_settings.sentry_dsn,
+            environment=runtime_settings.sentry_environment,
+            sample_rate=runtime_settings.sentry_traces_sample_rate,
+            debug=(runtime_settings.sentry_environment == "development")
+        )
+
+        # Initialize metrics collector
+        metrics_collector = get_metrics_collector()
+        app.state.metrics_collector = metrics_collector
+        logger.info("Metrics collector initialized")
+
+        from db import init_db
+        init_db()
+        stdlib_logger.info("Database initialized")
+
+        yield
+
     app = FastAPI(
         title="AI Correction System",
         description="API de correction automatique de copies par IA",
-        version="1.0.0"
+        version="1.0.0",
+        lifespan=lifespan,
     )
 
     # Configure rate limiting (use module-level limiter)
@@ -834,63 +1155,14 @@ def create_app() -> FastAPI:
     # Add correlation ID middleware (generates/reads X-Request-ID header)
     app.add_middleware(CorrelationIdMiddleware, validator=lambda x: True)
 
-    # Initialize database on startup
-    @app.on_event("startup")
-    async def startup_event():
-        """Fail fast if critical security settings are invalid."""
-        try:
-            settings = get_settings()
-            # This will raise ValidationError if the provider configuration is invalid
-            stdlib_logger.info(f"Security configuration validated. Provider: {settings.ai_provider}")
-        except ValidationError as e:
-            stdlib_logger.error(f"Configuration error: {e}")
-            raise SystemExit(1)
-
-        # Initialize structured logging (Loguru JSON)
-        setup_structured_logging(level="INFO")
-        logger.info("Structured logging initialized with correlation ID support")
-
-        # Initialize Sentry error tracking
-        init_sentry(
-            dsn=settings.sentry_dsn,
-            environment=settings.sentry_environment,
-            sample_rate=settings.sentry_traces_sample_rate,
-            debug=(settings.sentry_environment == "development")
-        )
-
-        # Initialize metrics collector
-        metrics_collector = get_metrics_collector()
-        app.state.metrics_collector = metrics_collector
-        logger.info("Metrics collector initialized")
-
-        from db import init_db
-        init_db()
-        stdlib_logger.info("Database initialized")
+    # Enforce global API rate limits for HTTP endpoints.
+    app.add_middleware(SlowAPIMiddleware)
 
     # Include health check router
     app.include_router(health_router, tags=["health"])
 
     if subscription_router is not None:
         app.include_router(subscription_router, prefix="/api")
-
-    # Session storage (in-memory for active grading)
-    active_sessions: Dict[str, GradingSessionOrchestrator] = {}
-    session_progress: Dict[str, Dict[str, Any]] = {}
-
-    # Max sessions kept in memory before cleanup of completed ones
-    MAX_ACTIVE_SESSIONS = 100
-
-    def _cleanup_completed_sessions():
-        """Remove completed/error sessions from memory to prevent leaks."""
-        if len(active_sessions) <= MAX_ACTIVE_SESSIONS:
-            return
-        to_remove = [
-            sid for sid, orch in active_sessions.items()
-            if orch.session.status in (SessionStatus.COMPLETE, SessionStatus.ERROR)
-        ]
-        for sid in to_remove:
-            active_sessions.pop(sid, None)
-            session_progress.pop(sid, None)
 
     # ============================================================================
     # WebSocket Endpoint
@@ -899,7 +1171,7 @@ def create_app() -> FastAPI:
     @app.websocket("/api/sessions/{session_id}/ws")
     async def websocket_progress(websocket: WebSocket, session_id: str):
         """
-        WebSocket for real-time grading progress with reconnection support.
+        WebSocket for real-time grading progress backed by persistent job events.
 
         Sends events:
         - copy_start: When a copy starts grading (copy_index, total_copies, student_name, stage)
@@ -910,46 +1182,78 @@ def create_app() -> FastAPI:
         - session_error: When session-level error occurs (error)
         - progress_sync: Current progress state (status, copies_uploaded, copies_graded, grading_mode)
         """
-        user_id = verify_websocket_session_access(session_id)
+        user_id = verify_websocket_session_access(
+            session_id,
+            websocket.cookies.get("ai_correction_session"),
+        )
         if not user_id:
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
 
-        await ws_manager.connect(websocket, session_id)
-        try:
-            # Send current progress state on connect (for reconnection)
-            if session_id in session_progress:
-                progress = session_progress[session_id]
-                if progress.get("user_id") != user_id:
-                    await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-                    return
-                await websocket.send_json({
-                    "type": "progress_sync",
-                    "data": serialize_progress_for_client(progress)
-                })
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+        if not session:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return
 
-            # Keep connection alive and handle client messages
+        session = reconcile_session_runtime_state(store, session_id, user_id, session)
+        await websocket.accept()
+
+        latest_job = get_latest_session_job(session_id, user_id)
+        progress_snapshot = get_session_progress_snapshot(session_id, user_id, session)
+        await websocket.send_json({
+            "type": "progress_sync",
+            "data": progress_snapshot,
+        })
+
+        last_sequence = 0
+        if latest_job and latest_job.status in ACTIVE_JOB_STATUSES:
+            db = SessionLocal()
+            try:
+                events = JobService(db).list_events(latest_job.id, after_sequence=0)
+            finally:
+                db.close()
+            for event in events:
+                await websocket.send_json(serialize_job_event(event))
+                last_sequence = event.sequence
+
+        try:
             while True:
-                data = await websocket.receive_text()
-                # Handle ping/pong for connection health
+                latest_job = get_latest_session_job(session_id, user_id)
+                if latest_job:
+                    db = SessionLocal()
+                    try:
+                        events = JobService(db).list_events(latest_job.id, after_sequence=last_sequence)
+                    finally:
+                        db.close()
+                    for event in events:
+                        await websocket.send_json(serialize_job_event(event))
+                        last_sequence = event.sequence
+
+                try:
+                    data = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+
                 if data == "ping":
                     await websocket.send_text("pong")
-                # Handle client requests for current state
-                elif data == "sync":
-                    if session_id in session_progress:
-                        progress = session_progress[session_id]
-                        if progress.get("user_id") != user_id:
-                            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
-                            return
-                        await websocket.send_json({
-                            "type": "progress_sync",
-                            "data": serialize_progress_for_client(progress)
-                        })
+                    continue
+
+                if data == "sync":
+                    session = store.load_session()
+                    if not session:
+                        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                        return
+                    session = reconcile_session_runtime_state(store, session_id, user_id, session)
+                    await websocket.send_json({
+                        "type": "progress_sync",
+                        "data": get_session_progress_snapshot(session_id, user_id, session),
+                    })
         except WebSocketDisconnect:
-            ws_manager.disconnect(websocket, session_id)
+            return
         except Exception as e:
             logger.error(f"WebSocket error: {e}")
-            ws_manager.disconnect(websocket, session_id)
+            return
 
     # ============================================================================
     # Routes
@@ -967,7 +1271,6 @@ def create_app() -> FastAPI:
     @app.post("/api/sessions", response_model=SessionResponse)
     async def create_session(
         request: CreateSessionRequest,
-        background_tasks: BackgroundTasks,
         current_user = Depends(get_current_user)
     ):
         """
@@ -995,15 +1298,6 @@ def create_app() -> FastAPI:
         orchestrator._save_sync()
 
         session_id = orchestrator.session_id
-        _cleanup_completed_sessions()
-        active_sessions[session_id] = orchestrator
-        session_progress[session_id] = {
-            "status": "created",
-            "copies_uploaded": 0,
-            "copies_graded": 0,
-            "disagreements": [],
-            "user_id": user_id
-        }
 
         # Record active session
         if hasattr(app.state, 'metrics_collector'):
@@ -1013,6 +1307,9 @@ def create_app() -> FastAPI:
             session_id=session_id,
             status=orchestrator.session.status,
             created_at=str(orchestrator.session.created_at),
+            llm_mode=None,
+            requested_llm_mode=orchestrator.session.requested_llm_mode,
+            llm_mode_warning=None,
             copies_count=0,
             graded_count=0,
             subject=request.subject,
@@ -1045,8 +1342,6 @@ def create_app() -> FastAPI:
         session = store.load_session()
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-
-        active_sessions.pop(session_id, None)
 
         # Save uploaded files
         upload_dir = get_session_temp_dir(session_id)
@@ -1175,15 +1470,6 @@ def create_app() -> FastAPI:
         session.copies_processed = 0
         store.save_session(session)
 
-        # Update session progress
-        session_progress[session_id] = {
-            "status": "uploaded",
-            "copies_uploaded": len(pdf_paths),
-            "copies_graded": 0,
-            "disagreements": [],
-            "user_id": user_id,
-        }
-
         return {
             "session_id": session_id,
             "uploaded_count": len(pdf_paths),
@@ -1290,7 +1576,6 @@ def create_app() -> FastAPI:
     async def detect_session(
         session_id: str,
         request: DetectionRequest,
-        background_tasks: BackgroundTasks,
         current_user = Depends(get_current_user)
     ):
         """
@@ -1351,10 +1636,6 @@ def create_app() -> FastAPI:
                         status_code=403,
                         detail="Re-détection limitée à 1x par session sur ESSENTIEL. Passez à PRO pour illimité."
                     )
-
-        # Update session progress
-        if session_id in session_progress:
-            session_progress[session_id]["status"] = "detection"
 
         # Update session file status
         if session:
@@ -1428,10 +1709,6 @@ def create_app() -> FastAPI:
                     confidence=candidate.get("confidence", 0.0)
                 ))
 
-            # Update progress
-            if session_id in session_progress:
-                session_progress[session_id]["status"] = "detection"
-
             # Update session file status
             session = store.load_session()
             if session:
@@ -1465,16 +1742,12 @@ def create_app() -> FastAPI:
 
         except Exception as e:
             logger.error(f"Detection error: {e}")
-            if session_id in session_progress:
-                session_progress[session_id]["status"] = "error"
-                session_progress[session_id]["error"] = str(e)
             raise HTTPException(status_code=500, detail=f"Detection failed: {str(e)}")
 
     @app.post("/api/sessions/{session_id}/confirm-detection", response_model=ConfirmDetectionResponse)
     async def confirm_detection(
         session_id: str,
         request: ConfirmDetectionRequest,
-        background_tasks: BackgroundTasks,
         current_user = Depends(get_current_user)
     ):
         """
@@ -1485,7 +1758,7 @@ def create_app() -> FastAPI:
         - Adjusting the detected grading scale
         - Overriding detected student names
 
-        After confirmation, grading starts automatically in background.
+        After confirmation, grading is queued for the dedicated worker.
         """
         user_id = current_user.id
 
@@ -1534,6 +1807,24 @@ def create_app() -> FastAPI:
             # Apply grading scale overrides
             if "grading_scale" in request.adjustments:
                 grading_scale.update(request.adjustments["grading_scale"])
+
+            # Apply full student overrides (name + page ranges)
+            if "students" in request.adjustments:
+                student_overrides = request.adjustments["students"]
+                for override in student_overrides:
+                    student_index = override.get("index")
+                    if student_index is None:
+                        continue
+                    for student in detection.students:
+                        if student.index != student_index:
+                            continue
+                        if "name" in override:
+                            student.name = override.get("name")
+                        if "start_page" in override and override.get("start_page") is not None:
+                            student.start_page = int(override["start_page"])
+                        if "end_page" in override and override.get("end_page") is not None:
+                            student.end_page = int(override["end_page"])
+                        break
 
             # Apply student name overrides
             if "student_names" in request.adjustments:
@@ -1588,176 +1879,33 @@ def create_app() -> FastAPI:
                 ),
             )
 
-        # Update session with confirmed settings only once grading can actually start.
-        session.status = SessionStatus.CORRECTION
-        store.save_session(session)
-
-        if session_id in session_progress:
-            session_progress[session_id]["status"] = "correction"
-
-        # Auto-start grading after confirmation
-        if session_id not in active_sessions:
-            orchestrator = GradingSessionOrchestrator(
+        db = SessionLocal()
+        try:
+            job = JobService(db).enqueue_grading_job(
                 session_id=session_id,
                 user_id=user_id,
-                workflow_state=API_WORKFLOW_STATE,
-                grading_mode=request.grading_mode,
-                batch_verify=request.batch_verify
+                requested_llm_mode=request.llm_mode,
+                grading_method=request.grading_mode,
+                batch_verify=request.batch_verify,
+                payload={"grading_scale": grading_scale},
             )
-            active_sessions[session_id] = orchestrator
-        else:
-            orchestrator = active_sessions[session_id]
-            orchestrator._grading_mode = request.grading_mode
-            orchestrator._batch_verify = request.batch_verify
+        except JobConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        finally:
+            db.close()
 
-        orchestrator.pdf_paths = [doc.storage_path for doc in copy_documents]
-
-        # Create progress callback for WebSocket
-        progress_callback = ws_manager.create_progress_callback(session_id)
-
-        # Start grading in background
-        async def auto_grade_task():
-            from db import SessionLocal, User
-            try:
-                logger.info(f"Auto-grading task started for session {session_id}")
-
-                # Update progress
-                if session_id in session_progress:
-                    session_progress[session_id]["status"] = "correction"
-
-                # Re-create store for this task context
-                task_store = SessionStore(session_id, user_id=user_id)
-
-                logger.info(f"PDF paths for grading: {orchestrator.pdf_paths}")
-
-                # Run analysis phase
-                logger.info(f"Starting analyze_only for session {session_id}")
-                await orchestrator.analyze_only()
-                logger.info(f"analyze_only completed for session {session_id}")
-
-                # Confirm scale with the validated grading scale
-                orchestrator.confirm_scale(grading_scale)
-                logger.info(f"Scale confirmed for session {session_id}")
-
-                # Grade with progress callback
-                logger.info(f"Starting grade_all for session {session_id}")
-                await orchestrator.grade_all(progress_callback=progress_callback)
-                logger.info(f"grade_all completed for session {session_id}")
-
-                # Reload session to get graded copies
-                session = task_store.load_session()
-
-                # Record grading operation
-                if hasattr(app.state, 'metrics_collector') and session and session.graded_copies:
-                    token_usage = len(session.graded_copies) * 10000
-                    app.state.metrics_collector.record_grading_operation(
-                        session_id=session_id,
-                        tokens_used=token_usage
-                    )
-
-                # Notify completion
-                if session and session.graded_copies:
-                    scores = [g.total_score for g in session.graded_copies]
-                    avg = sum(scores) / len(scores)
-                else:
-                    avg = 0
-
-                # Deduct actual tokens used
-                result = {
-                    'tokens_deducted': 0,
-                    'remaining_tokens': 0,
-                    'usage_record_id': None,
-                    'is_duplicate': False
-                }
-                db_user = None
-
-                try:
-                    db = SessionLocal()
-                    deduction_svc = TokenDeductionService()
-                    result = deduction_svc.deduct_grading_usage(
-                        user_id=user_id,
-                        provider=orchestrator.ai,
-                        session_id=session_id,
-                        db=db
-                    )
-                    logger.info(f"Deducted {result['tokens_deducted']} tokens for session {session_id}")
-                    db_user = db.query(User).filter(User.id == user_id).first()
-                    db.close()
-                except InsufficientTokensError as e:
-                    await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_ERROR, {
-                        "error": "Insufficient tokens",
-                        "tokens_required": e.tokens_required,
-                        "tokens_remaining": e.tokens_remaining
-                    })
-                    logger.error(f"Insufficient tokens for user {user_id}")
-                except Exception as e:
-                    logger.error(f"Token deduction error for session {session_id}: {e}")
-                    # Continue without blocking - grading already done
-
-                await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_COMPLETE, {
-                    "average_score": avg,
-                    "total_copies": len(session.graded_copies) if session else 0,
-                    "tokens_used": result['tokens_deducted'],
-                    "remaining_tokens": db_user.remaining_tokens if db_user else 0
-                })
-
-                # Update session status in database
-                if session:
-                    session.status = SessionStatus.COMPLETE
-                    task_store.save_session(session)
-
-                # Update progress
-                if session_id in session_progress:
-                    session_progress[session_id]["status"] = "complete"
-                    session_progress[session_id]["copies_graded"] = len(session.graded_copies) if session else 0
-
-            except Exception as e:
-                logger.error(f"Auto-grading failed for session {session_id}: {e}")
-                await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_ERROR, {
-                    "error": str(e)
-                })
-                if session_id in session_progress:
-                    session_progress[session_id]["status"] = "error"
-                # Reset session status so it doesn't stay stuck on "correction"
-                try:
-                    error_store = SessionStore(session_id, user_id=user_id)
-                    error_session = error_store.load_session()
-                    if error_session and error_session.status == SessionStatus.CORRECTION:
-                        error_session.status = SessionStatus.DIAGNOSTIC
-                        error_store.save_session(error_session)
-                except Exception as save_error:
-                    logger.warning(f"Could not update session status: {save_error}")
-            finally:
-                # Always attempt to finalize session status if grading completed
-                # This handles cases where the task was interrupted after grading
-                # but before the final status update
-                try:
-                    task_store = SessionStore(session_id, user_id=user_id)
-                    session = task_store.load_session()
-                    if session:
-                        # If we have graded copies, mark as complete
-                        if session.graded_copies and len(session.graded_copies) > 0:
-                            if session.status == SessionStatus.CORRECTION:
-                                logger.info(f"Finalizing interrupted session {session_id}")
-                                session.status = SessionStatus.COMPLETE
-                                task_store.save_session(session)
-                        # If still grading but no copies graded, reset to diagnostic
-                        elif session.status == SessionStatus.CORRECTION:
-                            logger.info(f"Resetting stuck session {session_id} to diagnostic")
-                            session.status = SessionStatus.DIAGNOSTIC
-                            task_store.save_session(session)
-                except Exception as finalize_error:
-                    logger.warning(f"Could not finalize session {session_id}: {finalize_error}")
-
-        # Add background task
-        background_tasks.add_task(auto_grade_task)
+        session.status = SessionStatus.CORRECTION
+        session.requested_llm_mode = request.llm_mode
+        store.save_session(session)
 
         return ConfirmDetectionResponse(
             success=True,
             session_id=session_id,
-            status="correction",  # Status changed - grading started automatically
+            status="correction",
             grading_scale=grading_scale,
-            num_students=detection.num_students_detected
+            num_students=detection.num_students_detected,
+            job_id=job.id,
+            job_status=job.status.value,
         )
 
     @app.get("/api/sessions/{session_id}", response_model=SessionDetailResponse)
@@ -1780,20 +1928,7 @@ def create_app() -> FastAPI:
             logger.warning(f"Session not found in get_session: {session_id} for user {user_id}")
             raise HTTPException(status_code=404, detail="Session not found")
 
-        # Detect and fix stale "correction" status (orphaned after server restart/crash)
-        if session.status == SessionStatus.CORRECTION:
-            # If session is in correction but not in active_sessions, it's stale
-            if session_id not in active_sessions:
-                if session.graded_copies and len(session.graded_copies) > 0:
-                    # Has graded copies -> mark as complete
-                    logger.info(f"Recovering orphaned correction session {session_id} -> complete")
-                    session.status = SessionStatus.COMPLETE
-                    store.save_session(session)
-                else:
-                    # No graded copies -> reset to diagnostic
-                    logger.info(f"Recovering orphaned correction session {session_id} -> diagnostic")
-                    session.status = SessionStatus.DIAGNOSTIC
-                    store.save_session(session)
+        session = reconcile_session_runtime_state(store, session_id, user_id, session)
 
         average = None
         max_score = None
@@ -1852,10 +1987,20 @@ def create_app() -> FastAPI:
             }
             graded_copies.append(graded_info)
 
+        actual_llm_mode = infer_session_llm_mode(session)
+        llm_mode_warning = get_llm_mode_warning(session)
+        annotation_ready, annotation_count = get_annotation_status(store)
+        annotation_modified = has_pending_annotation_regeneration(store, session)
+        annotation_files = list_annotation_files(store)
+        overlay_files = list_overlay_files(store)
+
         return SessionDetailResponse(
             session_id=session_id,
             status=session.status,
             created_at=str(session.created_at),
+            llm_mode=actual_llm_mode,
+            requested_llm_mode=session.requested_llm_mode,
+            llm_mode_warning=llm_mode_warning,
             copies_count=len(session.copies),
             graded_count=len(session.graded_copies),
             average_score=average,
@@ -1872,6 +2017,11 @@ def create_app() -> FastAPI:
             graded_copies=graded_copies,
             question_weights=session.policy.question_weights,
             question_names=session.policy.question_names,
+            annotation_ready=annotation_ready,
+            annotation_count=annotation_count,
+            annotation_modified=annotation_modified,
+            annotation_files=annotation_files,
+            overlay_files=overlay_files,
         )
 
     @app.patch("/api/sessions/{session_id}/copies/{copy_id}/grades", response_model=UpdateGradeResponse)
@@ -1921,6 +2071,8 @@ def create_app() -> FastAPI:
         # Recalculate total
         if request.auto_recalc:
             graded.total_score = sum(graded.grades.values())
+
+        invalidate_annotation_exports(session)
 
         # Persist immediately
         store.save_session(session)
@@ -2045,6 +2197,8 @@ def create_app() -> FastAPI:
                 for q in graded.grades.keys()
             )
 
+        invalidate_annotation_exports(session)
+
         # Persist changes
         store.save_session(session)
 
@@ -2108,14 +2262,20 @@ def create_app() -> FastAPI:
         if not store.exists():
             raise HTTPException(status_code=404, detail="Session not found")
 
-        # Remove from active sessions if present
-        if session_id in active_sessions:
-            del active_sessions[session_id]
-        if session_id in session_progress:
-            del session_progress[session_id]
-
         if hasattr(app.state, 'metrics_collector'):
             app.state.metrics_collector.remove_active_session(session_id)
+
+        db = SessionLocal()
+        try:
+            active_job = JobService(db).get_active_session_job(session_id, user_id)
+            if active_job:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Une correction est encore en cours pour cette session.",
+                )
+            JobService(db).cancel_session_jobs(session_id, user_id)
+        finally:
+            db.close()
 
         # Delete persistent and temporary session artifacts
         success = delete_session_artifacts(store, session_id)
@@ -2126,7 +2286,6 @@ def create_app() -> FastAPI:
     async def start_grading(
         session_id: str,
         request: StartGradingRequest,
-        background_tasks: BackgroundTasks,
         current_user = Depends(get_current_user)
     ):
         """
@@ -2137,7 +2296,6 @@ def create_app() -> FastAPI:
         Args:
             session_id: The session to grade
             request: Grading configuration including mode (single or dual LLM)
-            background_tasks: FastAPI background tasks
             current_user: Authenticated user
         """
         user_id = current_user.id
@@ -2158,39 +2316,11 @@ def create_app() -> FastAPI:
                     detail="Les documents de la session doivent être qualifiés et confirmés avant de lancer la correction."
                 )
 
-        # Determine force_single_llm based on request
-        force_single_llm = request.grading_mode == "single"
-
-        # Get or create orchestrator with proper grading configuration
-        if session_id not in active_sessions:
-            orchestrator = GradingSessionOrchestrator(
-                session_id=session_id,
-                user_id=user_id,
-                force_single_llm=force_single_llm,
-                grading_mode=request.grading_method,
-                batch_verify=request.batch_verify,
-                workflow_state=API_WORKFLOW_STATE
-            )
-            active_sessions[session_id] = orchestrator
-        else:
-            orchestrator = active_sessions[session_id]
-            # Update force_single_llm on existing orchestrator
-            orchestrator._force_single_llm = force_single_llm
-            orchestrator._grading_mode = request.grading_method
-            orchestrator._batch_verify = request.batch_verify
-
-        # Store selected grading mode in session_progress for UI reference
-        if session_id in session_progress:
-            session_progress[session_id]["grading_mode"] = request.grading_mode
+        session.requested_llm_mode = request.grading_mode
 
         # Get uploaded PDF paths
         copy_documents = get_session_copy_documents(session)
-        if copy_documents:
-            orchestrator.pdf_paths = [doc.storage_path for doc in copy_documents]
-        else:
-            pdf_files = list_uploaded_pdfs(session_id)
-            if pdf_files:
-                orchestrator.pdf_paths = [str(p) for p in pdf_files]
+        pdf_paths = [doc.storage_path for doc in copy_documents] if copy_documents else [str(p) for p in list_uploaded_pdfs(session_id)]
 
         estimated_tokens = estimate_session_token_budget(session)
         if not current_user.can_use_tokens(estimated_tokens):
@@ -2203,160 +2333,33 @@ def create_app() -> FastAPI:
                 ),
             )
 
-        # Create progress callback for WebSocket
-        progress_callback = ws_manager.create_progress_callback(session_id)
+        db = SessionLocal()
+        try:
+            job = JobService(db).enqueue_grading_job(
+                session_id=session_id,
+                user_id=user_id,
+                requested_llm_mode=request.grading_mode,
+                grading_method=request.grading_method,
+                batch_verify=request.batch_verify,
+                payload={"grading_scale": dict(session.policy.question_weights or {})},
+            )
+        except JobConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+        finally:
+            db.close()
 
-        # Start grading in background
-        async def grade_task():
-            from db import SessionLocal, User
-
-            try:
-                # Run analysis phase
-                await orchestrator.analyze_only()
-
-                # Confirm scale (use detected or default)
-                orchestrator.confirm_scale(orchestrator.question_scales)
-
-                # Grade with progress callback
-                # The orchestrator will send events through the callback:
-                # - PROGRESS_EVENT_COPY_START: When starting each copy
-                # - PROGRESS_EVENT_QUESTION_DONE: After each question
-                # - PROGRESS_EVENT_COPY_DONE: When copy is complete
-                # - PROGRESS_EVENT_COPY_ERROR: On error for a copy
-                await orchestrator.grade_all(progress_callback=progress_callback)
-
-                # Record grading operation with token usage
-                if hasattr(app.state, 'metrics_collector'):
-                    # Get token usage from session (simplified - tracks copy count)
-                    token_usage = len(session.graded_copies) * 10000  # Estimate
-                    app.state.metrics_collector.record_grading_operation(
-                        session_id=session_id,
-                        tokens_used=token_usage
-                    )
-
-                # Notify completion with proper event constant
-                if session.graded_copies:
-                    scores = [g.total_score for g in session.graded_copies]
-                    avg = sum(scores) / len(scores)
-                else:
-                    avg = 0
-
-                # Broadcast completion AFTER token deduction (moved below deduction block)
-
-                # Deduct actual tokens used (not copy count)
-                # Initialize with safe defaults for completion broadcast
-                result = {
-                    'tokens_deducted': 0,
-                    'remaining_tokens': 0,
-                    'usage_record_id': None,
-                    'is_duplicate': False
-                }
-                db_user = None
-
-                logger.info(f"[TOKEN_DEBUG] Starting token deduction for session {session_id}, user {user_id}")
-
-                # Also write to file for debugging
-                with open("/tmp/token_debug.log", "a") as f:
-                    f.write(f"\n=== {session_id} ===\n")
-                    f.write(f"User: {user_id}\n")
-
-                db = SessionLocal()
-                try:
-                    # Get token usage from provider for debugging
-                    provider_usage = orchestrator.ai.get_token_usage() if hasattr(orchestrator.ai, 'get_token_usage') else {}
-                    logger.info(f"[TOKEN_DEBUG] Provider usage: {provider_usage}")
-
-                    deduction_svc = TokenDeductionService()
-                    result = deduction_svc.deduct_grading_usage(
-                        user_id=user_id,
-                        provider=orchestrator.ai,
-                        session_id=session_id,
-                        db=db
-                    )
-
-                    logger.info(
-                        f"Deducted {result['tokens_deducted']} tokens "
-                        f"from user {user_id} for session {session_id}"
-                    )
-
-                    # Reload user to get updated balance for WebSocket broadcast
-                    db_user = db.query(User).filter(User.id == user_id).first()
-
-                except InsufficientTokensError as e:
-                    # Grading succeeded but user can't afford the tokens
-                    await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_ERROR, {
-                        "error": "Insufficient tokens for grading",
-                        "tokens_required": e.tokens_required,
-                        "tokens_remaining": e.tokens_remaining
-                    })
-                    logger.error(f"Insufficient tokens for user {user_id}: {e.tokens_remaining} remaining, {e.tokens_required} required")
-                    return  # Exit early, don't broadcast success
-
-                except UserNotFoundError as e:
-                    await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_ERROR, {
-                        "error": "User not found"
-                    })
-                    logger.error(f"User not found during token deduction: {e}")
-                    return
-
-                except DeductionError as e:
-                    await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_ERROR, {
-                        "error": "Failed to record token usage"
-                    })
-                    logger.error(f"Token deduction failed for session {session_id}: {e}")
-                    return
-
-                except Exception as e:
-                    # Catch-all for unexpected errors in token deduction
-                    # Log full traceback for debugging
-                    logger.exception(
-                        f"Unexpected error during token deduction for session {session_id}, user {user_id}: {e}"
-                    )
-                    # Broadcast error but allow grading to complete
-                    await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_ERROR, {
-                        "error": "Token deduction encountered an error",
-                        "details": str(e)
-                    })
-                    # DO NOT return - let grading complete with zero tokens deducted
-
-                finally:
-                    db.close()
-
-                # Update progress
-                if session_id in session_progress:
-                    session_progress[session_id]["status"] = "complete"
-                    session_progress[session_id]["copies_graded"] = len(session.graded_copies)
-
-                # Broadcast completion with token usage
-                await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_COMPLETE, {
-                    "average_score": avg,
-                    "total_copies": len(session.graded_copies),
-                    "tokens_used": result['tokens_deducted'],
-                    "remaining_tokens": db_user.remaining_tokens if db_user else 0
-                })
-
-            except Exception as e:
-                logger.error(f"Grading error: {e}")
-                await ws_manager.broadcast_event(session_id, PROGRESS_EVENT_SESSION_ERROR, {
-                    "error": str(e)
-                })
-                if session_id in session_progress:
-                    session_progress[session_id]["status"] = "error"
-                    session_progress[session_id]["error"] = str(e)
-
-        background_tasks.add_task(grade_task)
-
-        # Update progress
-        if session_id in session_progress:
-            session_progress[session_id]["status"] = "correction"
+        session.status = SessionStatus.CORRECTION
+        store.save_session(session)
 
         return GradeResponse(
             success=True,
             session_id=session_id,
             graded_count=len(session.graded_copies),
-            total_count=len(session.copies) if session.copies else len(orchestrator.pdf_paths),
+            total_count=len(session.copies) if session.copies else len(pdf_paths),
             pending_review=0,
-            grading_mode=request.grading_mode
+            grading_mode=request.grading_mode,
+            job_id=job.id,
+            job_status=job.status.value,
         )
 
     @app.post("/api/sessions/{session_id}/decisions")
@@ -2374,15 +2377,11 @@ def create_app() -> FastAPI:
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
 
-        if session_id not in active_sessions:
-            orchestrator = GradingSessionOrchestrator(
-                session_id=session_id,
-                user_id=user_id,
-                workflow_state=API_WORKFLOW_STATE
-            )
-            active_sessions[session_id] = orchestrator
-        else:
-            orchestrator = active_sessions[session_id]
+        orchestrator = GradingSessionOrchestrator(
+            session_id=session_id,
+            user_id=user_id,
+            workflow_state=API_WORKFLOW_STATE
+        )
 
         result = await orchestrator.apply_teacher_decision(
             question_id=decision.question_id,
@@ -2458,6 +2457,9 @@ def create_app() -> FastAPI:
                     "session_id": session_id,
                     "status": session.status,
                     "created_at": str(session.created_at),
+                    "llm_mode": infer_session_llm_mode(session),
+                    "requested_llm_mode": session.requested_llm_mode,
+                    "llm_mode_warning": get_llm_mode_warning(session),
                     "copies_count": len(session.copies),
                     "graded_count": len(session.graded_copies),
                     "average_score": avg,
@@ -2563,6 +2565,45 @@ def create_app() -> FastAPI:
             headers={"Content-Disposition": f'inline; filename="{pdf_path.name}"'},
         )
 
+    @app.get("/api/sessions/{session_id}/copies/{copy_id}/pages/{page_index}/image")
+    async def get_copy_page_image(
+        session_id: str,
+        copy_id: str,
+        page_index: int,
+        current_user=Depends(get_current_user),
+    ):
+        """Stream a rendered page image for annotation editing."""
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        copy = next((c for c in session.copies if c.id == copy_id), None)
+        if not copy:
+            raise HTTPException(status_code=404, detail="Copy not found")
+        if page_index < 0 or page_index >= len(copy.page_images):
+            raise HTTPException(status_code=404, detail="Page image not found")
+
+        image_path = Path(copy.page_images[page_index])
+        if not image_path.exists():
+            raise HTTPException(status_code=404, detail="Page image not found")
+
+        def iterfile():
+            with open(image_path, "rb") as f:
+                yield from f
+
+        media_type = "image/png"
+        if image_path.suffix.lower() in {".jpg", ".jpeg"}:
+            media_type = "image/jpeg"
+
+        return StreamingResponse(
+            iterfile(),
+            media_type=media_type,
+            headers={"Content-Disposition": f'inline; filename="{image_path.name}"'},
+        )
+
     @app.post("/api/sessions/{session_id}/disagreements/{copy_id}/{question_id}/resolve")
     async def resolve_disagreement(
         session_id: str,
@@ -2607,6 +2648,7 @@ def create_app() -> FastAPI:
             # Update the grade
             graded.grades[question_id] = new_grade
             graded.total_score = sum(graded.grades.values())
+            invalidate_annotation_exports(session)
 
             # Persist the session
             store.save_session(session)
@@ -2660,6 +2702,213 @@ def create_app() -> FastAPI:
             headers={
                 "Content-Disposition": f"attachment; filename={filename}"
             }
+        )
+
+    @app.post("/api/sessions/{session_id}/annotate", response_model=AnnotateSessionResponse)
+    async def annotate_session(session_id: str, current_user=Depends(get_current_user)):
+        """Generate annotated PDFs and overlays for a completed session."""
+        from export.annotation_pipeline import AnnotationExportService
+
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        if not session.graded_copies:
+            raise HTTPException(
+                status_code=400,
+                detail="La correction doit être terminée avant de générer les annotations."
+            )
+
+        copies_by_id = {copy.id: copy for copy in session.copies}
+        ordered_pairs = []
+        missing_copy_ids: list[str] = []
+        for graded in session.graded_copies:
+            copy = copies_by_id.get(graded.copy_id)
+            if not copy:
+                missing_copy_ids.append(graded.copy_id)
+                continue
+            ordered_pairs.append((copy, graded))
+
+        if not ordered_pairs:
+            raise HTTPException(
+                status_code=400,
+                detail="Aucune copie exploitable n'a été trouvée pour générer les annotations."
+            )
+
+        if missing_copy_ids:
+            logger.warning(
+                f"Skipping annotation for missing copy metadata in session {session_id}: {missing_copy_ids}"
+            )
+
+        annotations_by_copy = {
+            copy.id: saved
+            for copy in session.copies
+            if (saved := load_saved_copy_annotations(store, copy.id)) is not None
+        }
+
+        exporter = AnnotationExportService(session=session)
+        artifacts = exporter.export_session_artifacts(
+            copies=[copy for copy, _ in ordered_pairs],
+            graded_copies=[graded for _, graded in ordered_pairs],
+            output_dir=str(store.session_dir),
+            smart_placement=True,
+            language="fr",
+            annotations_by_copy=annotations_by_copy,
+        )
+
+        for copy, _ in ordered_pairs:
+            if copy.id in annotations_by_copy:
+                mark_copy_annotations_synced(store, copy.id)
+
+        session.annotations_generated_at = datetime.now()
+        session.annotations_invalidated_at = None
+        store.save_session(session)
+
+        return AnnotateSessionResponse(
+            success=True,
+            session_id=session_id,
+            annotation_count=artifacts.copy_count,
+        )
+
+    @app.get("/api/sessions/{session_id}/annotation-editor", response_model=AnnotationEditorSessionResponse)
+    async def get_annotation_editor(
+        session_id: str,
+        current_user=Depends(get_current_user),
+    ):
+        """Load per-copy annotation editor data for manual placement adjustment."""
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        if not session.graded_copies:
+            raise HTTPException(status_code=400, detail="La correction doit être terminée avant d'éditer les annotations.")
+
+        graded_by_copy_id = {graded.copy_id: graded for graded in session.graded_copies}
+        copies_payload: list[AnnotationEditorCopyResponse] = []
+
+        for copy in session.copies:
+            graded = graded_by_copy_id.get(copy.id)
+            if not graded:
+                continue
+
+            annotations = build_copy_annotations_for_editor(store, session, copy, graded)
+            questions = [
+                AnnotationEditorQuestionResponse(
+                    question_id=question_id,
+                    score=score,
+                    max_points=graded.max_points_by_question.get(question_id, 0.0),
+                    feedback=graded.student_feedback.get(question_id, ""),
+                )
+                for question_id, score in sorted(graded.grades.items(), key=lambda item: question_sort_key(item[0]))
+            ]
+            copies_payload.append(
+                AnnotationEditorCopyResponse(
+                    copy_id=copy.id,
+                    student_name=copy.student_name,
+                    page_count=copy.page_count,
+                    total_score=graded.total_score,
+                    max_score=graded.max_score,
+                    overall_feedback=graded.feedback or "",
+                    page_image_count=len(copy.page_images),
+                    questions=questions,
+                    placements=[AnnotationPlacementResponse(**serialize_annotation_placement(p)) for p in annotations.placements],
+                )
+            )
+
+        return AnnotationEditorSessionResponse(session_id=session_id, copies=copies_payload)
+
+    @app.put("/api/sessions/{session_id}/annotation-editor/{copy_id}")
+    async def update_annotation_editor_copy(
+        session_id: str,
+        copy_id: str,
+        request: UpdateAnnotationPlacementsRequest,
+        current_user=Depends(get_current_user),
+    ):
+        """Persist manual annotation placements for a single copy."""
+        from export.annotation_service import AnnotationPlacement, CopyAnnotations
+
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        copy = next((c for c in session.copies if c.id == copy_id), None)
+        if not copy:
+            raise HTTPException(status_code=404, detail="Copy not found")
+
+        annotations = CopyAnnotations(
+            copy_id=copy.id,
+            student_name=copy.student_name,
+            placements=[
+                AnnotationPlacement(**{**placement.model_dump(), "placement_source": "manual"})
+                for placement in request.placements
+            ],
+        )
+        save_copy_annotations(store, copy.id, annotations, source="manual")
+        return {"success": True, "placements_count": len(annotations.placements)}
+
+    @app.get("/api/sessions/{session_id}/annotated/{filename}")
+    async def get_annotated_pdf(
+        session_id: str,
+        filename: str,
+        current_user=Depends(get_current_user),
+    ):
+        """Stream an annotated PDF for a specific session."""
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        safe_name = Path(filename).name
+        pdf_path = store.session_dir / "annotated" / safe_name
+        if not pdf_path.exists() or not pdf_path.is_file():
+            raise HTTPException(status_code=404, detail="PDF annoté introuvable")
+
+        def iterfile():
+            with open(pdf_path, "rb") as f:
+                yield from f
+
+        return StreamingResponse(
+            iterfile(),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
+        )
+
+    @app.get("/api/sessions/{session_id}/overlays/{filename}")
+    async def get_annotation_overlay_pdf(
+        session_id: str,
+        filename: str,
+        current_user=Depends(get_current_user),
+    ):
+        """Stream an annotation-only overlay PDF for a specific session."""
+        user_id = current_user.id
+        store = SessionStore(session_id, user_id=user_id)
+        session = store.load_session()
+
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+
+        safe_name = Path(filename).name
+        pdf_path = store.session_dir / "overlays" / safe_name
+        if not pdf_path.exists() or not pdf_path.is_file():
+            raise HTTPException(status_code=404, detail="Overlay d'annotation introuvable")
+
+        def iterfile():
+            with open(pdf_path, "rb") as f:
+                yield from f
+
+        return StreamingResponse(
+            iterfile(),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
         )
 
     # ============================================================================

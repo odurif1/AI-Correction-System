@@ -70,6 +70,10 @@ class Settings(BaseSettings):
 
     # Storage
     data_dir: str = "data"
+    database_url: str = ""
+
+    # Runtime environment
+    environment: str = "development"
 
     # Observability
     sentry_dsn: str = ""
@@ -78,6 +82,9 @@ class Settings(BaseSettings):
 
     # CORS
     cors_origins: list[str] = []
+    session_secret: str = ""
+    session_cookie_secure: Optional[bool] = None
+    admin_api_key: str = ""
 
     # Prompt caching
     enable_prompt_caching: bool = True
@@ -96,6 +103,18 @@ class Settings(BaseSettings):
             raise ValueError(f"ai_provider must be one of: {', '.join(valid_providers)}")
         return v.lower()
 
+    @field_validator('environment')
+    @classmethod
+    def validate_environment(cls, v: str) -> str:
+        """Normalize and validate runtime environment."""
+        normalized = v.lower()
+        valid_environments = {'development', 'test', 'staging', 'production'}
+        if normalized not in valid_environments:
+            raise ValueError(
+                f"environment must be one of: {', '.join(sorted(valid_environments))}"
+            )
+        return normalized
+
     @model_validator(mode='after')
     def validate_api_keys(self):
         """Ensure required API key is set for the configured provider."""
@@ -105,6 +124,57 @@ class Settings(BaseSettings):
         if not api_key:
             raise ValueError(f"AI_CORRECTION_{provider.upper()}_API_KEY required when provider={provider}")
         return self
+
+    @property
+    def is_production_like(self) -> bool:
+        """Return whether the app runs in a production-style environment."""
+        return self.environment in {"staging", "production"}
+
+    @property
+    def use_secure_session_cookies(self) -> bool:
+        """Return whether session cookies must be marked Secure."""
+        if self.session_cookie_secure is not None:
+            return self.session_cookie_secure
+        return self.is_production_like
+
+    def _validate_shared_runtime_configuration(self) -> list[str]:
+        """Validate runtime settings shared by API and worker processes."""
+        errors = []
+
+        if self.is_production_like:
+            if not self.database_url:
+                errors.append(
+                    "AI_CORRECTION_DATABASE_URL is required in staging or production"
+                )
+            elif self.database_url.startswith("sqlite"):
+                errors.append(
+                    "AI_CORRECTION_DATABASE_URL must not use SQLite in staging or production"
+                )
+
+        return errors
+
+    def validate_api_runtime_configuration(self) -> None:
+        """Validate security-sensitive settings required by the HTTP API."""
+        errors = self._validate_shared_runtime_configuration()
+
+        if not self.session_secret:
+            errors.append("AI_CORRECTION_SESSION_SECRET is required for API sessions")
+
+        if self.is_production_like and not self.use_secure_session_cookies:
+            errors.append(
+                "AI_CORRECTION_SESSION_COOKIE_SECURE must be true when "
+                "AI_CORRECTION_ENVIRONMENT is staging or production"
+            )
+
+        if errors:
+            raise ValueError(" ; ".join(errors))
+
+    def validate_worker_runtime_configuration(self) -> None:
+        """Validate runtime settings required by the grading worker."""
+        errors = self._validate_shared_runtime_configuration()
+
+        if errors:
+            raise ValueError(" ; ".join(errors))
 
 
 @lru_cache()

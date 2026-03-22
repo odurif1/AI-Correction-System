@@ -24,6 +24,7 @@ from core.models import (
     PDFStructure,
     SubjectIntegration,
 )
+from config.constants import DATA_DIR
 from core.exceptions import (
     PDFReadError,
     InvalidPDFError,
@@ -173,7 +174,7 @@ class Detector:
         self.user_id = user_id
         self.session_id = session_id
         self.language = language
-        self.cache_dir = cache_dir or Path(f"data/{user_id}/{session_id}/cache")
+        self.cache_dir = cache_dir or Path(DATA_DIR) / "sessions" / user_id / session_id / "cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         # Use provided provider or create new one

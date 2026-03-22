@@ -64,7 +64,7 @@ python -m src.main correct single batch copies.pdf --annotate --auto-confirm
 L'option `--annotate` produit **systématiquement deux types de fichiers**:
 
 ```
-outputs/<session_id>/
+data/sessions/<user_id>/<session_id>/
 ├── annotated/                      # Copies complètes annotées
 │   ├── student_001_annotated.pdf
 │   ├── student_002_annotated.pdf

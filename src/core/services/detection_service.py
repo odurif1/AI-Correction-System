@@ -34,10 +34,8 @@ class DetectionService:
         """Phase 1: Analyze copies without grading."""
         await self._load_copies_phase()
 
-        from core.models import SessionStatus, ClassAnswerMap
+        from core.models import ClassAnswerMap
         self.session.class_map = ClassAnswerMap()
-        if self.session.status == SessionStatus.DIAGNOSTIC:
-            self.session.transition_to(SessionStatus.CORRECTION)
 
         detected_questions = {}
         detected_language = 'fr'
@@ -74,12 +72,8 @@ class DetectionService:
         detection = self.store.load_detection()
 
         if detection and detection.students:
-            if self._grading_mode == "batch":
-                console.print(f"[cyan]Mode batch: {len(detection.students)} élève(s) attendu(s)[/cyan]")
-                await self._load_copies_minimal()
-            else:
-                console.print(f"[bold cyan]📋 Utilisation de la détection: {len(detection.students)} élève(s) détecté(s)[/bold cyan]")
-                await self._load_copies_from_detection(detection)
+            console.print(f"[bold cyan]📋 Utilisation de la détection: {len(detection.students)} élève(s) détecté(s)[/bold cyan]")
+            await self._load_copies_from_detection(detection)
         elif self._pages_per_copy:
             await self._load_copies_individual_mode()
         else:

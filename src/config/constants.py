@@ -4,7 +4,11 @@ Constants and configuration values for the AI correction system.
 Defines thresholds, defaults, and system-wide constants.
 """
 
+import os
 from typing import Dict, Final
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # AI Model Configuration
 DEFAULT_MODEL: Final[str] = "gpt-4o"
@@ -53,7 +57,7 @@ MAX_PAGE_SIZE: Final[int] = 10 * 1024 * 1024  # 10MB
 SUPPORTED_IMAGE_FORMATS: Final[tuple] = (".png", ".jpg", ".jpeg")
 
 # Storage - Simplified Architecture
-DATA_DIR: Final[str] = "data"
+DATA_DIR: Final[str] = os.getenv("AI_CORRECTION_DATA_DIR", "data")
 SESSIONS_INDEX: Final[str] = "_index.json"
 
 # File naming

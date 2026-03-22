@@ -53,9 +53,7 @@ def test_annotate_copy_prepends_cover_and_keeps_annotations_on_original_pages(tm
         assert len(doc) == 3
         assert "Graded Assessment - Alice" in doc[0].get_text()
         assert "Original page 1" in doc[1].get_text()
-        assert "Page 1" in doc[1].get_text()
         assert "Original page 2" in doc[2].get_text()
-        assert "Page 2" in doc[2].get_text()
     finally:
         doc.close()
 
@@ -84,7 +82,7 @@ def test_create_annotation_boxes_supports_page_offset(tmp_path):
 
         assert 1 in boxes
         assert 0 not in boxes
-        assert boxes[1][0][1] == "Feedback"
+        assert boxes[1][0][1].feedback_text == "Feedback"
     finally:
         doc.close()
 
@@ -174,12 +172,70 @@ def test_annotation_export_service_reuses_single_annotation_computation(tmp_path
     artifact = service.export_copy_artifacts(
         copy=copy,
         graded=graded,
-        output_dir=str(tmp_path / "outputs"),
+        output_dir=str(tmp_path / "session"),
     )
 
     assert calls == {"prepare": 1, "annotate": 1, "overlay": 1}
     assert Path(artifact.annotated_pdf).exists()
     assert Path(artifact.overlay_pdf).exists()
+
+
+def test_annotation_export_service_merges_session_pdfs_in_order(tmp_path, monkeypatch):
+    copy_one_pdf = tmp_path / "copy_one.pdf"
+    copy_two_pdf = tmp_path / "copy_two.pdf"
+    create_pdf(copy_one_pdf, ["Copie 1"])
+    create_pdf(copy_two_pdf, ["Copie 2"])
+
+    copy_one = CopyDocument(id="copy-1", pdf_path=str(copy_one_pdf), student_name="Alice")
+    copy_two = CopyDocument(id="copy-2", pdf_path=str(copy_two_pdf), student_name="Bob")
+    graded_one = GradedCopy(copy_id="copy-1", student_feedback={"Q1": "f1"}, total_score=1.0, max_score=2.0)
+    graded_two = GradedCopy(copy_id="copy-2", student_feedback={"Q1": "f2"}, total_score=1.5, max_score=2.0)
+
+    service = AnnotationExportService()
+    temp_output_dir = tmp_path / "session"
+    from src.export.annotation_pipeline import AnnotationArtifact
+
+    calls: list[str] = []
+
+    def fake_export_copy_artifacts(**kwargs):
+        copy = kwargs["copy"]
+        index = len(calls) + 1
+        calls.append(copy.id)
+
+        annotated_path = Path(kwargs["output_dir"]) / "annotated" / f"{index:03d}_{copy.id}.pdf"
+        overlay_path = Path(kwargs["output_dir"]) / "overlays" / f"{index:03d}_{copy.id}.pdf"
+        annotated_path.parent.mkdir(parents=True, exist_ok=True)
+        overlay_path.parent.mkdir(parents=True, exist_ok=True)
+        create_pdf(annotated_path, [f"annotated-{copy.id}"])
+        create_pdf(overlay_path, [f"overlay-{copy.id}"])
+        return AnnotationArtifact(
+            copy_id=copy.id,
+            student_name=copy.student_name,
+            annotated_pdf=str(annotated_path),
+            overlay_pdf=str(overlay_path),
+        )
+
+    monkeypatch.setattr(service, "export_copy_artifacts", fake_export_copy_artifacts)
+
+    artifacts = service.export_session_artifacts(
+        copies=[copy_one, copy_two],
+        graded_copies=[graded_one, graded_two],
+        output_dir=str(temp_output_dir),
+    )
+
+    assert artifacts.copy_count == 2
+    annotated_doc = fitz.open(artifacts.annotated_pdf)
+    overlay_doc = fitz.open(artifacts.overlay_pdf)
+    try:
+        assert annotated_doc.page_count == 2
+        assert overlay_doc.page_count == 2
+        assert "annotated-copy-1" in annotated_doc[0].get_text()
+        assert "annotated-copy-2" in annotated_doc[1].get_text()
+        assert "overlay-copy-1" in overlay_doc[0].get_text()
+        assert "overlay-copy-2" in overlay_doc[1].get_text()
+    finally:
+        annotated_doc.close()
+        overlay_doc.close()
 
 
 def test_detector_corrects_llm_page_to_expected_page_from_pdf_text(tmp_path):
@@ -322,7 +378,164 @@ def test_overlay_pdf_contains_annotations_without_page_label(tmp_path):
     try:
         text = doc[0].get_text()
         assert "Feedback visible" in text
+        assert "Note :" in text
         assert "Annotations" not in text
         assert "Page 1 -" not in text
+    finally:
+        doc.close()
+
+
+def test_annotated_pdf_does_not_add_page_summary_labels(tmp_path):
+    pdf_path = tmp_path / "copy.pdf"
+    output_path = tmp_path / "annotated.pdf"
+    create_pdf(pdf_path, ["Reponse de l'eleve"])
+
+    copy = CopyDocument(
+        id="copy-1",
+        pdf_path=str(pdf_path),
+        student_name="Alice",
+    )
+    graded = GradedCopy(
+        copy_id="copy-1",
+        grades={"Q1": 1.5},
+        max_points_by_question={"Q1": 2.0},
+        student_feedback={"Q1": "Bonne idee"},
+        total_score=1.5,
+        max_score=2.0,
+    )
+    annotations = CopyAnnotations(
+        copy_id="copy-1",
+        student_name="Alice",
+        placements=[
+            AnnotationPlacement(
+                question_id="Q1",
+                feedback_text="Bonne idee",
+                page_number=1,
+                x_percent=70,
+                y_percent=20,
+                width_percent=25,
+                height_percent=8,
+            )
+        ],
+    )
+
+    PDFAnnotator().annotate_copy(
+        copy=copy,
+        graded=graded,
+        output_path=str(output_path),
+        annotations=annotations,
+    )
+
+    doc = fitz.open(str(output_path))
+    try:
+        text = doc[1].get_text()
+        assert "Page 1" not in text
+        assert "Score:" not in text
+        assert "Note :" in text
+        assert "(1.5/2) Bonne idee" in text
+        assert "Q1 (1.5/2)" not in text
+    finally:
+        doc.close()
+
+
+def test_first_page_annotations_avoid_reserved_header_area(tmp_path):
+    pdf_path = tmp_path / "copy.pdf"
+    create_pdf(pdf_path, ["Question 1\nReponse de l'eleve"])
+
+    copy = CopyDocument(
+        id="copy-1",
+        pdf_path=str(pdf_path),
+        student_name="Alice",
+    )
+    graded = GradedCopy(
+        copy_id="copy-1",
+        grades={"Q1": 1.5},
+        max_points_by_question={"Q1": 2.0},
+        student_feedback={"Q1": "Bonne idee"},
+        feedback="Ensemble solide mais attention a la precision finale.",
+        total_score=1.5,
+        max_score=2.0,
+    )
+    annotations = CopyAnnotations(
+        copy_id="copy-1",
+        student_name="Alice",
+        placements=[
+            AnnotationPlacement(
+                question_id="Q1",
+                feedback_text="Bonne idee",
+                page_number=1,
+                x_percent=70,
+                y_percent=5,
+                width_percent=25,
+                height_percent=8,
+            )
+        ],
+    )
+
+    doc = fitz.open(str(pdf_path))
+    try:
+        doc.new_page(pno=0, width=595, height=842)
+        reserved = PDFAnnotator()._build_reserved_rects_by_page(doc, graded, first_student_page_index=1)
+        boxes = create_annotation_boxes(
+            annotations,
+            doc,
+            page_number_offset=1,
+            reserved_rects_by_page=reserved,
+        )
+        rect = boxes[1][0][0]
+        assert rect.y0 >= reserved[1][0].y1
+    finally:
+        doc.close()
+
+
+def test_annotation_text_shrinks_then_truncates_when_box_is_too_small():
+    annotator = PDFAnnotator()
+    rect = fitz.Rect(0, 0, 80, 24)
+
+    font_size, lines = annotator._fit_annotation_text_to_rect(
+        "Q1 (1.5/2) Feedback tres long qui ne peut pas tenir dans une boite minuscule",
+        rect,
+    )
+
+    assert font_size == 6
+    assert len(lines) == 2
+    assert not lines[-1].endswith("…")
+
+
+def test_create_annotation_boxes_prefers_right_margin_free_space(tmp_path):
+    pdf_path = tmp_path / "copy.pdf"
+    doc = fitz.open()
+    page = doc.new_page(width=595, height=842)
+    page.insert_textbox(
+        fitz.Rect(120, 80, 380, 420),
+        "Contenu eleve\n" * 60,
+        fontsize=11,
+    )
+    doc.save(str(pdf_path))
+    doc.close()
+
+    doc = fitz.open(str(pdf_path))
+    try:
+        annotations = CopyAnnotations(
+            copy_id="copy-1",
+            student_name="Alice",
+            placements=[
+                AnnotationPlacement(
+                    question_id="Q1",
+                    feedback_text="Commentaire assez long pour justifier un vrai bloc de texte en marge.",
+                    page_number=1,
+                    x_percent=50,
+                    y_percent=20,
+                    width_percent=20,
+                    height_percent=5,
+                )
+            ],
+        )
+
+        boxes = create_annotation_boxes(annotations, doc)
+        rect = boxes[0][0][0]
+
+        assert rect.x1 <= 160 or rect.x0 >= 384
+        assert 80 <= rect.width < 250
     finally:
         doc.close()
